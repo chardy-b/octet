@@ -1,0 +1,80 @@
+# Stereo 3-way active, LR4 crossovers (PLACEHOLDER 300 Hz / 3 kHz - tune in GUI)
+# Output map: 0=L woofer 1=L mid 2=L tweeter 3=R woofer 4=R mid 5=R tweeter, 6-7 unused
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  capture:
+    type: Alsa
+    channels: 2
+    device: "hw:Loopback,1,0"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 8
+    device: "hw:sndrpihifiberry,0"
+    format: S32_LE
+
+mixers:
+  split_3way:
+    channels:
+      in: 2
+      out: 8
+    mapping:
+      - dest: 0
+        sources: [{channel: 0, gain: 0}]
+      - dest: 1
+        sources: [{channel: 0, gain: 0}]
+      - dest: 2
+        sources: [{channel: 0, gain: 0}]
+      - dest: 3
+        sources: [{channel: 1, gain: 0}]
+      - dest: 4
+        sources: [{channel: 1, gain: 0}]
+      - dest: 5
+        sources: [{channel: 1, gain: 0}]
+
+filters:
+  low_lp:
+    type: BiquadCombo
+    parameters: {type: LinkwitzRileyLowpass, freq: 300, order: 4}
+  mid_hp:
+    type: BiquadCombo
+    parameters: {type: LinkwitzRileyHighpass, freq: 300, order: 4}
+  mid_lp:
+    type: BiquadCombo
+    parameters: {type: LinkwitzRileyLowpass, freq: 3000, order: 4}
+  high_hp:
+    type: BiquadCombo
+    parameters: {type: LinkwitzRileyHighpass, freq: 3000, order: 4}
+  gain_low:
+    type: Gain
+    parameters: {gain: 0.0, inverted: false, mute: false}
+  gain_mid:
+    type: Gain
+    parameters: {gain: 0.0, inverted: false, mute: false}
+  gain_high:
+    type: Gain
+    parameters: {gain: 0.0, inverted: false, mute: false}
+  delay_low:
+    type: Delay
+    parameters: {delay: 0.0, unit: ms, subsample: false}
+  delay_mid:
+    type: Delay
+    parameters: {delay: 0.0, unit: ms, subsample: false}
+  delay_high:
+    type: Delay
+    parameters: {delay: 0.0, unit: ms, subsample: false}
+
+pipeline:
+  - type: Mixer
+    name: split_3way
+  - type: Filter
+    channels: [0, 3]
+    names: [low_lp, gain_low, delay_low]
+  - type: Filter
+    channels: [1, 4]
+    names: [mid_hp, mid_lp, gain_mid, delay_mid]
+  - type: Filter
+    channels: [2, 5]
+    names: [high_hp, gain_high, delay_high]

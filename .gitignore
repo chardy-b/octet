@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# raw recordings and results (100+ MB); the code regenerates everything from them
+measure/measurements/

@@ -1,0 +1,19 @@
+[general]
+framerate = 60
+bars = 0
+
+[input]
+method = fifo
+source = /run/mpd/mpd.fifo
+sample_rate = 44100
+sample_bits = 16
+channels = 2
+
+[output]
+method = noncurses
+channels = stereo
+
+[color]
+gradient = 1
+gradient_color_1 = '#59bfff'
+gradient_color_2 = '#c15bff'

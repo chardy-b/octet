@@ -1,0 +1,14 @@
+[Unit]
+Description=CamillaDSP GUI backend
+After=camilladsp.service
+Wants=camilladsp.service
+
+[Service]
+User=octet
+WorkingDirectory=/opt/camilladsp/gui/camillagui_backend
+ExecStart=/opt/camilladsp/gui/camillagui_backend/camillagui_backend -c /opt/camilladsp/camillagui.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

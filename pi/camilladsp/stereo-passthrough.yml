@@ -1,0 +1,33 @@
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  capture:
+    type: Alsa
+    channels: 2
+    device: "hw:Loopback,1,0"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 8
+    device: "hw:sndrpihifiberry,0"
+    format: S32_LE
+
+mixers:
+  stereo_to_8:
+    channels:
+      in: 2
+      out: 8
+    mapping:
+      - dest: 0
+        sources:
+          - channel: 0
+            gain: 0
+      - dest: 1
+        sources:
+          - channel: 1
+            gain: 0
+
+pipeline:
+  - type: Mixer
+    name: stereo_to_8
