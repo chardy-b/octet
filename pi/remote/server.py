@@ -13,6 +13,7 @@ import struct
 import subprocess
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -33,6 +34,9 @@ LOCK = threading.RLock()
 TIDAL_LOCK = threading.RLock()
 SESSION = None
 CATALOG = {}
+PLAYLIST_CACHE = {}
+PLAYLIST_CACHE_SECONDS = 60
+MAX_PLAYLIST_TRACKS = 10000
 logging.getLogger('tidalapi').setLevel(logging.ERROR)
 try:
     CATALOG.update(json.loads((STATE / 'catalog.json').read_text()))
@@ -177,6 +181,111 @@ def track_id(value):
     if not re.fullmatch(r'[0-9]{1,12}', value):
         raise ValueError('Invalid track')
     return value
+
+
+def playlist_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', value):
+        raise ValueError('Invalid playlist')
+    return str(uuid.UUID(value))
+
+
+def playlist_summary(playlist):
+    try:
+        cover = playlist.image(320)
+        if not cover.startswith('https://resources.tidal.com/'):
+            cover = ''
+    except (AttributeError, ValueError):
+        cover = ''
+    return dict(id=playlist_id(str(playlist.id)), title=playlist.name,
+                tracks=int(playlist.num_tracks or 0),
+                creator=getattr(getattr(playlist, 'creator', None), 'name', '') or 'TIDAL', cover=cover)
+
+
+def playlist_page(offset=0):
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 100000:
+        raise ValueError('Invalid playlist offset')
+    with TIDAL_LOCK:
+        page = tidal().user.playlist_and_favorite_playlists(offset=offset, limit=50)
+        return dict(playlists=[playlist_summary(p) for p in page],
+                    next_offset=offset + len(page), has_more=len(page) == 50)
+
+
+def playlist_contents(identifier, refresh=False):
+    identifier = playlist_id(identifier)
+    with TIDAL_LOCK:
+        cached = PLAYLIST_CACHE.get(identifier)
+        if not refresh and cached and time.monotonic() - cached[0] < PLAYLIST_CACHE_SECONDS:
+            return cached[1]
+        playlist = tidal().playlist(identifier)
+        summary = playlist_summary(playlist)
+    if summary['tracks'] > MAX_PLAYLIST_TRACKS:
+        raise ValueError('This playlist exceeds the 10,000-track queue limit')
+    rows, offset, unavailable = [], 0, 0
+    while True:
+        with TIDAL_LOCK:
+            page = playlist.tracks(limit=100, offset=offset)
+            if not page:
+                break
+            for track in page:
+                if getattr(track, 'available', True) is False:
+                    unavailable += 1
+                else:
+                    rows.append(remember(track))
+        offset += len(page)
+        if offset > MAX_PLAYLIST_TRACKS:
+            raise ValueError('This playlist exceeds the 10,000-track queue limit')
+        if summary['tracks'] and offset >= summary['tracks']:
+            break
+    result = dict(playlist=summary, tracks=rows, unavailable=unavailable)
+    with TIDAL_LOCK:
+        PLAYLIST_CACHE[identifier] = (time.monotonic(), result)
+    return result
+
+
+def play_playlist(data):
+    identifier = playlist_id(data.get('id'))
+    position = data.get('position', 0)
+    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+        raise ValueError('Invalid playlist position')
+    contents = playlist_contents(identifier)
+    rows = contents['tracks']
+    if not rows:
+        raise RuntimeError('This playlist has no available tracks')
+    if position >= len(rows):
+        raise ValueError('Invalid playlist position')
+    if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
+        raise RuntimeError('The playlist changed. Reopen it before selecting a track.')
+    commands = ['addid ' + quote(f'http://{BIND}:{PORT}/stream/{track_id(row["id"])}') for row in rows]
+    with LOCK, DSP() as dsp:
+        approved(dsp)
+        STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with TIDAL_LOCK:
+            (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
+        old = mpd('playlistinfo')[0]
+        old_ids = [str(int(value)) for key, value in old if key == 'Id']
+        # Append first: a Tidal or queue-loading error must not erase current music.
+        try:
+            added = mpd(*commands)
+            ids = [str(int(dict(result)['Id'])) for result in added]
+        except Exception:
+            try:
+                current = mpd('playlistinfo')[0]
+                staged = [str(int(value)) for key, value in current if key == 'Id' and str(int(value)) not in old_ids]
+                if staged:
+                    mpd(*['deleteid ' + value for value in staged])
+            except Exception:
+                pass
+            raise RuntimeError('Could not queue the playlist. Your previous queue was retained.')
+        dsp.call('SetMute', True)
+        try:
+            mpd('random 0', 'single 0', 'repeat 0', 'consume 0', 'playid ' + ids[position])
+            if old_ids:
+                mpd(*['deleteid ' + value for value in old_ids])
+            dsp.call('SetMute', False)
+        except Exception:
+            dsp.call('SetMute', True)
+            raise RuntimeError('Could not start the playlist. Playback was muted; please retry.')
+    return current_status()
 
 
 def stream_url(identifier):
@@ -461,6 +570,8 @@ def current_status():
 
 def action(name, data):
     global LEVELS_UNLOCKED
+    if name == 'play-playlist':
+        return play_playlist(data)
     with LOCK:
         if name == 'unlock':
             enabled = data.get('enabled')
@@ -576,6 +687,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(current_status())
             if parsed.path == '/api/dsp':
                 return self.send(dsp_status())
+            if parsed.path == '/api/playlists':
+                offset = int(parse_qs(parsed.query).get('offset', ['0'])[0])
+                return self.send(playlist_page(offset))
+            if parsed.path == '/api/playlist':
+                query = parse_qs(parsed.query)
+                return self.send(playlist_contents(query.get('id', [''])[0], refresh=query.get('refresh') == ['1']))
             if parsed.path in ('/api/search', '/api/favorites', '/api/album'):
                 with TIDAL_LOCK:
                     session = tidal()

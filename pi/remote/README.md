@@ -1,7 +1,7 @@
 # Octet remote music controls
 
 Runs on the Pi at **http://100.100.177.81:8767**, bound only to its Tailscale address.
-Provides Tidal track search, favorite tracks, queue, playback, seeking, DSP volume,
+Provides Tidal track/album search, favorites, saved playlists, queue, playback, seeking, DSP volume,
 and stop/mute. Tidal credentials stay on the Pi and use the existing upmpdcli login.
 No external web hosting or browser plugins are needed. The server uses Python 3
 and the existing `tidalapi` package. The installer also uses the existing PyYAML.
@@ -16,6 +16,30 @@ audition settings, not measured crossover or power limits. Physical L/R and
 polarity remain to be confirmed. The app permits the audition preset and the
 independent output preset described below. Other configurations block playback
 and unmute through these controls.
+
+## Tidal playlists
+
+The Music page has **Favorite tracks** and **Playlists** tabs. Playlists includes
+both created and favorited Tidal playlists, with **Load more playlists** for
+libraries larger than 50. Each playlist has **Play all**; its title opens the
+complete track list, including playlists longer than 100 tracks.
+
+Selecting a playlist track loads the whole playlist and starts at that track.
+Subsequent songs play in order automatically. **Play all** starts at the first
+available track. Unavailable tracks are omitted with a count shown in the
+playlist details. The queue uses fresh stream resolution for each track.
+
+Playlist playback replaces the current queue only after Tidal metadata has
+loaded and MPD has accepted the new entries. It turns shuffle, single-track,
+repeat and consume modes off for ordered playback. Existing per-channel mute,
+EQ, polarity and listening volume are preserved; master mute is released when
+playback starts. Browsing playlists alone does not affect current music.
+
+`GET /api/playlists?offset=0` pages through the library; `GET /api/playlist?id=UUID`
+loads all tracks. `POST /api/control/play-playlist` accepts `id`, optional zero-based
+`position`, and optional `track_id` to detect a changed playlist. Metadata is
+cached briefly for consistent selection. Playlists up to 10,000 tracks are
+supported. Tidal credentials remain on the Pi.
 
 ## Measurements and output controls
 
