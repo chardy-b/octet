@@ -23,14 +23,12 @@ STATE = Path(os.environ.get('STATE_DIRECTORY', '/var/lib/octet-remote'))
 PROFILE = '/opt/camilladsp/configs/exciter-audition.yml'
 PROFILES = {
     PROFILE: ('Exciter audition', 'Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent'),
-    '/opt/camilladsp/configs/exciter-panel-eq.yml': (
-        'Measured panel EQ', 'DML2 left → 1/3 · right → 2/4 · 500 Hz–5 kHz audition limits'),
 }
 MIN_DB, MAX_DB = -60.0, -18.0
 HIGH_DB = 0.0
 LEVELS_UNLOCKED = False
 CHANNEL_PROFILE = Path('/var/lib/octet-dsp/channel-dsp.yml')
-PROFILES[str(CHANNEL_PROFILE)] = ('Measured panel EQ', 'Independent output EQ · audition protection remains active')
+PROFILES[str(CHANNEL_PROFILE)] = ('Exciter output controls', 'EX30 → 1/2 · EX32 → 3/4 · temporary audition filters')
 LOCK = threading.RLock()
 TIDAL_LOCK = threading.RLock()
 SESSION = None
@@ -204,37 +202,63 @@ def volume_ceiling():
     return HIGH_DB if LEVELS_UNLOCKED else MAX_DB
 
 
-def eq_block(config, output):
+def eq_block(config, output, required=True):
     """Find only the optional measured EQ block; never match a protection block."""
     matches = [block for block in config['pipeline']
                if block.get('type') == 'Filter' and block.get('channels') == [output - 1]
                and block.get('description') == f'Output {output} measured EQ'
                and block.get('names')
-               and all(name.startswith(('panel_left_', 'panel_right_')) and not name.endswith('_headroom')
+               and all(name.startswith(('exciter_ex30_', 'exciter_ex32_')) and not name.endswith('_headroom')
                        for name in block['names'])]
+    if not matches and not required:
+        return None
     if len(matches) != 1:
-        raise RuntimeError('This output has no independent measured EQ assigned')
+        raise RuntimeError('No verified measured EQ is assigned to this output')
     return matches[0]
 
 
-def channel_config(config):
-    """Move the common panel filters after the split, retaining identical responses."""
+def unmeasured_config(config):
+    """Retire unverified correction and its headroom, retaining routing and guards."""
     config = json.loads(json.dumps(config))
-    for output in range(1, 5):
-        if f'panel_{"left" if output % 2 else "right"}_headroom' not in config['filters']:
-            raise ValueError('Expected the saved DML2 panel EQ')
+    retired = ('panel_left_', 'panel_right_', 'exciter_ex30_', 'exciter_ex32_')
+    pipeline = []
+    for stage in config['pipeline']:
+        if stage.get('type') == 'Filter':
+            stage['names'] = [name for name in stage.get('names', []) if not name.startswith(retired)]
+            if not stage['names']:
+                continue
+        pipeline.append(stage)
+    config['pipeline'] = pipeline
+    config['filters'] = {name: value for name, value in config['filters'].items() if not name.startswith(retired)}
+    config['title'] = 'Exciter audition · no measured EQ'
+    config['description'] = 'EX30 on 1/2; EX32 on 3/4. No verified measured correction assigned. Temporary 500 Hz–5 kHz filters and -12 dB attenuation remain.'
+    config['devices']['volume_limit'] = HIGH_DB
+    return with_polarity_controls(config)
+
+
+def channel_config(config):
+    """Give both stereo outputs of each exciter model identical measured filters."""
+    config = json.loads(json.dumps(config))
+    prefixes = ('exciter_ex30_', 'exciter_ex32_')
+    if any(name.startswith(('panel_left_', 'panel_right_')) for name in config['filters']):
+        raise ValueError('Legacy left/right measurements are unverified and must not be installed')
+    if not any(name.startswith(prefixes) for name in config['filters']):
+        return unmeasured_config(config)
+    for prefix in prefixes:
+        if prefix + 'headroom' not in config['filters']:
+            raise ValueError('Expected saved EQ explicitly assigned to EX30 and EX32')
     config['pipeline'] = [block for block in config['pipeline']
-                          if not any(name.startswith(('panel_left_', 'panel_right_')) for name in block.get('names', []))]
-    config['pipeline'] += [dict(type='Filter', channels=[0, 2], names=['panel_left_headroom']),
-                           dict(type='Filter', channels=[1, 3], names=['panel_right_headroom'])]
+                          if not any(name.startswith(prefixes) for name in block.get('names', []))]
+    config['pipeline'] += [dict(type='Filter', channels=[0, 1], names=['exciter_ex30_headroom']),
+                           dict(type='Filter', channels=[2, 3], names=['exciter_ex32_headroom'])]
     for output in range(1, 5):
-        prefix = 'panel_left_' if output % 2 else 'panel_right_'
+        prefix = prefixes[(output - 1) // 2]
         names = [name for name in config['filters'] if name.startswith(prefix) and not name.endswith('_headroom')]
         names.sort(key=lambda name: int(name.rsplit('_', 1)[1]))
         config['pipeline'].append(dict(type='Filter', channels=[output - 1], names=names,
                                       description=f'Output {output} measured EQ', bypassed=False))
-    config['title'] = 'DML2 panel EQ with independent output controls'
-    config['description'] = 'EX30 1/2, EX32 3/4. Measured EQ switches are independent; protection and headroom always remain active.'
+    config['title'] = 'Measured exciter EQ with independent output controls'
+    config['description'] = 'EX30 EQ on 1/2; EX32 EQ on 3/4. Each stereo pair shares filters and headroom. Protection remains active.'
     config['devices']['volume_limit'] = HIGH_DB
     return with_polarity_controls(config)
 
@@ -269,8 +293,12 @@ def change_channel_setting(config, output, control, enabled):
     elif control == 'polarity':
         polarity_parameters(config, output)['inverted'] = enabled
     elif control == 'all-eq':
-        for channel in range(1, 5):
-            eq_block(config, channel)['bypassed'] = not enabled
+        blocks = [eq_block(config, channel, required=False) for channel in range(1, 5)]
+        blocks = [block for block in blocks if block is not None]
+        if not blocks:
+            raise RuntimeError('No verified measured EQ is assigned to any output')
+        for block in blocks:
+            block['bypassed'] = not enabled
     else:
         raise ValueError('Unknown output control')
 
@@ -304,7 +332,7 @@ def set_channel_control(output, control, enabled):
             with DSP() as dsp:
                 loaded = json.loads(dsp.call('GetConfigJson'))
                 if control == 'all-eq':
-                    applied = all(bool(eq_block(loaded, channel).get('bypassed')) == (not enabled) for channel in range(1, 5))
+                    applied = all(bool(eq_block(loaded, channel).get('bypassed')) == (not enabled) for channel in range(1, 5) if eq_block(config, channel, required=False) is not None)
                 elif control == 'eq':
                     applied = bool(eq_block(loaded, output).get('bypassed')) == (not enabled)
                 else:
@@ -338,7 +366,7 @@ def dsp_status():
     roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4']
     for output in range(1, 9):
         available = path == str(CHANNEL_PROFILE) and output <= 4
-        block = eq_block(config, output) if available else None
+        block = eq_block(config, output, required=False) if available else None
         names = block['names'] if block else []
         protected = []
         for stage in config.get('pipeline', []):
@@ -348,8 +376,8 @@ def dsp_status():
             return dict(name=name, **filters[name])
         result['channels'].append(dict(output=output, driver=roles[output - 1] if output <= 4 else 'Unassigned',
                                       input=('Left' if output % 2 else 'Right') if output <= 4 else None,
-                                      measurement=('dml2_L' if output % 2 else 'dml2_R') if available else None,
-                                      available=available, enabled=not bool(block.get('bypassed')) if block else False,
+                                      measurement=(filters.get(('exciter_ex30_' if output <= 2 else 'exciter_ex32_') + 'headroom', {}).get('description') or 'Measured ' + roles[output - 1] + ' EQ') if block else None,
+                                      available=available, eq_available=block is not None, enabled=not bool(block.get('bypassed')) if block else False,
                                       inverted=bool(polarity_parameters(config, output).get('inverted')) if available else False,
                                       filters=[describe(name) for name in names],
                                       always_active=[describe(name) for name in protected]))

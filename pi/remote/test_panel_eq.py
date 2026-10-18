@@ -7,15 +7,18 @@ RIGHT = 'Preamp: -2.9 dB\nFilter 1: ON PK Fc 623 Hz Gain +3.0 dB Q 3\nFilter 2: 
 
 
 class PanelEQ(unittest.TestCase):
-    def test_each_panel_is_filtered_once_before_output_split(self):
+    def test_each_model_is_filtered_after_split_on_its_stereo_pair(self):
         base = {'filters': {'guard': {'type': 'Gain'}}, 'pipeline': [{'type': 'Mixer', 'name': 'pairs'}]}
-        config = build(base, LEFT, RIGHT)
-        self.assertEqual(config['pipeline'][0]['channels'], [0])
-        self.assertEqual(config['pipeline'][1]['channels'], [1])
-        self.assertEqual(config['pipeline'][2], base['pipeline'][0])
+        config = build(base, LEFT, RIGHT, 'old_measurement_A', 'old_measurement_B')
+        self.assertEqual(config['pipeline'][0], base['pipeline'][0])
+        self.assertEqual(config['pipeline'][1]['channels'], [0, 1])
+        self.assertEqual(config['pipeline'][2]['channels'], [2, 3])
         self.assertEqual(base['filters'], {'guard': {'type': 'Gain'}})
-        self.assertEqual(config['filters']['panel_left_2']['parameters'], {'type': 'Peaking', 'freq': 969., 'q': 3., 'gain': -7.8})
-        self.assertEqual(config['filters']['panel_right_2']['parameters'], {'type': 'Lowpass', 'freq': 2850., 'q': .71})
+        self.assertEqual(config['filters']['exciter_ex30_headroom']['parameters']['gain'], -3.1)
+        self.assertEqual(config['filters']['exciter_ex32_headroom']['parameters']['gain'], -2.9)
+        self.assertEqual(config['filters']['exciter_ex30_headroom']['description'], 'old_measurement_A')
+        self.assertEqual(config['filters']['exciter_ex30_2']['parameters'], {'type': 'Peaking', 'freq': 969., 'q': 3., 'gain': -7.8})
+        self.assertEqual(config['filters']['exciter_ex32_2']['parameters'], {'type': 'Lowpass', 'freq': 2850., 'q': .71})
 
     def test_unknown_or_disabled_exports_are_rejected(self):
         for line in ('Filter 1: OFF PK Fc 1000 Hz Gain +3.0 dB Q 1',

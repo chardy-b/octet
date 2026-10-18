@@ -15,12 +15,11 @@ from server import CHANNEL_PROFILE, channel_config
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--panel-eq', action='store_true', help='Use the saved DML2 left/right panel EQ with independent output controls')
-    args = parser.parse_args()
+    parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit('Run this installer with sudo on Octet.')
     source = Path(__file__).resolve().parent
-    preset = 'exciter-panel-eq.yml' if args.panel_eq else 'exciter-audition.yml'
+    preset = 'exciter-audition.yml'
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(source / preset)], check=True)
     backup = Path('/var/backups/octet-remote') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(mode=0o700, parents=True)
@@ -34,21 +33,19 @@ def main():
     for name in ['server.py', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'README.md']:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)
-    for name in ['exciter-audition.yml', 'exciter-panel-eq.yml']:
+    for name in ['exciter-audition.yml']:
         if (source / name).exists():
             shutil.copy2(source / name, Path('/opt/camilladsp/configs') / name)
     CHANNEL_PROFILE.parent.mkdir(exist_ok=True)
     os.chown(CHANNEL_PROFILE.parent, pwd.getpwnam('upmpdcli').pw_uid, grp.getgrnam('audio').gr_gid)
     os.chmod(CHANNEL_PROFILE.parent, 0o2750)
-    profile_path = '/opt/camilladsp/configs/' + preset
-    if args.panel_eq:
-        if CHANNEL_PROFILE.exists():
-            shutil.copy2(CHANNEL_PROFILE, backup / CHANNEL_PROFILE.name)
-        CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
-        os.chown(CHANNEL_PROFILE, pwd.getpwnam('upmpdcli').pw_uid, grp.getgrnam('audio').gr_gid)
-        os.chmod(CHANNEL_PROFILE, 0o640)
-        subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(CHANNEL_PROFILE)], check=True)
-        profile_path = str(CHANNEL_PROFILE)
+    if CHANNEL_PROFILE.exists():
+        shutil.copy2(CHANNEL_PROFILE, backup / CHANNEL_PROFILE.name)
+    CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
+    os.chown(CHANNEL_PROFILE, pwd.getpwnam('upmpdcli').pw_uid, grp.getgrnam('audio').gr_gid)
+    os.chmod(CHANNEL_PROFILE, 0o640)
+    subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(CHANNEL_PROFILE)], check=True)
+    profile_path = str(CHANNEL_PROFILE)
     state = Path('/opt/camilladsp/statefile.yml')
     owner = state.stat()
     state.write_text(yaml.safe_dump(dict(config_path=profile_path,

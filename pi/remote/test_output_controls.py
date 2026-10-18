@@ -33,12 +33,12 @@ class OutputControls(unittest.TestCase):
 
     def test_one_output_can_be_bypassed_without_its_partner_or_guards(self):
         filters = {'guard': {'type': 'BiquadCombo'}}
-        for side in ('left', 'right'):
-            filters['panel_' + side + '_headroom'] = {'type': 'Gain', 'parameters': {'gain': -3}}
-            filters['panel_' + side + '_1'] = {'type': 'Biquad', 'parameters': {'type': 'Peaking', 'freq': 1000, 'gain': -3, 'q': 1}}
+        for side in ('ex30', 'ex32'):
+            filters['exciter_' + side + '_headroom'] = {'type': 'Gain', 'parameters': {'gain': -3}}
+            filters['exciter_' + side + '_1'] = {'type': 'Biquad', 'parameters': {'type': 'Peaking', 'freq': 1000, 'gain': -3, 'q': 1}}
         base = dict(devices={}, filters=filters, pipeline=[
-            dict(type='Filter', channels=[0], names=['panel_left_headroom', 'panel_left_1']),
-            dict(type='Filter', channels=[1], names=['panel_right_headroom', 'panel_right_1']),
+            dict(type='Filter', channels=[0], names=['exciter_ex30_headroom', 'exciter_ex30_1']),
+            dict(type='Filter', channels=[1], names=['exciter_ex32_headroom', 'exciter_ex32_1']),
             dict(type='Mixer', name='pairs'), dict(type='Filter', channels=[0, 1, 2, 3], names=['guard'])])
         before = json.dumps(base)
         config = server.channel_config(base)
@@ -50,10 +50,66 @@ class OutputControls(unittest.TestCase):
         for output in (2, 3, 4):
             self.assertFalse(server.eq_block(config, output)['bypassed'])
         self.assertEqual(config['pipeline'][1], guard_before)
-        self.assertEqual(server.eq_block(config, 1)['names'], server.eq_block(config, 3)['names'])
-        self.assertEqual(server.eq_block(config, 2)['names'], server.eq_block(config, 4)['names'])
+        self.assertEqual(server.eq_block(config, 1)['names'], server.eq_block(config, 2)['names'])
+        self.assertEqual(server.eq_block(config, 3)['names'], server.eq_block(config, 4)['names'])
+        self.assertNotEqual(server.eq_block(config, 1)['names'], server.eq_block(config, 3)['names'])
+        self.assertEqual(config['pipeline'][2]['channels'], [0, 1])
+        self.assertEqual(config['pipeline'][3]['channels'], [2, 3])
         with self.assertRaises(RuntimeError):
             server.eq_block(config, 5)
+
+    def test_ambiguous_legacy_left_right_filters_are_rejected(self):
+        config = dict(devices={}, filters={
+            'panel_left_headroom': dict(type='Gain'),
+            'panel_right_headroom': dict(type='Gain')}, pipeline=[])
+        with self.assertRaises(ValueError):
+            server.channel_config(config)
+
+    def test_retiring_wrong_measurements_preserves_guards_and_polarity(self):
+        base = dict(devices={}, filters={
+            'audition_hp': dict(type='BiquadCombo', parameters=dict(freq=500)),
+            'audition_lp': dict(type='BiquadCombo', parameters=dict(freq=5000)),
+            'fixed_attenuation': dict(type='Gain', parameters=dict(gain=-12)),
+            'panel_left_headroom': dict(type='Gain', parameters=dict(gain=-3.1)),
+            'panel_right_headroom': dict(type='Gain', parameters=dict(gain=-2.9)),
+            'panel_left_1': dict(type='Biquad'), 'panel_right_1': dict(type='Biquad')},
+            pipeline=[dict(type='Mixer', name='pairs'),
+                      dict(type='Filter', channels=[0, 1, 2, 3], names=['audition_hp', 'audition_lp', 'fixed_attenuation']),
+                      dict(type='Filter', channels=[0, 2], names=['panel_left_headroom', 'panel_left_1']),
+                      dict(type='Filter', channels=[1, 3], names=['panel_right_headroom', 'panel_right_1'])])
+        base = server.with_polarity_controls(base)
+        server.polarity_parameters(base, 2)['inverted'] = True
+        config = server.unmeasured_config(base)
+        self.assertEqual(config['pipeline'][:2], base['pipeline'][:2])
+        self.assertFalse(any(name.startswith('panel_') for name in config['filters']))
+        self.assertTrue(server.polarity_parameters(config, 2)['inverted'])
+        self.assertEqual(config['filters']['fixed_attenuation']['parameters']['gain'], -12)
+        for output in range(1, 5):
+            self.assertIsNone(server.eq_block(config, output, required=False))
+            with self.assertRaises(RuntimeError):
+                server.change_channel_setting(config, output, 'eq', True)
+        with self.assertRaises(RuntimeError):
+            server.change_channel_setting(config, None, 'all-eq', True)
+        before = json.dumps(config)
+        dsp = MagicMock()
+        dsp.__enter__.return_value = dsp
+        dsp.call.side_effect = lambda name: json.dumps(config) if name == 'GetConfigJson' else str(server.CHANNEL_PROFILE) if name == 'GetConfigFilePath' else -6 if name == 'GetVolume' else False
+        with patch.object(server, 'DSP', return_value=dsp):
+            status = server.dsp_status()
+        for channel in status['channels'][:4]:
+            self.assertTrue(channel['available'])
+            self.assertFalse(channel['eq_available'])
+            self.assertIsNone(channel['measurement'])
+            self.assertEqual(channel['filters'], [])
+        self.assertEqual(json.dumps(config), before)
+
+    def test_default_installer_profile_has_no_measured_correction(self):
+        config = server.channel_config(dict(devices={}, filters={'fixed_attenuation': dict(type='Gain', parameters=dict(gain=-12))},
+                                            pipeline=[dict(type='Filter', channels=[0, 1, 2, 3], names=['fixed_attenuation'])]))
+        for output in range(1, 5):
+            self.assertIsNone(server.eq_block(config, output, required=False))
+            self.assertFalse(server.polarity_parameters(config, output)['inverted'])
+        self.assertNotIn('/opt/camilladsp/configs/exciter-panel-eq.yml', server.PROFILES)
 
     def test_polarity_changes_only_one_sign_with_no_gain_or_eq_changes(self):
         base = dict(filters={'headroom': {'type': 'Gain', 'parameters': {'gain': -12}}},
@@ -74,9 +130,9 @@ class OutputControls(unittest.TestCase):
 
     def test_enable_all_preserves_polarity_and_protection(self):
         base = dict(devices={}, filters={}, pipeline=[dict(type='Mixer', name='pairs')])
-        for side in ('left', 'right'):
-            base['filters']['panel_' + side + '_headroom'] = dict(type='Gain', parameters=dict(gain=-3))
-            base['filters']['panel_' + side + '_1'] = dict(type='Biquad', parameters=dict(type='Peaking', freq=1000, gain=-3, q=1))
+        for side in ('ex30', 'ex32'):
+            base['filters']['exciter_' + side + '_headroom'] = dict(type='Gain', parameters=dict(gain=-3))
+            base['filters']['exciter_' + side + '_1'] = dict(type='Biquad', parameters=dict(type='Peaking', freq=1000, gain=-3, q=1))
         config = server.channel_config(base)
         server.polarity_parameters(config, 2)['inverted'] = True
         for channel in (1, 3):

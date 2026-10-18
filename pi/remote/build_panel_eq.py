@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Translate the saved DML2 panel EQ exports without changing their coefficients."""
+"""Assign explicitly identified exciter measurements to their matching stereo pairs."""
+import argparse
 import json
 from pathlib import Path
 import re
@@ -37,25 +38,34 @@ def parse_export(text, prefix):
     return filters, names
 
 
-def build(base, left_text, right_text):
+def build(base, ex30_text, ex32_text, ex30_source=None, ex32_source=None):
     config = dict(base)
-    config['title'] = 'Measured DML2 panel EQ'
-    config['description'] = 'Saved left/right panel EQ. 1/2 EX30, 3/4 EX32; 5-8 silent. Temporary 500 Hz–5 kHz limits remain.'
+    config['title'] = 'Measured exciter EQ'
+    config['description'] = 'EX30 EQ on outputs 1/2; EX32 EQ on 3/4; 5-8 silent. Temporary 500 Hz–5 kHz limits remain.'
     filters = dict(base['filters'])
-    left, left_names = parse_export(left_text, 'panel_left')
-    right, right_names = parse_export(right_text, 'panel_right')
-    filters.update(left)
-    filters.update(right)
+    stages = []
+    for model, text, source, channels in (
+            ('ex30', ex30_text, ex30_source, [0, 1]),
+            ('ex32', ex32_text, ex32_source, [2, 3])):
+        prefix = 'exciter_' + model
+        assigned, names = parse_export(text, prefix)
+        if source:
+            assigned[prefix + '_headroom']['description'] = str(source)
+        filters.update(assigned)
+        stages.append(dict(type='Filter', channels=channels, names=names))
     config['filters'] = filters
-    config['pipeline'] = [dict(type='Filter', channels=[0], names=left_names),
-                          dict(type='Filter', channels=[1], names=right_names), *base['pipeline']]
+    config['pipeline'] = [*base['pipeline'], *stages]
     return config
 
 
 if __name__ == '__main__':
-    base_path, left_path, right_path, output_path = map(Path, sys.argv[1:])
-    config = build(yaml.safe_load(base_path.read_text()), left_path.read_text(), right_path.read_text())
-    output_path.write_text('# Saved 2026-10-05 DML2 panel EQ; panel labels confirmed by the user.\n' + yaml.safe_dump(config, sort_keys=False))
-    print(json.dumps({'left_filters': len([k for k in config['filters'] if k.startswith('panel_left_')]),
-                      'right_filters': len([k for k in config['filters'] if k.startswith('panel_right_')]),
-                      'output': str(output_path)}))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('base', type=Path)
+    parser.add_argument('--ex30', type=Path, required=True, help='Export confirmed to measure the EX30HESF2-4')
+    parser.add_argument('--ex32', type=Path, required=True, help='Export confirmed to measure the EX32VBDS-4')
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    config = build(yaml.safe_load(args.base.read_text()), args.ex30.read_text(), args.ex32.read_text(),
+                   args.ex30.parent.parent.name, args.ex32.parent.parent.name)
+    args.output.write_text('# Saved exciter EQ, explicitly assigned by model.\n' + yaml.safe_dump(config, sort_keys=False))
+    print(json.dumps({'ex30': str(args.ex30), 'ex32': str(args.ex32), 'output': str(args.output)}))

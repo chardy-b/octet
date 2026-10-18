@@ -13,39 +13,46 @@ attenuation. The standard main-fader range is -60…-18 dB. An explicit **Unlock
 higher levels** button extends it to 0 dB, without changing the current volume.
 Relocking clamps a higher current setting to -18 dB. These are provisional
 audition settings, not measured crossover or power limits. Physical L/R and
-polarity remain to be confirmed. The app permits the audition preset, saved
-panel EQ preset, and the independent output preset described below. Other active
-configurations block playback and unmute through these controls.
+polarity remain to be confirmed. The app permits the audition preset and the
+independent output preset described below. Other configurations block playback
+and unmute through these controls.
 
-## Measured panel EQ and output controls
+## Measurements and output controls
 
-The user confirmed that `dml2_L` and `dml2_R` are **speaker panel** measurements.
-The 2026-10-05 saved exports are preserved in `exciter-panel-eq.yml`, including
-their -3.1/-2.9 dB preamps and HP/LP filters (the right export has a 2.85 kHz LP).
-Left-panel EQ feeds outputs 1/3; right-panel EQ feeds 2/4. The polarity-inverted
-measurement was not applied. Delay and physical polarity remain unverified.
+The old `dml2_L` / `dml2_R` EQ was retired on 2026-10-17 after the user identified
+it as potentially belonging to a different speaker test. It is not assigned to
+any current output. The previous `exciter-panel-eq.yml` preset and its -3.1/-2.9 dB
+headroom must not be installed. Previous Git commits and Pi configuration backups
+preserve those files for reference; they do not establish valid calibration.
 
-The **DSP** page at `/dsp` reads the running CamillaDSP configuration. Each of the
-first four outputs has its own measured-EQ bypass switch. The common panel
-correction is implemented after the output split, so toggling output 1 does not
-also toggle output 3. Audition HP/LP filters, 12 dB attenuation, and exported
-preamp headroom remain active. Outputs 5–8 have no input and no EQ assignment.
+The active `channel-dsp.yml` has no measured EQ. All four exciter outputs have
+the same temporary 500 Hz–5 kHz LR4 band and -12 dB fixed attenuation, plus their
+independent polarity controls. Outputs 1/2 carry left/right EX30HESF2-4; outputs
+3/4 carry left/right EX32VBDS-4. Outputs 5–8 have no input and remain silent.
 
-The bulk button shows **Disable DSP for all** when every assigned output has
-measured EQ enabled; otherwise it shows **Enable DSP for all**. It applies the
-selected state to all assigned outputs in one validated reload, preserving
-audition protection, headroom, and polarity. Each assigned output also has an **Invert polarity** button,
-implemented as a separate 0 dB sign-inversion stage. It preserves EQ, level, and
-other outputs' polarity. Inversion is a manual comparison control; it does not
-establish measured acoustic phase alignment. The initial polarity is normal.
+The **DSP** page at `/dsp` shows **No verified measured EQ assigned**. Individual
+and bulk measured-EQ switches are disabled until a valid correction is assigned;
+polarity, level and mute controls remain available for the wired outputs. The
+-12 dB attenuation is an audition setting, not a calibrated power limiter.
+
+For future verified measurements, `build_panel_eq.py BASE --ex30 EX30_EXPORT
+--ex32 EX32_EXPORT --output PRESET` creates correction by exciter model after
+the stereo-to-output split. `channel_config` gives each output an independent
+bypass switch, using identical coefficients and headroom within each model's
+stereo pair. Never infer model identity from an old left/right filename.
+
+When verified EQ is assigned, the bulk button enables or disables all assigned
+measured corrections while preserving temporary audition filters and polarity.
+Polarity inversion is a separate 0 dB sign stage. It is a manual comparison
+control and does not establish measured acoustic phase alignment.
 
 Switch states are validated using the installed CamillaDSP binary, applied with
 a brief mute, and saved in `/var/lib/octet-dsp/channel-dsp.yml`. Failed changes
 restore the previous file and leave output muted. The service can write only
 this shared audio-configuration directory and its own private state directory.
 
-Copy this folder onto Octet and run `sudo python3 install.py --panel-eq` to restore
-the current measured-panel setup. Omit the flag for the basic audition preset. The installer
+Copy this folder onto Octet and run `sudo python3 install.py` to install the
+unmeasured exciter setup with independent polarity controls. The installer
 validates the DSP preset, backs up current settings, and starts the system muted.
 It installs files under `/opt/octet-remote`, the audition config under
 `/opt/camilladsp/configs`, and the systemd unit under `/etc/systemd/system`.
