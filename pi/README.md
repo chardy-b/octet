@@ -38,3 +38,15 @@ position, mute CamillaDSP during restart, restore the player state, then restore
 the previous master mute state. `restore_paused "yes"` still prevents automatic
 music playback at boot. The obsolete `buffer_before_play` option is not used;
 this MPD version has a fixed one-second startup prebuffer.
+
+### Single playback timing clock
+
+The optional FIFO visualizer output is disabled in the default configuration.
+Even without a visualizer reader, MPD's FIFO plugin runs its own real-time timer.
+A controlled comparison on an unused ALSA loopback subdevice reproduced an ALSA
+silence-insertion underrun at each of three track starts with the FIFO enabled;
+the same three starts had no decoder or capture errors with only ALSA enabled.
+The live output was disabled with `mpc disable 2`; no playback or DSP restart
+was needed. Keep this tap disabled during normal listening. Its prior enabled
+state can be selected manually for visualizer testing, which may reintroduce
+startup glitches. Audio quality, channel filters and listening levels are unchanged.
