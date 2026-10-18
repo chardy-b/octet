@@ -1,7 +1,7 @@
-# No fixed audition attenuation. Temporary 500 Hz–5 kHz filters remain.
-title: Measured exciter EQ with independent output controls
-description: EX30 dml2_L on 1/2; EX32 dml2_R on 3/4. Matching EQ and exported headroom
-  within each pair; no fixed audition attenuation. Independent channel mute and polarity.
+# Eight assigned outputs. Subs and tweeters start muted; provisional filters and levels.
+title: Eight-output speaker DSP
+description: 1/2 EX30, 3/4 EX32, 5/6 left/right subs, 7/8 left/right tweeters. New
+  pairs start muted; crossover and level settings are provisional.
 devices:
   samplerate: 48000
   chunksize: 1024
@@ -36,6 +36,22 @@ mixers:
       - channel: 0
         gain: 0
     - dest: 3
+      sources:
+      - channel: 1
+        gain: 0
+    - dest: 4
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 5
+      sources:
+      - channel: 1
+        gain: 0
+    - dest: 6
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 7
       sources:
       - channel: 1
         gain: 0
@@ -220,6 +236,66 @@ filters:
       type: Lowpass
       freq: 2850.0
       q: 0.71
+  sub_hp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 25
+      order: 4
+  sub_lp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 500
+      order: 4
+  sub_attenuation:
+    type: Gain
+    parameters:
+      gain: -30
+      inverted: false
+      mute: false
+  tweeter_hp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 5000
+      order: 4
+  tweeter_lp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 20000
+      order: 4
+  tweeter_attenuation:
+    type: Gain
+    parameters:
+      gain: -36
+      inverted: false
+      mute: false
+  output_5_polarity:
+    type: Gain
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: true
+  output_6_polarity:
+    type: Gain
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: true
+  output_7_polarity:
+    type: Gain
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: true
+  output_8_polarity:
+    type: Gain
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: true
 pipeline:
 - type: Mixer
   name: exciter_pairs
@@ -330,3 +406,45 @@ pipeline:
   - exciter_ex32_10
   description: Output 4 measured EQ
   bypassed: false
+- type: Filter
+  channels:
+  - 4
+  - 5
+  names:
+  - sub_hp
+  - sub_lp
+  - sub_attenuation
+  description: Sub starting crossover and level
+- type: Filter
+  channels:
+  - 6
+  - 7
+  names:
+  - tweeter_hp
+  - tweeter_lp
+  - tweeter_attenuation
+  description: Tweeter starting crossover and level
+- type: Filter
+  channels:
+  - 4
+  names:
+  - output_5_polarity
+  description: Output 5 polarity
+- type: Filter
+  channels:
+  - 5
+  names:
+  - output_6_polarity
+  description: Output 6 polarity
+- type: Filter
+  channels:
+  - 6
+  names:
+  - output_7_polarity
+  description: Output 7 polarity
+- type: Filter
+  channels:
+  - 7
+  names:
+  - output_8_polarity
+  description: Output 8 polarity

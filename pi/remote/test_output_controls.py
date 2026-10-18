@@ -155,7 +155,7 @@ class OutputControls(unittest.TestCase):
         server.change_channel_setting(config, 2, 'mute', False)
         self.assertEqual(config, before)
         with self.assertRaises(RuntimeError):
-            server.change_channel_setting(config, 5, 'mute', True)
+            server.change_channel_setting(config, 9, 'mute', True)
 
     def test_channel_mute_api_uses_output_control_not_master_mute(self):
         with patch.object(server, 'set_channel_control') as change, patch.object(server, 'current_status', return_value={}):

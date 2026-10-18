@@ -28,7 +28,7 @@ MIN_DB, MAX_DB = -60.0, -18.0
 HIGH_DB = 0.0
 LEVELS_UNLOCKED = False
 CHANNEL_PROFILE = Path('/var/lib/octet-dsp/channel-dsp.yml')
-PROFILES[str(CHANNEL_PROFILE)] = ('Exciter output controls', 'EX30 → 1/2 · EX32 → 3/4 · temporary audition filters')
+PROFILES[str(CHANNEL_PROFILE)] = ('Output DSP controls', 'EX30 → 1/2 · EX32 → 3/4 · subs → 5/6 · tweeters → 7/8')
 LOCK = threading.RLock()
 TIDAL_LOCK = threading.RLock()
 SESSION = None
@@ -267,12 +267,40 @@ def channel_config(config):
     return with_polarity_controls(config)
 
 
-def with_polarity_controls(config):
+def assign_subs_and_tweeters(config, sub_hp, sub_lp, sub_gain, tweeter_hp, tweeter_lp, tweeter_gain):
+    """Add protected stereo output pairs, initially muted; preserve exciter settings."""
+    if not (0 < sub_hp < sub_lp < 24000 and 0 < tweeter_hp < tweeter_lp < 24000):
+        raise ValueError('Expected valid high-pass and low-pass frequencies')
+    if not (-60 <= sub_gain <= 0 and -60 <= tweeter_gain <= 0):
+        raise ValueError('Expected nonpositive starting output gains')
     config = json.loads(json.dumps(config))
-    for output in range(1, 5):
+    mixer = config['mixers']['exciter_pairs']
+    mixer['mapping'] = [entry for entry in mixer['mapping'] if entry['dest'] < 4]
+    for channel in range(4, 8):
+        mixer['mapping'].append(dict(dest=channel, sources=[dict(channel=channel % 2, gain=0)]))
+    prefixes = ('sub_', 'tweeter_')
+    config['pipeline'] = [stage for stage in config['pipeline']
+                          if not any(name.startswith(prefixes) for name in stage.get('names', []))]
+    for role, channels, hp, lp, gain in (
+            ('sub', [4, 5], sub_hp, sub_lp, sub_gain),
+            ('tweeter', [6, 7], tweeter_hp, tweeter_lp, tweeter_gain)):
+        config['filters'][role + '_hp'] = dict(type='BiquadCombo', parameters=dict(type='LinkwitzRileyHighpass', freq=hp, order=4))
+        config['filters'][role + '_lp'] = dict(type='BiquadCombo', parameters=dict(type='LinkwitzRileyLowpass', freq=lp, order=4))
+        config['filters'][role + '_attenuation'] = dict(type='Gain', parameters=dict(gain=gain, inverted=False, mute=False))
+        config['pipeline'].append(dict(type='Filter', channels=channels,
+                                      names=[role + '_hp', role + '_lp', role + '_attenuation'],
+                                      description=role.capitalize() + ' starting crossover and level'))
+    config['title'] = 'Eight-output speaker DSP'
+    config['description'] = '1/2 EX30, 3/4 EX32, 5/6 left/right subs, 7/8 left/right tweeters. New pairs start muted; crossover and level settings are provisional.'
+    return with_polarity_controls(config, outputs=range(5, 9), muted=True)
+
+
+def with_polarity_controls(config, outputs=range(1, 5), muted=False):
+    config = json.loads(json.dumps(config))
+    for output in outputs:
         name = f'output_{output}_polarity'
         if name not in config['filters']:
-            config['filters'][name] = dict(type='Gain', parameters=dict(gain=0.0, inverted=False, mute=False))
+            config['filters'][name] = dict(type='Gain', parameters=dict(gain=0.0, inverted=False, mute=muted))
         description = f'Output {output} polarity'
         if not any(stage.get('description') == description for stage in config['pipeline']):
             config['pipeline'].append(dict(type='Filter', channels=[output - 1], names=[name], description=description))
@@ -280,7 +308,7 @@ def with_polarity_controls(config):
 
 
 def polarity_parameters(config, output):
-    if output not in range(1, 5):
+    if output not in range(1, 9):
         raise RuntimeError('This output has no assigned polarity control')
     name = f'output_{output}_polarity'
     fil = config.get('filters', {}).get(name, {})
@@ -371,9 +399,13 @@ def dsp_status():
                       muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
                       min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
     filters = config.get('filters', {})
-    roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4']
+    roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4', 'Subwoofer', 'Subwoofer', 'PRO Neo-8 tweeter', 'PRO Neo-8 tweeter']
     for output in range(1, 9):
-        available = path == str(CHANNEL_PROFILE) and output <= 4
+        try:
+            parameters = polarity_parameters(config, output) if path == str(CHANNEL_PROFILE) else None
+        except RuntimeError:
+            parameters = None
+        available = parameters is not None
         block = eq_block(config, output, required=False) if available else None
         names = block['names'] if block else []
         protected = []
@@ -382,8 +414,9 @@ def dsp_status():
                 protected.extend(stage.get('names', []))
         def describe(name):
             return dict(name=name, **filters[name])
-        result['channels'].append(dict(output=output, driver=roles[output - 1] if output <= 4 else 'Unassigned',
-                                      input=('Left' if output % 2 else 'Right') if output <= 4 else None,
+        result['channels'].append(dict(output=output, driver=roles[output - 1] if available else 'Unassigned',
+                                      role=('exciter' if output <= 4 else 'subwoofer' if output <= 6 else 'tweeter') if available else 'unassigned',
+                                      input=('Left' if output % 2 else 'Right') if available else None,
                                       measurement=(filters.get(('exciter_ex30_' if output <= 2 else 'exciter_ex32_') + 'headroom', {}).get('description') or 'Measured ' + roles[output - 1] + ' EQ') if block else None,
                                       available=available, eq_available=block is not None, enabled=not bool(block.get('bypassed')) if block else False,
                                       inverted=bool(polarity_parameters(config, output).get('inverted')) if available else False,

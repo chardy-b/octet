@@ -34,14 +34,42 @@ installed; model-specific correction is saved in `channel-dsp.yml` instead.
 All four outputs retain the temporary 500 Hz–5 kHz LR4 audition band. There
 is **no extra -12 dB attenuation on any assigned output**. Outputs 1/2 retain
 only their -3.1 dB exported preamp, and outputs 3/4 retain only -2.9 dB, in
-addition to master volume. These are not calibrated power limits. Outputs 5–8
-remain silent.
+addition to master volume. These are not calibrated power limits.
 
 The **DSP** page at `/dsp` has a **Mute channel / Unmute channel** button for
 each assigned output, separate from master mute. The setting persists in the
 same 0 dB output stage as polarity, without changing inversion, EQ, gain or
 another channel's mute. Restoring an individual channel leaves master mute
-unchanged. Unassigned outputs have disabled controls.
+unchanged. All eight assigned outputs have mute and polarity controls; measured EQ remains
+assigned only to the exciter pairs.
+
+## Eight-output assignment and starting bands
+
+| Outputs | Left/right driver pair | LR4 high-pass | LR4 low-pass | Additional attenuation | Initial mute |
+|---|---|---:|---:|---:|---|
+| 1/2 | EX30HESF2-4, `dml2_L` | 500 Hz audition guard | 5 kHz audition guard | None; exported preamp -3.1 dB | Preserved |
+| 3/4 | EX32VBDS-4, `dml2_R` | 500 Hz audition guard | 5 kHz audition guard | None; exported preamp -2.9 dB | Preserved |
+| 5/6 | Dayton 12-inch Reference kit, sealed | 25 Hz | 500 Hz | -30 dB | Muted |
+| 7/8 | Dayton PRO Neo-8 on H6512 waveguides | 5 kHz | 20 kHz | -36 dB | Muted |
+
+Odd outputs carry left input; even outputs carry right input. The user requested
+Fosi V3 amplification be assumed for both new pairs. Exact subwoofer SKU, box
+volume, new amplifier supplies and knob settings are not verified. These gains
+are quiet starting values, not measured level matching or calibrated power
+limits. New output mutes are persisted; no sound is started automatically.
+Existing exciter coefficients, bypass, polarity and mute settings are preserved.
+
+The 500 Hz sub low-pass meets the current 500 Hz exciter audition high-pass;
+it is a provisional woofer/panel transition, not a final 80–120 Hz subwoofer
+crossover. The tweeter 5 kHz high-pass meets the existing exciter 5 kHz low-pass
+and is above the 3.5 kHz crossover recommendation in the
+[PRO Neo-8 datasheet](https://www.daytonaudio.com/images/resources/PRO%20Neo-8%20Specification%20Sheet.pdf).
+The [H6512 page](https://www.daytonaudio.com/product/966/h6512-6-1-2-x-12-waveguide-1-threaded)
+lists 1 kHz waveguide cutoff, which is not the driver's safe crossover.
+
+Mute, polarity and measured-EQ switches do not bypass sub/tweeter crossover or
+attenuation stages. Future acoustic measurements should set the actual
+crossover, relative gain, delay, polarity and subwoofer excursion limits.
 
 For verified measurements, `build_panel_eq.py BASE --ex30 EX30_EXPORT
 --ex32 EX32_EXPORT --output PRESET` creates correction by exciter model after
