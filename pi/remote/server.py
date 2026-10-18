@@ -15,7 +15,9 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
@@ -37,6 +39,7 @@ CATALOG = {}
 PLAYLIST_CACHE = {}
 PLAYLIST_CACHE_SECONDS = 60
 MAX_PLAYLIST_TRACKS = 10000
+STREAM_PREBUFFER_BYTES = 1024 * 1024
 logging.getLogger('tidalapi').setLevel(logging.ERROR)
 try:
     CATALOG.update(json.loads((STATE / 'catalog.json').read_text()))
@@ -674,6 +677,39 @@ class Handler(BaseHTTPRequestHandler):
     def valid_host(self):
         return self.headers.get('Host', '').lower() in {f'{BIND}:{PORT}', f'octet:{PORT}', f'octet.tailf55458.ts.net:{PORT}'}
 
+    def stream_audio(self, url):
+        """Buffer the beginning of a progressive stream; preserve byte-range seeks."""
+        headers = {'Accept-Encoding': 'identity'}
+        byte_range = self.headers.get('Range')
+        if byte_range:
+            if not re.fullmatch(r'bytes=(?:[0-9]{1,20}-[0-9]{0,20}|-[0-9]{1,20})', byte_range):
+                raise ValueError('Invalid audio byte range')
+            headers['Range'] = byte_range
+        with urlopen(Request(url, headers=headers), timeout=30) as upstream:
+            if upstream.status not in (200, 206):
+                raise RuntimeError('The audio source returned an unexpected response')
+            # Do not release an almost-empty stream to the decoder. This stays
+            # bounded per connection and does not store audio on disk.
+            first = upstream.read(STREAM_PREBUFFER_BYTES)
+            if not first:
+                raise RuntimeError('The audio source returned no data')
+            self.send_response(upstream.status)
+            for name in ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'):
+                if value := upstream.headers.get(name):
+                    self.send_header(name, value)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
+            try:
+                self.wfile.write(first)
+                while chunk := upstream.read(64 * 1024):
+                    self.wfile.write(chunk)
+            except (OSError, IncompleteRead):
+                # Once headers are sent, never append a JSON error to audio.
+                self.close_connection = True
+
     def do_GET(self):
         if not self.valid_host():
             return self.send({'error': 'Unrecognized host'}, 403)
@@ -714,11 +750,7 @@ class Handler(BaseHTTPRequestHandler):
                 kind, content = stream_url(match.group(1))
                 if kind == 'dash':
                     return self.send(content.encode() if isinstance(content, str) else content, content_type='application/dash+xml')
-                self.send_response(302)
-                self.send_header('Location', content)
-                self.send_header('Cache-Control', 'no-store')
-                self.send_header('Content-Length', '0')
-                self.end_headers()
+                self.stream_audio(content)
                 return
             return self.send({'error': 'Not found'}, 404)
         except (BrokenPipeError, ConnectionResetError):

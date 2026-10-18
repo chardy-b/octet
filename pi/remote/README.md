@@ -143,3 +143,17 @@ audio, credentials or stream URLs. Storage failures fall back to normal loading.
 The saved listening crossover is 3.5 kHz LR4 between outputs 1–4 and 7/8,
 with -12 dB tweeter attenuation. The EX32 measured preset retains its separate
 2.85 kHz low-pass. Fresh installations still start the sub/tweeter pairs muted.
+
+### Stream startup prebuffer
+
+Progressive Tidal audio is served through a bounded proxy instead of an HTTP
+redirect. The endpoint reads the first 1 MiB before releasing audio to MPD, then
+forwards the remaining bytes unchanged in 64 KiB chunks. Byte-range requests and
+206/Content-Range responses are preserved for seeking. Audio is not written to
+disk, and signed CDN URLs remain server-side. This can add a short initial wait
+in exchange for more data being ready when playback starts. DASH manifests keep
+the existing path. A failure after response headers closes the connection instead
+of appending a JSON error to audio.
+
+The accompanying MPD configuration uses a 16 MB decoded buffer and a bounded
+128 MB input cache. The separate browser playlist cache stores metadata only.
