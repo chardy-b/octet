@@ -24,16 +24,17 @@ outputs 1/2. Its complete `dml2_L` export is preserved in
 `ex30-measured-eq.txt`; both outputs use the same nine filters and -3.1 dB
 exported headroom. The previous stereo left/right interpretation was incorrect.
 
-The user identified the preset with a **42.7 Hz high-pass and +3 dB peak at
-298 Hz** as EX32VBDS-4, outputs 3/4. That complete export has not yet been
-located. Outputs 3/4 have no measured EQ or exported headroom until it is
-found. Do not substitute the `dml2_R` export with its 120 Hz high-pass.
-The retired `exciter-panel-eq.yml` preset remains only in earlier Git commits
-and Pi backups. It must not be installed.
+The user selected the complete `dml2_R` export for EX32VBDS-4, outputs 3/4.
+It is preserved in `ex32-measured-eq.txt`; both outputs use identical ten-filter
+EQ (120 Hz high-pass and 2.85 kHz low-pass included) and -2.9 dB exported headroom.
+The earlier 42.7 Hz / 298 Hz recollection did not match a located export and
+is not used. The retired stereo-side `exciter-panel-eq.yml` preset must not be
+installed; model-specific correction is saved in `channel-dsp.yml` instead.
 
-All four outputs retain the same temporary 500 Hz–5 kHz LR4 band and -12 dB
-fixed attenuation. With EX30 EQ assigned, outputs 1/2 also retain its -3.1 dB
-headroom during bypass; outputs 3/4 have no measurement-specific attenuation.
+All four outputs retain the temporary 500 Hz–5 kHz LR4 audition band. Outputs
+1/2 retain their existing -12 dB audition attenuation and -3.1 dB exported
+headroom. At the user's request, outputs 3/4 have **no extra -12 dB attenuation**;
+only their -2.9 dB exported preamp remains, in addition to master volume.
 Polarity controls remain independent. Outputs 5–8 remain silent.
 
 The **DSP** page at `/dsp` enables measured-EQ switches only for outputs with

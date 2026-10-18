@@ -1,3 +1,5 @@
+from pathlib import Path
+import yaml
 import unittest
 from build_panel_eq import build, parse_export
 
@@ -27,6 +29,22 @@ class PanelEQ(unittest.TestCase):
         self.assertFalse(any(name.startswith('exciter_ex32_') for name in config['filters']))
         with self.assertRaises(ValueError):
             build(dict(filters={}, pipeline=[]))
+
+    def test_saved_model_pairs_have_matching_eq_and_requested_gain(self):
+        from server import eq_block
+        config = yaml.safe_load(Path(__file__).with_name('channel-dsp.yml').read_text(encoding='utf-8'))
+        for first, second, highpass, preamp, extra in ((1, 2, 110, -3.1, True), (3, 4, 120, -2.9, False)):
+            self.assertEqual(eq_block(config, first)['names'], eq_block(config, second)['names'])
+            for output in (first, second):
+                eq = [config['filters'][name] for name in eq_block(config, output)['names']]
+                self.assertEqual(eq[0]['parameters']['freq'], highpass)
+                active = [name for stage in config['pipeline'] if stage.get('type') == 'Filter'
+                          and output - 1 in stage.get('channels', []) for name in stage['names']]
+                self.assertEqual('fixed_attenuation' in active, extra)
+                headroom = [config['filters'][name]['parameters']['gain'] for name in active if name.endswith('_headroom')]
+                self.assertEqual(headroom, [preamp])
+                self.assertIn('audition_hp', active)
+                self.assertIn('audition_lp', active)
 
     def test_unknown_or_disabled_exports_are_rejected(self):
         for line in ('Filter 1: OFF PK Fc 1000 Hz Gain +3.0 dB Q 1',

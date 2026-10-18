@@ -1,7 +1,8 @@
-# EX30 110 Hz preset confirmed for outputs 1/2. EX32 preset not yet located.
+# User-assigned model EQ: dml2_L on 1/2, dml2_R on 3/4.
 title: Measured exciter EQ with independent output controls
-description: Verified EQ is assigned by exciter model; each measured stereo pair shares
-  filters and headroom. Unmeasured outputs retain audition filters only.
+description: EX30 dml2_L on 1/2; EX32 dml2_R on 3/4. Matching EQ/headroom within each
+  stereo pair. No extra attenuation on 3/4; existing -12 dB audition attenuation on
+  1/2.
 devices:
   samplerate: 48000
   chunksize: 1024
@@ -151,6 +152,81 @@ filters:
       gain: 0.0
       inverted: false
       mute: false
+  exciter_ex32_headroom:
+    type: Gain
+    parameters:
+      gain: -2.9
+      inverted: false
+      mute: false
+    description: "dml2_R \xB7 EX32VBDS-4"
+  exciter_ex32_1:
+    type: Biquad
+    parameters:
+      type: Highpass
+      freq: 120.0
+      q: 0.71
+  exciter_ex32_2:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 197.0
+      q: 3.0
+      gain: 3.0
+  exciter_ex32_3:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 254.0
+      q: 3.0
+      gain: -5.1
+  exciter_ex32_4:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 338.0
+      q: 1.71
+      gain: -7.4
+  exciter_ex32_5:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 623.0
+      q: 3.0
+      gain: 3.0
+  exciter_ex32_6:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 888.0
+      q: 3.0
+      gain: -8.0
+  exciter_ex32_7:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1063.0
+      q: 3.0
+      gain: 3.0
+  exciter_ex32_8:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1325.0
+      q: 0.64
+      gain: 3.0
+  exciter_ex32_9:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 2478.0
+      q: 1.47
+      gain: 1.3
+  exciter_ex32_10:
+    type: Biquad
+    parameters:
+      type: Lowpass
+      freq: 2850.0
+      q: 0.71
 pipeline:
 - type: Mixer
   name: exciter_pairs
@@ -163,6 +239,11 @@ pipeline:
   names:
   - audition_hp
   - audition_lp
+- type: Filter
+  channels:
+  - 0
+  - 1
+  names:
   - fixed_attenuation
 - type: Filter
   channels:
@@ -224,3 +305,41 @@ pipeline:
   names:
   - output_4_polarity
   description: Output 4 polarity
+- type: Filter
+  channels:
+  - 2
+  - 3
+  names:
+  - exciter_ex32_headroom
+- type: Filter
+  channels:
+  - 2
+  names:
+  - exciter_ex32_1
+  - exciter_ex32_2
+  - exciter_ex32_3
+  - exciter_ex32_4
+  - exciter_ex32_5
+  - exciter_ex32_6
+  - exciter_ex32_7
+  - exciter_ex32_8
+  - exciter_ex32_9
+  - exciter_ex32_10
+  description: Output 3 measured EQ
+  bypassed: false
+- type: Filter
+  channels:
+  - 3
+  names:
+  - exciter_ex32_1
+  - exciter_ex32_2
+  - exciter_ex32_3
+  - exciter_ex32_4
+  - exciter_ex32_5
+  - exciter_ex32_6
+  - exciter_ex32_7
+  - exciter_ex32_8
+  - exciter_ex32_9
+  - exciter_ex32_10
+  description: Output 4 measured EQ
+  bypassed: false
