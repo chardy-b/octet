@@ -2,6 +2,14 @@
 const $=id=>document.getElementById(id);
 let state={}, volumeBusy=false, requestSerial=0, albumTracks=[];
 let activePlaylist=null,playlistRows=[],playlistOffset=0,playlistHasMore=false,playlistsBusy=false,playlistPlayBusy=false,playlistLoadSerial=0;
+const LIBRARY_CACHE_KEY='octet.tidal.library.v1',LIBRARY_VIEW_KEY='octet.tidal.view.v1',CACHE_FRESH_MS=5*60*1000;
+function stored(key){try{return JSON.parse(localStorage.getItem(key));}catch{return null;}}
+function persist(key,value){try{localStorage.setItem(key,JSON.stringify(value));}catch{/* Browsing still works when storage is unavailable or full. */}}
+let libraryCache=stored(LIBRARY_CACHE_KEY);
+if(!libraryCache||!Array.isArray(libraryCache.playlists)||typeof libraryCache.contents!=='object'||!libraryCache.contents)libraryCache={playlists:[],updatedAt:0,contents:{}};
+function saveLibraryCache(){persist(LIBRARY_CACHE_KEY,libraryCache);}
+function rememberLibrary(view,id){persist(LIBRARY_VIEW_KEY,{view,id});}
+function fresh(entry){return entry&&Number.isFinite(entry.updatedAt)&&Date.now()-entry.updatedAt>=0&&Date.now()-entry.updatedAt<CACHE_FRESH_MS;}
 const time=seconds=>{const n=Math.max(0,Math.floor(Number(seconds)||0));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0')};
 function notice(message='',error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error)}
 async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||'Could not complete that action');return result}
@@ -12,6 +20,8 @@ function renderTracks(rows,playlistIdentifier=null){const root=$('tracks');root.
 async function loadTracks(query=null){const serial=++requestSerial;albumTracks=[];$('play-album').hidden=true;notice(query?'Searching Tidal…':'Loading favorites…');libraryView(query===null?'favorites':'search');try{const data=await api(query===null?'/api/favorites':'/api/search?q='+encodeURIComponent(query));if(serial!==requestSerial)return;renderTracks(data.tracks);const albums=data.albums||[];const fragment=document.createDocumentFragment();for(const album of albums){const div=document.createElement('div');div.className='track';const icon=document.createElement('div');icon.className='small-art';icon.textContent='◉';icon.style.display='grid';icon.style.placeItems='center';const info=document.createElement('div');info.className='track-info';const title=document.createElement('button');title.className='track-title';title.textContent=album.title;title.onclick=()=>loadAlbum(album.id,album.title);const detail=document.createElement('p');detail.textContent=album.artist+' · Album · '+album.tracks+' tracks';info.append(title,detail);const open=document.createElement('button');open.className='add';open.textContent='›';open.setAttribute('aria-label','Open album '+album.title);open.onclick=()=>loadAlbum(album.id,album.title);div.append(icon,info,open);fragment.append(div)}if(albums.length&&!data.tracks.length)$('tracks').replaceChildren(fragment);else $('tracks').prepend(fragment);$('result-label').textContent=query===null?data.tracks.length+' tracks':(data.tracks.length+albums.length)+' results';notice()}catch(e){if(serial!==requestSerial)return;renderTracks([]);notice(e.message,true)}}
 async function loadAlbum(id,title){const serial=++requestSerial;libraryView('album');albumTracks=[];$('play-album').hidden=true;notice('Loading '+title+'…');try{const data=await api('/api/album?id='+encodeURIComponent(id));if(serial!==requestSerial)return;albumTracks=data.tracks;renderTracks(albumTracks);$('play-album').hidden=!albumTracks.length;$('result-label').textContent=albumTracks.length+' tracks';notice(title)}catch(e){notice(e.message,true)}}
 function libraryView(view){
+  if(view==='favorites'||view==='playlists')rememberLibrary(view);
+  $('refresh-library').hidden=view!=='playlists'&&view!=='playlist';
   for(const [id,selected] of [['favorites',view==='favorites'],['playlists',view==='playlists'||view==='playlist']]){
     $(id).classList.toggle('active',selected);$(id).setAttribute('aria-pressed',String(selected));
   }
@@ -26,7 +36,7 @@ function playlistBusy(value){
 function renderPlaylists(){
   const root=$('tracks');root.replaceChildren();
   if(!playlistRows.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='No saved playlists found in your Tidal account.';root.append(empty);}
-  for(const playlist of playlistRows){
+  for(const playlist of playlistRows.slice().reverse()){
     const row=document.createElement('div');row.className='track playlist-row';
     const art=playlist.cover?document.createElement('img'):document.createElement('div');art.className='small-art';
     if(playlist.cover){art.src=playlist.cover;art.alt='';art.loading='lazy';}else art.textContent='≡';
@@ -38,37 +48,56 @@ function renderPlaylists(){
   }
   $('result-label').textContent=playlistRows.length+' playlists';$('more-playlists').hidden=!playlistHasMore;$('more-playlists').disabled=playlistsBusy;
 }
-async function loadPlaylists(reset=true){
+async function loadPlaylists(reset=true,force=false){
   if(playlistsBusy&&!reset)return;
   const serial=++requestSerial;playlistLoadSerial=serial;libraryView('playlists');playlistsBusy=true;
-  if(reset){playlistRows=[];playlistOffset=0;playlistHasMore=false;$('tracks').replaceChildren();}
-  $('more-playlists').disabled=true;notice('Loading Tidal playlists…');
+  playlistRows=libraryCache.playlists.slice();playlistHasMore=false;renderPlaylists();
+  if(!force&&fresh(libraryCache)){playlistsBusy=false;notice();return;}
+  $('more-playlists').disabled=true;notice(playlistRows.length?'Showing saved playlists · checking for updates…':'Loading Tidal playlists…');
   try{
-    const data=await api('/api/playlists?offset='+playlistOffset);if(serial!==requestSerial)return;
-    const known=new Set(playlistRows.map(row=>row.id));for(const row of data.playlists){if(!known.has(row.id)){playlistRows.push(row);known.add(row.id);}}
-    playlistOffset=data.next_offset;playlistHasMore=data.has_more;renderPlaylists();notice();
-  }catch(error){if(serial===requestSerial)notice(error.message,true);}
+    const rows=[],known=new Set();let offset=0;
+    while(true){
+      const data=await api('/api/playlists?offset='+offset);
+      for(const row of data.playlists){if(!known.has(row.id)){rows.push(row);known.add(row.id);}}
+      if(!data.has_more)break;
+      if(!Number.isInteger(data.next_offset)||data.next_offset<=offset)throw Error('Could not load the complete playlist library');
+      offset=data.next_offset;
+    }
+    libraryCache.playlists=rows;libraryCache.updatedAt=Date.now();saveLibraryCache();
+    if(serial!==requestSerial)return;
+    playlistRows=rows;playlistHasMore=false;renderPlaylists();notice();
+  }catch(error){if(serial===requestSerial)notice((playlistRows.length?'Showing saved playlists. ':'')+error.message,true);}
   finally{if(serial===playlistLoadSerial)playlistsBusy=false;if(serial===requestSerial)$('more-playlists').disabled=false;}
 }
-async function loadPlaylist(id){
+function renderPlaylist(data,id){
+  activePlaylist=data;$('playlist-title').textContent=data.playlist.title;
+  $('playlist-meta').textContent=data.tracks.length+' playable tracks'+(data.unavailable?' · '+data.unavailable+' unavailable omitted':'')+' · continues in playlist order';
+  $('play-playlist').dataset.empty=String(!data.tracks.length);$('play-playlist').disabled=playlistPlayBusy||!data.tracks.length;
+  $('result-label').textContent=data.tracks.length+' tracks';renderTracks(data.tracks,id);
+}
+async function loadPlaylist(id,force=false){
   const serial=++requestSerial;libraryView('playlist');activePlaylist=null;
+  rememberLibrary('playlist',id);
+  const cached=libraryCache.contents[id];
   $('playlist-title').textContent='Loading playlist…';$('playlist-meta').textContent='';$('play-playlist').disabled=true;$('play-playlist').dataset.empty='true';$('tracks').replaceChildren();notice('Loading the complete playlist…');
+  if(cached&&cached.data?.playlist?.id===id&&Array.isArray(cached.data.tracks)){renderPlaylist(cached.data,id);notice('Showing saved playlist · checking for updates…');if(!force&&fresh(cached)){notice();return;}}
   try{
     const data=await api('/api/playlist?id='+encodeURIComponent(id)+'&refresh=1');if(serial!==requestSerial)return;
-    activePlaylist=data;$('playlist-title').textContent=data.playlist.title;
-    $('playlist-meta').textContent=data.tracks.length+' playable tracks'+(data.unavailable?' · '+data.unavailable+' unavailable omitted':'')+' · continues in playlist order';
-    $('play-playlist').dataset.empty=String(!data.tracks.length);$('play-playlist').disabled=playlistPlayBusy||!data.tracks.length;
-    $('result-label').textContent=data.tracks.length+' tracks';renderTracks(data.tracks,id);notice();
-  }catch(error){if(serial===requestSerial){$('playlist-title').textContent='Playlist unavailable';notice(error.message,true);}}
+    libraryCache.contents[id]={updatedAt:Date.now(),data};
+    for(const [oldId] of Object.entries(libraryCache.contents).sort((a,b)=>b[1].updatedAt-a[1].updatedAt).slice(12))delete libraryCache.contents[oldId];
+    saveLibraryCache();renderPlaylist(data,id);notice();
+  }catch(error){if(serial===requestSerial){if(!activePlaylist)$('playlist-title').textContent='Playlist unavailable';notice((activePlaylist?'Showing saved playlist. ':'')+error.message,true);}}
 }
 async function playPlaylist(id,position=0,track=null){
   if(playlistPlayBusy)return;playlistBusy(true);notice('Queuing the complete playlist…');
   try{
     const body={id,position};if(track!==null)body.track_id=track;
     render(await api('/api/control/play-playlist',body));notice('Playing in playlist order. The following tracks play automatically.');
+    rememberLibrary('playlist',id);
   }catch(error){notice(error.message,true);}finally{playlistBusy(false);}
 }
 $('playlists').onclick=()=>loadPlaylists();
+$('refresh-library').onclick=()=>activePlaylist?loadPlaylist(activePlaylist.playlist.id,true):loadPlaylists(true,true);
 $('more-playlists').onclick=()=>loadPlaylists(false);
 $('playlist-back').onclick=()=>{if(playlistRows.length){++requestSerial;libraryView('playlists');renderPlaylists();notice();}else loadPlaylists();};
 $('play-playlist').onclick=()=>{if(activePlaylist)playPlaylist(activePlaylist.playlist.id);};
@@ -82,6 +111,11 @@ $('volume').oninput=()=>{volumeBusy=true;$('volume-value').textContent=$('volume
 $('volume').onchange=async()=>{const value=Number($('volume').value);await control('volume',{db:value});volumeBusy=false;refresh()};
 $('seek').onchange=()=>control('seek',{seconds:Number($('seek').value)});
 async function refresh(){try{render(await api('/api/status'))}catch(e){$('connection').textContent='● Reconnecting…';$('connection').classList.remove('online')}}
-refresh();loadTracks();setInterval(refresh,2500);
+refresh();
+const remembered=stored(LIBRARY_VIEW_KEY);
+if(remembered?.view==='playlist'&&typeof remembered.id==='string')loadPlaylist(remembered.id);
+else if(remembered?.view==='playlists')loadPlaylists();
+else loadTracks();
+setInterval(refresh,2500);
 function renderLevelControls(next){$('volume').max=next.max_db;$('unlock-level').textContent=next.level_unlocked?'Lock standard range':'Unlock higher levels';$('unlock-level').setAttribute('aria-pressed',String(next.level_unlocked));$('level-range-note').textContent=next.level_unlocked?'Higher range unlocked: up to 0 dB. Unlocking does not change the volume.':'Standard range: −60 to −18 dB.'}
 $('unlock-level').onclick=async()=>{try{render(await api('/api/control/unlock',{enabled:!state.level_unlocked}));notice(state.level_unlocked?'Higher levels unlocked. The listening level has not changed.':'Standard listening range restored.')}catch(error){notice(error.message,true)}};

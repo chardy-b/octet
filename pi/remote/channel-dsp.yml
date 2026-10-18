@@ -66,7 +66,7 @@ filters:
     type: BiquadCombo
     parameters:
       type: LinkwitzRileyLowpass
-      freq: 5000
+      freq: 3500
       order: 4
   exciter_ex30_headroom:
     type: Gain
@@ -258,7 +258,7 @@ filters:
     type: BiquadCombo
     parameters:
       type: LinkwitzRileyHighpass
-      freq: 5000
+      freq: 3500
       order: 4
   tweeter_lp:
     type: BiquadCombo
@@ -269,7 +269,7 @@ filters:
   tweeter_attenuation:
     type: Gain
     parameters:
-      gain: -36
+      gain: -12
       inverted: false
       mute: false
   output_5_polarity:

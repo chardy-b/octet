@@ -1,0 +1,20 @@
+[Unit]
+Description=Octet remote measurement and Auto Tune
+After=sound.target network.target
+
+[Service]
+Type=simple
+User=octet
+Group=audio
+WorkingDirectory=/opt/octet/measure
+Environment=OCTET_DATA=/var/lib/octet/measurements
+Environment=OCTET_HOME=/var/lib/octet/config
+StateDirectory=octet
+ExecStart=/opt/octet/.venv/bin/octet-measure ui --no-browser --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

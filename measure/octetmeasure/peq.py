@@ -23,9 +23,8 @@ class Peq:
     q: float
 
 
-def biquad_db(f, fs: float, p: Peq) -> np.ndarray:
-    """Magnitude response of an RBJ-cookbook biquad in dB."""
-    f = np.asarray(f, dtype=float)
+def biquad_coeffs(fs: float, p: Peq):
+    """RBJ-cookbook coefficients (b, a), normalised so that a[0] == 1."""
     a = 10 ** (p.gain_db / 40)
     w0 = 2 * np.pi * p.fc / fs
     cw, sw = np.cos(w0), np.sin(w0)
@@ -49,6 +48,24 @@ def biquad_db(f, fs: float, p: Peq) -> np.ndarray:
         d = [1 + al, -2 * cw, 1 - al]
     else:
         raise ValueError(p.kind)
+    b = np.asarray(b, dtype=float)
+    d = np.asarray(d, dtype=float)
+    return b / d[0], d / d[0]
+
+
+def sos_for(filters, fs: float) -> np.ndarray:
+    """Second-order sections for scipy.signal.sosfilt: the filters applied in series."""
+    rows = []
+    for p in filters:
+        b, d = biquad_coeffs(fs, p)
+        rows.append(np.concatenate([b, d]))
+    return np.array(rows)
+
+
+def biquad_db(f, fs: float, p: Peq) -> np.ndarray:
+    """Magnitude response of an RBJ-cookbook biquad in dB."""
+    f = np.asarray(f, dtype=float)
+    b, d = biquad_coeffs(fs, p)
     z = np.exp(-1j * 2 * np.pi * f / fs)
     h = (b[0] + b[1] * z + b[2] * z ** 2) / (d[0] + d[1] * z + d[2] * z ** 2)
     return 20 * np.log10(np.abs(h))
@@ -100,7 +117,7 @@ def rolloff_freq(freq, db, side: str = "low", drop_db: float = 10.0, ref_band=(3
 def fit_peq(freq, measured_db, target_db, fs: float = 48000.0, n_bands: int = 8,
             f_min: float = 100.0, f_max: float = 16000.0, max_boost: float = 3.0, max_cut: float = 6.0,
             max_q: float = 3.0, min_q: float = 0.5, ref_band=(300.0, 3000.0), smooth: float = 3.0,
-            fixed=()):
+            fixed=(), weights=None):
     """Return (filters, info). measured_db and target_db are dB arrays on `freq`; the target is shifted
     to the same average level as the measurement over ref_band, so only the shape is corrected.
     Smoothing and the Q ceiling keep the fit to broad corrections: narrow peaks and dips on a panel shift with
@@ -110,10 +127,19 @@ def fit_peq(freq, measured_db, target_db, fs: float = 48000.0, n_bands: int = 8,
     f = freq[sel]
     meas = smooth_log(f, np.asarray(measured_db)[sel], smooth)
     ref = (f >= ref_band[0]) & (f <= ref_band[1])
+    if not np.any(ref):
+        ref = np.ones(len(f), dtype=bool)
+    if len(f) < 4:
+        raise ValueError('Not enough response points in the requested EQ band.')
     tgt = np.asarray(target_db)[sel]
     fixed_curve = eq_db(f, fs, list(fixed)) if fixed else np.zeros_like(f)   # e.g. a high-pass chosen up front
     err = (tgt - tgt[ref].mean()) - (meas - meas[ref].mean()) - fixed_curve   # what the peaking filters still have to add
     w = np.clip(np.minimum(np.log2(f / f_min) + 0.5, np.log2(f_max / f) + 0.5), 0.3, 1.0)  # soften the edges
+    if weights is not None:
+        weights = np.asarray(weights,dtype=float)
+        if weights.shape != freq.shape or not np.isfinite(weights).all() or np.any(weights <= 0):
+            raise ValueError('EQ weights must be finite, positive and match the frequency grid.')
+        w *= weights[sel]
     rms0 = float(np.sqrt(np.mean((w * err) ** 2)))
 
     def greedy():
@@ -123,6 +149,8 @@ def fit_peq(freq, measured_db, target_db, fs: float = 48000.0, n_bands: int = 8,
             free = np.ones_like(f)
             for q_ in filt:
                 free[np.abs(np.log2(f / q_.fc)) < 1 / 3] = 0.0
+            allowed = ((r < 0) & (max_cut > 0)) | ((r > 0) & (max_boost > 0))
+            free *= allowed
             i = int(np.argmax(np.abs(r) * w * free))
             if free[i] == 0.0:
                 break

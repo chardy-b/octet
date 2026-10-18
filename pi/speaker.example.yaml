@@ -1,0 +1,138 @@
+# Example limits only: verify the hardware before setting hardware_confirmed.
+version: 1
+hardware_confirmed: false
+fs: 48000
+duration: 2
+gap_seconds: 1
+input_device: ''
+output_device: ''
+input_channels: 2
+mic_channel: 0
+calibration: ''
+max_boost_db: 3
+max_cut_db: 9
+peq_bands: 4
+quiesce_services:
+- upmpdcli
+- mpd
+clip_db: -3
+jump_db: 9
+min_snr_db: 15
+room_positions: 5
+gate_ms: 8
+target_bass_db: 4
+target_tilt: -0.4
+verification_db: 4
+max_clock_ppm: 300
+drivers:
+- id: L_sub
+  side: L
+  role: sub
+  output: 5
+  model: Dayton 12-inch Reference kit, sealed
+  min_hz: 30
+  max_hz: 400
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: sub
+- id: L_a
+  side: L
+  role: a
+  output: 1
+  model: Dayton EX30HESF2-4
+  min_hz: 150
+  max_hz: 12000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: a
+- id: L_b
+  side: L
+  role: b
+  output: 3
+  model: Dayton EX32VBDS-4
+  min_hz: 150
+  max_hz: 12000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: b
+- id: L_tweeter
+  side: L
+  role: tweeter
+  output: 7
+  model: Dayton PRO Neo-8 / H6512
+  min_hz: 2500
+  max_hz: 20000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: tweeter
+- id: R_sub
+  side: R
+  role: sub
+  output: 6
+  model: Dayton 12-inch Reference kit, sealed
+  min_hz: 30
+  max_hz: 400
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: sub
+- id: R_a
+  side: R
+  role: a
+  output: 2
+  model: Dayton EX30HESF2-4
+  min_hz: 150
+  max_hz: 12000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: a
+- id: R_b
+  side: R
+  role: b
+  output: 4
+  model: Dayton EX32VBDS-4
+  min_hz: 150
+  max_hz: 12000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: b
+- id: R_tweeter
+  side: R
+  role: tweeter
+  output: 8
+  model: Dayton PRO Neo-8 / H6512
+  min_hz: 2500
+  max_hz: 20000
+  order: 4
+  start_db: -48
+  max_db: -24
+  step_db: 3
+  step_seconds: 1
+  amp_group: tweeter
+camilla:
+  binary: /opt/camilladsp/camilladsp
+  service: camilladsp
+  statefile: /opt/camilladsp/statefile.yml
+  capture: hw:Loopback,1,0
+  playback: hw:sndrpihifiberry,0
+  loopback_output: Loopback

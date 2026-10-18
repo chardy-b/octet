@@ -1,14 +1,29 @@
 """Measurement storage: one folder per measurement with the raw recording and metadata."""
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 from scipy.io import wavfile
 
+from . import paths
 from .sweep import Sweep, make_sweep
 
-ROOT = Path(__file__).resolve().parent.parent / "measurements"
+ROOT = paths.data_dir()
+
+
+_BAD_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def check_name(name: str) -> str:
+    """A measurement name that is safe as a folder name on Windows, macOS and Linux. Returns it trimmed."""
+    n = (name or "").strip()
+    if not n:
+        raise ValueError("Give the measurement a name.")
+    if len(n) > 80 or _BAD_NAME.search(n) or n.startswith((".", "_")) or n.endswith("."):
+        raise ValueError('Use up to 80 characters, without / \\ : * ? " < > |, and do not start with a dot or underscore.')
+    return n
 
 
 def folder(name: str) -> Path:

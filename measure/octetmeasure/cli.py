@@ -10,6 +10,7 @@
   python -m octetmeasure export NAME [NAME ...] --cal emm6.txt   # files for REW import
   python -m octetmeasure peq NAME [NAME ...] --cal emm6.txt     # fit up to 10 PEQ filters
   python -m octetmeasure clock --play-dlna wiim --save            # measure the WiiM clock offset once
+  python -m octetmeasure ui [--demo]                              # the browser app
   python -m octetmeasure list
 """
 import argparse
@@ -17,14 +18,14 @@ from pathlib import Path
 
 import numpy as np
 
-from . import analysis, capture, clock, peq as peqmod, peq_workflow, rew_export, store, upnp
+from . import __version__, analysis, capture, clock, paths, peq as peqmod, peq_workflow, rew_export, store, upnp
 from .cal import load_cal
-from .plotting import plot_peq, plot_result
 from .sweep import make_sweep, padded_playback, stereo_playback
 from .wavio import write_pcm_wav
 
-DEFAULT_IN = "Input 1/2"
-DEFAULT_OUT = "Output 1/2"
+# empty means the system default device; set "in_device" / "out_device" in ~/.octetmeasure/config.json to change it
+DEFAULT_IN = paths.load_config().get("in_device", "")
+DEFAULT_OUT = paths.load_config().get("out_device", "")
 
 
 def _sweep_args(p):
@@ -41,7 +42,7 @@ def _make(a):
 
 def cmd_devices(a):
     for d in capture.list_devices():
-        if a.all or d["api"] == capture.HOSTAPI:
+        if a.all or d["api"] == capture.preferred_api():
             print(f"{d['index']:3d}  {d['api']:<18} in={d['inputs']:<2} out={d['outputs']:<2} {d['name']}")
 
 
@@ -117,6 +118,17 @@ def cmd_record(a):
         _analyze(a.name, cal_path=a.cal, gate_ms=a.gate_ms, smooth=a.smooth, ref_ch=None, mic_ch=None)
 
 
+def _plot(fn: str, *args) -> bool:
+    """Draw a PNG with matplotlib if it is installed. The browser app does not need it."""
+    try:
+        from . import plotting
+    except ImportError:
+        print("(Plots need matplotlib: pip install matplotlib)")
+        return False
+    getattr(plotting, fn)(*args)
+    return True
+
+
 def _clock_arg(value, meta=None) -> float:
     """--clock-ppm: 'stored' (the value measured with the `clock` command, for the player that made the recording),
     'off', or a number."""
@@ -139,7 +151,7 @@ def _analyze(name, cal_path, gate_ms, smooth, ref_ch, mic_ch, clock_ppm="stored"
     d = store.folder(name)
     store.save_response_csv(d / "response.csv", res.response)
     title = f"{name}  (gate {gate_ms} ms)" if gate_ms else name
-    plot_result(res, d / "response.png", title)
+    drew = _plot("plot_result", res, d / "response.png", title)
     print(f"Arrival {res.peak / res.fs * 1000:.2f} ms into the recording"
           + (f", acoustic delay vs reference {res.delay_ms:.3f} ms ({res.delay_ms * 34.3:.1f} cm)"
              if res.delay_ms is not None else ", no timing reference"))
@@ -157,7 +169,7 @@ def _analyze(name, cal_path, gate_ms, smooth, ref_ch, mic_ch, clock_ppm="stored"
         print("WARNING: recording clipped - lower the input gain or sweep level and repeat.")
     print("Calibration: " + (f"{cal_path}" if cal else "none applied (high frequencies will be uncorrected)"))
     print(f"Player clock offset corrected: {ppm:+.1f} ppm" + ("" if ppm else "  (none measured: run the `clock` command)"))
-    print(f"Wrote {d / 'response.csv'}\n      {d / 'response.png'}")
+    print(f"Wrote {d / 'response.csv'}" + (f"\n      {d / 'response.png'}" if drew else ""))
 
 
 def cmd_analyze(a):
@@ -190,7 +202,7 @@ def cmd_peq(a):
     out = store.folder(a.names[0]) / "peq"
     out.mkdir(parents=True, exist_ok=True)
     (out / "peq_filters.txt").write_text(peqmod.apo_text(allf, pre) + "\n", encoding="utf-8")
-    plot_peq(info, allf, 48000.0, out / "peq.png", f"PEQ fit: {', '.join(a.names)}  (target: Harman-style)")
+    drew = _plot("plot_peq", info, allf, 48000.0, out / "peq.png", f"PEQ fit: {', '.join(a.names)}  (target: Harman-style)")
     print(f"Fitted {len(r['peaking'])} peaking filters{' + high-pass' if r['hp'] else ''}{' + low-pass' if r['lp'] else ''} "
           f"from {len(a.names)} measurement(s); error {info['rms_before']:.1f} -> {info['rms_after']:.1f} dB rms "
           f"between {r['f_lo']:g} Hz and {r['f_hi']:g} Hz")
@@ -200,7 +212,8 @@ def cmd_peq(a):
         print(f"{i:>2} {p.kind:<4} {p.fc:>6g}  {gain:>7}  {p.q:>6g}")
     print(f"Largest boost in the EQ curve: {info['max_boost_db']:+.1f} dB. Suggested preamp: {pre:+.1f} dB (if the app has one).")
     print(f"Wrote {out / 'peq_filters.txt'}")
-    print(f"      {out / 'peq.png'}")
+    if drew:
+        print(f"      {out / 'peq.png'}")
 
 
 def cmd_clock(a):
@@ -245,6 +258,14 @@ def cmd_clock(a):
         print("Not stored. Repeat with --save to use it.")
 
 
+def cmd_ui(a):
+    try:
+        from .ui import server
+    except ImportError as e:
+        raise SystemExit(f"The web interface needs extra packages ({e.name}). Install them with: pip install fastapi uvicorn")
+    server.serve(host=a.host, port=a.port, demo=a.demo, open_browser=not a.no_browser)
+
+
 def cmd_list(a):
     for n in store.list_measurements():
         print(n)
@@ -253,7 +274,10 @@ def cmd_list(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="octetmeasure", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--version", action="version", version=f"octet-measure {__version__}")
+    sub = ap.add_subparsers(dest="cmd")
+    from .autotune.cli import register
+    register(sub)
 
     p = sub.add_parser("devices", help="list audio devices")
     p.add_argument("--all", action="store_true", help="include non-WASAPI devices")
@@ -354,6 +378,13 @@ def main(argv=None):
     p.add_argument("--in-device", default=DEFAULT_IN)
     p.set_defaults(fn=cmd_clock)
 
+    p = sub.add_parser("ui", help="open the app in your browser (recordings, calibration, new recordings, EQ)")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to reach the app from other devices on your network")
+    p.add_argument("--demo", action="store_true", help="simulated microphone and speakers, for trying the app without hardware")
+    p.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    p.set_defaults(fn=cmd_ui)
+
     p = sub.add_parser("renderers", help="find UPnP/DLNA players on the network (WiiM etc.)")
     p.add_argument("--timeout", type=float, default=3.0)
     p.set_defaults(fn=cmd_renderers)
@@ -362,4 +393,6 @@ def main(argv=None):
     p.set_defaults(fn=cmd_list)
 
     a = ap.parse_args(argv)
+    if a.cmd is None:                                  # no command: open the app
+        a = ap.parse_args(["ui"])
     a.fn(a)

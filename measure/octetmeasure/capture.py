@@ -1,12 +1,32 @@
-"""Audio I/O via sounddevice (WASAPI on Windows)."""
+"""Audio I/O via sounddevice (PortAudio): WASAPI on Windows, Core Audio on macOS, ALSA on Linux."""
 import subprocess
+import sys
 import threading
 import time
 
 import numpy as np
-import sounddevice as sd
 
-HOSTAPI = "Windows WASAPI"
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as _err:            # PortAudio is missing (common on a fresh Linux install)
+    _reason = str(_err)                            # the exception name itself is deleted when this block ends
+    _hint = {"linux": "Install it with: sudo apt install libportaudio2 (or your distribution's equivalent).",
+             "darwin": "Reinstall with: pip install --force-reinstall sounddevice."}.get(sys.platform, "Reinstall sounddevice.")
+
+    class _NoAudio:
+        """Stands in for sounddevice so that everything else, including demo mode, still works."""
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Audio support is not available ({_reason}). {_hint}")
+
+    sd = _NoAudio()
+
+# Host APIs in order of preference on each system.
+PREFERRED_APIS = {
+    "win32": ["Windows WASAPI", "Windows DirectSound", "MME"],
+    "darwin": ["Core Audio"],
+    "linux": ["ALSA", "JACK Audio Connection Kit", "PulseAudio", "OSS"],
+}
 
 
 def list_devices() -> list[dict]:
@@ -18,9 +38,39 @@ def list_devices() -> list[dict]:
     return out
 
 
-def find_device(name: str, kind: str, api: str = HOSTAPI) -> int:
-    """Index of the device whose name contains `name` (case-insensitive), on the given host API."""
+def preferred_api() -> str:
+    """The host API this system should use, or the first one PortAudio reports."""
+    available = [h["name"] for h in sd.query_hostapis()]
+    for name in PREFERRED_APIS.get(sys.platform if sys.platform in PREFERRED_APIS else "linux", []):
+        if name in available:
+            return name
+    return available[0] if available else ""
+
+
+def default_device(kind: str) -> int | None:
+    """Index of the system's default input or output device, or None."""
+    idx = sd.default.device[0 if kind == "input" else 1]
     key = "inputs" if kind == "input" else "outputs"
+    devs = list_devices()
+    if idx is not None and 0 <= idx < len(devs) and devs[idx][key] > 0:
+        return int(idx)
+    api = preferred_api()
+    for d in devs:
+        if d[key] > 0 and d["api"] == api:
+            return d["index"]
+    return None
+
+
+def find_device(name: str, kind: str, api: str | None = None) -> int:
+    """Index of the device whose name contains `name` (case-insensitive) on the preferred host API.
+    An empty name means the system default."""
+    key = "inputs" if kind == "input" else "outputs"
+    if not name:
+        idx = default_device(kind)
+        if idx is None:
+            raise SystemExit(f"No {kind} device found. Run `devices` to list them.")
+        return idx
+    api = api or preferred_api()
     hits = [d for d in list_devices()
             if name.lower() in d["name"].lower() and d["api"] == api and d[key] > 0]
     if not hits:
@@ -29,8 +79,10 @@ def find_device(name: str, kind: str, api: str = HOSTAPI) -> int:
 
 
 def _settings(device: int):
+    """WASAPI shared mode needs auto_convert to accept a rate other than the device's current one."""
     api = sd.query_hostapis(sd.query_devices(device)["hostapi"])["name"]
-    return sd.WasapiSettings(auto_convert=True) if api == HOSTAPI else None
+    wasapi = getattr(sd, "WasapiSettings", None)
+    return wasapi(auto_convert=True) if (wasapi and api == "Windows WASAPI") else None
 
 
 def record(in_dev: int, seconds: float, fs: int, channels: int = 2,

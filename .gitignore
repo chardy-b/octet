@@ -3,5 +3,13 @@ __pycache__/
 .pytest_cache/
 *.pyc
 
+# build output
+dist/
+build/
+*.egg-info/
+
 # raw recordings and results (100+ MB); the code regenerates everything from them
 measure/measurements/
+
+# saved Auto Tune runs; profile template is tracked under pi/
+measure/autotune/

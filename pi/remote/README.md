@@ -8,7 +8,7 @@ and the existing `tidalapi` package. The installer also uses the existing PyYAML
 
 The initial `exciter-audition.yml` preset routes left/right to outputs 1/2
 (EX30HESF2-4) and 3/4 (EX32VBDS-4). Outputs 5–8 receive digital silence. Both
-exciter types play a temporary 500 Hz–5 kHz band with LR4 filters. There is no
+exciter types play a temporary 500 Hz–3.5 kHz band with LR4 filters. There is no
 fixed audition attenuation. The standard main-fader range is -60…-18 dB. An explicit **Unlock
 higher levels** button extends it to 0 dB, without changing the current volume.
 Relocking clamps a higher current setting to -18 dB. These are provisional
@@ -55,7 +55,7 @@ The earlier 42.7 Hz / 298 Hz recollection did not match a located export and
 is not used. The retired stereo-side `exciter-panel-eq.yml` preset must not be
 installed; model-specific correction is saved in `channel-dsp.yml` instead.
 
-All four outputs retain the temporary 500 Hz–5 kHz LR4 audition band. There
+All four outputs retain the temporary 500 Hz–3.5 kHz LR4 audition band. There
 is **no extra -12 dB attenuation on any assigned output**. Outputs 1/2 retain
 only their -3.1 dB exported preamp, and outputs 3/4 retain only -2.9 dB, in
 addition to master volume. These are not calibrated power limits.
@@ -71,10 +71,10 @@ assigned only to the exciter pairs.
 
 | Outputs | Left/right driver pair | LR4 high-pass | LR4 low-pass | Additional attenuation | Initial mute |
 |---|---|---:|---:|---:|---|
-| 1/2 | EX30HESF2-4, `dml2_L` | 500 Hz audition guard | 5 kHz audition guard | None; exported preamp -3.1 dB | Preserved |
-| 3/4 | EX32VBDS-4, `dml2_R` | 500 Hz audition guard | 5 kHz audition guard | None; exported preamp -2.9 dB | Preserved |
+| 1/2 | EX30HESF2-4, `dml2_L` | 500 Hz audition guard | 3.5 kHz audition guard | None; exported preamp -3.1 dB | Preserved |
+| 3/4 | EX32VBDS-4, `dml2_R` | 500 Hz audition guard | 3.5 kHz audition guard | None; exported preamp -2.9 dB | Preserved |
 | 5/6 | Dayton 12-inch Reference kit, sealed | 25 Hz | 500 Hz | -30 dB | Muted |
-| 7/8 | Dayton PRO Neo-8 on H6512 waveguides | 5 kHz | 20 kHz | -36 dB | Muted |
+| 7/8 | Dayton PRO Neo-8 on H6512 waveguides | 3.5 kHz | 20 kHz | -12 dB | Muted |
 
 Odd outputs carry left input; even outputs carry right input. The user requested
 Fosi V3 amplification be assumed for both new pairs. Exact subwoofer SKU, box
@@ -85,8 +85,8 @@ Existing exciter coefficients, bypass, polarity and mute settings are preserved.
 
 The 500 Hz sub low-pass meets the current 500 Hz exciter audition high-pass;
 it is a provisional woofer/panel transition, not a final 80–120 Hz subwoofer
-crossover. The tweeter 5 kHz high-pass meets the existing exciter 5 kHz low-pass
-and is above the 3.5 kHz crossover recommendation in the
+crossover. The tweeter 3.5 kHz high-pass meets the exciter 3.5 kHz low-pass
+and matches the 3.5 kHz crossover recommendation in the
 [PRO Neo-8 datasheet](https://www.daytonaudio.com/images/resources/PRO%20Neo-8%20Specification%20Sheet.pdf).
 The [H6512 page](https://www.daytonaudio.com/product/966/h6512-6-1-2-x-12-waveguide-1-threaded)
 lists 1 kHz waveguide cutoff, which is not the driver's safe crossover.
@@ -127,3 +127,19 @@ The browser talks only to the Pi; the Pi obtains short-lived Tidal stream URLs a
 play time. MPD entries point back to a local stream resolver, so queued URLs do
 not expire. Session refreshes are saved with mode 0600 in `/var/lib/octet-remote`.
 No Tidal tokens or stream URLs are written to access logs.
+
+### Browser playlist cache
+
+The browser caches the complete playlist library and the twelve most recently
+loaded playlist track lists in localStorage. Lists appear immediately from cache;
+entries older than five minutes refresh in the background. Refresh playlists
+forces an update. Cached data remains visible if Tidal cannot be reached.
+The last library view and opened/played playlist are restored after a reload or
+return from DSP, without starting playback. Playlist library display reverses
+Tidal's returned order across the complete paginated collection. Track order
+inside each playlist is unchanged. Only playlist metadata is cached, never
+audio, credentials or stream URLs. Storage failures fall back to normal loading.
+
+The saved listening crossover is 3.5 kHz LR4 between outputs 1–4 and 7/8,
+with -12 dB tweeter attenuation. The EX32 measured preset retains its separate
+2.85 kHz low-pass. Fresh installations still start the sub/tweeter pairs muted.

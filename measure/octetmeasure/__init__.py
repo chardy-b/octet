@@ -1,1 +1,2 @@
-"""Loudspeaker measurement tool for the Octet CamillaDSP system."""
+"""Loudspeaker measurement and EQ tool."""
+__version__ = "0.2.0"

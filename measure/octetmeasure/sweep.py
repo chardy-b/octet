@@ -47,6 +47,10 @@ def make_sweep(fs: int = 48000, duration: float = 10.0, f1: float = 20.0,
     prod = np.fft.rfft(xs, nfft) * np.fft.rfft(inverse, nfft)
     f = np.fft.rfftfreq(nfft, 1 / fs)
     band = (f >= max(200.0, 2 * f1)) & (f <= min(5000.0, f2 / 2))
+    if np.count_nonzero(band) < 8:
+        # A sub-only or tweeter-only sweep has no conventional midrange band.
+        lo, hi = np.exp(np.log(f1) + np.array([.3, .7]) * np.log(f2 / f1))
+        band = (f >= lo) & (f <= hi)
     inverse = inverse / np.median(np.abs(prod[band]))
 
     return Sweep(fs, duration, f1, f2, level_dbfs,
