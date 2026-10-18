@@ -1,0 +1,243 @@
+# Saved 2026-10-05 DML2 panel EQ; panel labels confirmed by the user.
+title: Measured DML2 panel EQ
+description: "Saved left/right panel EQ. 1/2 EX30, 3/4 EX32; 5-8 silent. Temporary\
+  \ 500 Hz\u20135 kHz limits remain."
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  capture:
+    type: Alsa
+    channels: 2
+    device: hw:Loopback,1,0
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 8
+    device: hw:sndrpihifiberry,0
+    format: S32_LE
+mixers:
+  exciter_pairs:
+    channels:
+      in: 2
+      out: 8
+    mapping:
+    - dest: 0
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 1
+      sources:
+      - channel: 1
+        gain: 0
+    - dest: 2
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 3
+      sources:
+      - channel: 1
+        gain: 0
+filters:
+  audition_hp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 500
+      order: 4
+  audition_lp:
+    type: BiquadCombo
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 5000
+      order: 4
+  fixed_attenuation:
+    type: Gain
+    parameters:
+      gain: -12
+      inverted: false
+      mute: false
+  panel_left_headroom:
+    type: Gain
+    parameters:
+      gain: -3.1
+      inverted: false
+      mute: false
+  panel_left_1:
+    type: Biquad
+    parameters:
+      type: Highpass
+      freq: 110.0
+      q: 0.71
+  panel_left_2:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 170.0
+      q: 1.97
+      gain: 3.0
+  panel_left_3:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 301.0
+      q: 2.26
+      gain: -8.0
+  panel_left_4:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 689.0
+      q: 2.69
+      gain: 3.0
+  panel_left_5:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 969.0
+      q: 3.0
+      gain: -7.8
+  panel_left_6:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1371.0
+      q: 1.77
+      gain: 3.0
+  panel_left_7:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 2236.0
+      q: 1.25
+      gain: 3.0
+  panel_left_8:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 5546.0
+      q: 1.72
+      gain: -8.0
+  panel_left_9:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 10471.0
+      q: 1.59
+      gain: 3.0
+  panel_right_headroom:
+    type: Gain
+    parameters:
+      gain: -2.9
+      inverted: false
+      mute: false
+  panel_right_1:
+    type: Biquad
+    parameters:
+      type: Highpass
+      freq: 120.0
+      q: 0.71
+  panel_right_2:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 197.0
+      q: 3.0
+      gain: 3.0
+  panel_right_3:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 254.0
+      q: 3.0
+      gain: -5.1
+  panel_right_4:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 338.0
+      q: 1.71
+      gain: -7.4
+  panel_right_5:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 623.0
+      q: 3.0
+      gain: 3.0
+  panel_right_6:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 888.0
+      q: 3.0
+      gain: -8.0
+  panel_right_7:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1063.0
+      q: 3.0
+      gain: 3.0
+  panel_right_8:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1325.0
+      q: 0.64
+      gain: 3.0
+  panel_right_9:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 2478.0
+      q: 1.47
+      gain: 1.3
+  panel_right_10:
+    type: Biquad
+    parameters:
+      type: Lowpass
+      freq: 2850.0
+      q: 0.71
+pipeline:
+- type: Filter
+  channels:
+  - 0
+  names:
+  - panel_left_headroom
+  - panel_left_1
+  - panel_left_2
+  - panel_left_3
+  - panel_left_4
+  - panel_left_5
+  - panel_left_6
+  - panel_left_7
+  - panel_left_8
+  - panel_left_9
+- type: Filter
+  channels:
+  - 1
+  names:
+  - panel_right_headroom
+  - panel_right_1
+  - panel_right_2
+  - panel_right_3
+  - panel_right_4
+  - panel_right_5
+  - panel_right_6
+  - panel_right_7
+  - panel_right_8
+  - panel_right_9
+  - panel_right_10
+- type: Mixer
+  name: exciter_pairs
+- type: Filter
+  channels:
+  - 0
+  - 1
+  - 2
+  - 3
+  names:
+  - audition_hp
+  - audition_lp
+  - fixed_attenuation

@@ -1,0 +1,418 @@
+title: DML2 panel EQ with independent output controls
+description: EX30 1/2, EX32 3/4. Measured EQ switches are independent; protection
+  and headroom always remain active.
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  silence_threshold: null
+  silence_timeout: null
+  capture:
+    type: Alsa
+    channels: 2
+    device: hw:Loopback,1,0
+    format: S32_LE
+    stop_on_inactive: null
+    link_volume_control: null
+    link_mute_control: null
+    labels: null
+  playback:
+    type: Alsa
+    channels: 8
+    device: hw:sndrpihifiberry,0
+    format: S32_LE
+  enable_rate_adjust: null
+  target_level: null
+  adjust_period: null
+  resampler: null
+  capture_samplerate: null
+  stop_on_rate_change: null
+  rate_measure_interval: null
+  volume_ramp_time: null
+  volume_limit: 0.0
+  multithreaded: null
+  worker_threads: null
+mixers:
+  exciter_pairs:
+    description: null
+    channels:
+      in: 2
+      out: 8
+    mapping:
+    - dest: 0
+      sources:
+      - channel: 0
+        gain: 0.0
+        inverted: null
+        mute: null
+        scale: null
+      mute: null
+    - dest: 1
+      sources:
+      - channel: 1
+        gain: 0.0
+        inverted: null
+        mute: null
+        scale: null
+      mute: null
+    - dest: 2
+      sources:
+      - channel: 0
+        gain: 0.0
+        inverted: null
+        mute: null
+        scale: null
+      mute: null
+    - dest: 3
+      sources:
+      - channel: 1
+        gain: 0.0
+        inverted: null
+        mute: null
+        scale: null
+      mute: null
+    labels: null
+filters:
+  output_4_polarity:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  panel_right_3:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 254.0
+      q: 3.0
+      gain: -5.1
+  panel_right_8:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 1325.0
+      q: 0.64
+      gain: 3.0
+  output_2_polarity:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  panel_right_1:
+    type: Biquad
+    description: null
+    parameters:
+      type: Highpass
+      freq: 120.0
+      q: 0.71
+  panel_left_5:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 969.0
+      q: 3.0
+      gain: -7.8
+  panel_right_9:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 2478.0
+      q: 1.47
+      gain: 1.3
+  panel_right_7:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 1063.0
+      q: 3.0
+      gain: 3.0
+  panel_right_4:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 338.0
+      q: 1.71
+      gain: -7.4
+  output_3_polarity:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  panel_left_3:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 301.0
+      q: 2.26
+      gain: -8.0
+  panel_right_2:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 197.0
+      q: 3.0
+      gain: 3.0
+  audition_hp:
+    type: BiquadCombo
+    description: null
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 500.0
+      order: 4
+  panel_left_1:
+    type: Biquad
+    description: null
+    parameters:
+      type: Highpass
+      freq: 110.0
+      q: 0.71
+  panel_left_4:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 689.0
+      q: 2.69
+      gain: 3.0
+  panel_left_9:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 10471.0
+      q: 1.59
+      gain: 3.0
+  panel_right_10:
+    type: Biquad
+    description: null
+    parameters:
+      type: Lowpass
+      freq: 2850.0
+      q: 0.71
+  panel_right_5:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 623.0
+      q: 3.0
+      gain: 3.0
+  panel_left_2:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 170.0
+      q: 1.97
+      gain: 3.0
+  output_1_polarity:
+    type: Gain
+    description: null
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+      scale: null
+  panel_right_headroom:
+    type: Gain
+    description: null
+    parameters:
+      gain: -2.9
+      inverted: false
+      mute: false
+      scale: null
+  fixed_attenuation:
+    type: Gain
+    description: null
+    parameters:
+      gain: -12.0
+      inverted: false
+      mute: false
+      scale: null
+  panel_right_6:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 888.0
+      q: 3.0
+      gain: -8.0
+  audition_lp:
+    type: BiquadCombo
+    description: null
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 5000.0
+      order: 4
+  panel_left_6:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 1371.0
+      q: 1.77
+      gain: 3.0
+  panel_left_8:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 5546.0
+      q: 1.72
+      gain: -8.0
+  panel_left_7:
+    type: Biquad
+    description: null
+    parameters:
+      type: Peaking
+      freq: 2236.0
+      q: 1.25
+      gain: 3.0
+  panel_left_headroom:
+    type: Gain
+    description: null
+    parameters:
+      gain: -3.1
+      inverted: false
+      mute: false
+      scale: null
+processors: null
+pipeline:
+- type: Mixer
+  name: exciter_pairs
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 0
+  - 1
+  - 2
+  - 3
+  names:
+  - audition_hp
+  - audition_lp
+  - fixed_attenuation
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 0
+  - 2
+  names:
+  - panel_left_headroom
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 1
+  - 3
+  names:
+  - panel_right_headroom
+  description: null
+  bypassed: null
+- type: Filter
+  channels:
+  - 0
+  names:
+  - panel_left_1
+  - panel_left_2
+  - panel_left_3
+  - panel_left_4
+  - panel_left_5
+  - panel_left_6
+  - panel_left_7
+  - panel_left_8
+  - panel_left_9
+  description: Output 1 measured EQ
+  bypassed: false
+- type: Filter
+  channels:
+  - 1
+  names:
+  - panel_right_1
+  - panel_right_2
+  - panel_right_3
+  - panel_right_4
+  - panel_right_5
+  - panel_right_6
+  - panel_right_7
+  - panel_right_8
+  - panel_right_9
+  - panel_right_10
+  description: Output 2 measured EQ
+  bypassed: false
+- type: Filter
+  channels:
+  - 2
+  names:
+  - panel_left_1
+  - panel_left_2
+  - panel_left_3
+  - panel_left_4
+  - panel_left_5
+  - panel_left_6
+  - panel_left_7
+  - panel_left_8
+  - panel_left_9
+  description: Output 3 measured EQ
+  bypassed: false
+- type: Filter
+  channels:
+  - 3
+  names:
+  - panel_right_1
+  - panel_right_2
+  - panel_right_3
+  - panel_right_4
+  - panel_right_5
+  - panel_right_6
+  - panel_right_7
+  - panel_right_8
+  - panel_right_9
+  - panel_right_10
+  description: Output 4 measured EQ
+  bypassed: false
+- type: Filter
+  channels:
+  - 0
+  names:
+  - output_1_polarity
+  description: Output 1 polarity
+  bypassed: null
+- type: Filter
+  channels:
+  - 1
+  names:
+  - output_2_polarity
+  description: Output 2 polarity
+  bypassed: null
+- type: Filter
+  channels:
+  - 2
+  names:
+  - output_3_polarity
+  description: Output 3 polarity
+  bypassed: null
+- type: Filter
+  channels:
+  - 3
+  names:
+  - output_4_polarity
+  description: Output 4 polarity
+  bypassed: null
