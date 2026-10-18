@@ -244,21 +244,25 @@ def channel_config(config):
         raise ValueError('Legacy left/right measurements are unverified and must not be installed')
     if not any(name.startswith(prefixes) for name in config['filters']):
         return unmeasured_config(config)
-    for prefix in prefixes:
+    assigned = tuple(prefix for prefix in prefixes if any(name.startswith(prefix) for name in config['filters']))
+    for prefix in assigned:
         if prefix + 'headroom' not in config['filters']:
-            raise ValueError('Expected saved EQ explicitly assigned to EX30 and EX32')
+            raise ValueError('Expected exported headroom for each assigned exciter EQ')
     config['pipeline'] = [block for block in config['pipeline']
                           if not any(name.startswith(prefixes) for name in block.get('names', []))]
-    config['pipeline'] += [dict(type='Filter', channels=[0, 1], names=['exciter_ex30_headroom']),
-                           dict(type='Filter', channels=[2, 3], names=['exciter_ex32_headroom'])]
+    for index, prefix in enumerate(prefixes):
+        if prefix in assigned:
+            config['pipeline'].append(dict(type='Filter', channels=[index * 2, index * 2 + 1], names=[prefix + 'headroom']))
     for output in range(1, 5):
         prefix = prefixes[(output - 1) // 2]
+        if prefix not in assigned:
+            continue
         names = [name for name in config['filters'] if name.startswith(prefix) and not name.endswith('_headroom')]
         names.sort(key=lambda name: int(name.rsplit('_', 1)[1]))
         config['pipeline'].append(dict(type='Filter', channels=[output - 1], names=names,
                                       description=f'Output {output} measured EQ', bypassed=False))
     config['title'] = 'Measured exciter EQ with independent output controls'
-    config['description'] = 'EX30 EQ on 1/2; EX32 EQ on 3/4. Each stereo pair shares filters and headroom. Protection remains active.'
+    config['description'] = 'Verified EQ is assigned by exciter model; each measured stereo pair shares filters and headroom. Unmeasured outputs retain audition filters only.'
     config['devices']['volume_limit'] = HIGH_DB
     return with_polarity_controls(config)
 

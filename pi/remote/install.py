@@ -19,7 +19,7 @@ def main():
     if os.geteuid() != 0:
         raise SystemExit('Run this installer with sudo on Octet.')
     source = Path(__file__).resolve().parent
-    preset = 'exciter-audition.yml'
+    preset = 'channel-dsp.yml'
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(source / preset)], check=True)
     backup = Path('/var/backups/octet-remote') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(mode=0o700, parents=True)

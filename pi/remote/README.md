@@ -19,25 +19,31 @@ and unmute through these controls.
 
 ## Measurements and output controls
 
-The old `dml2_L` / `dml2_R` EQ was retired on 2026-10-17 after the user identified
-it as potentially belonging to a different speaker test. It is not assigned to
-any current output. The previous `exciter-panel-eq.yml` preset and its -3.1/-2.9 dB
-headroom must not be installed. Previous Git commits and Pi configuration backups
-preserve those files for reference; they do not establish valid calibration.
+The user identified the preset with a **110 Hz high-pass** as EX30HESF2-4,
+outputs 1/2. Its complete `dml2_L` export is preserved in
+`ex30-measured-eq.txt`; both outputs use the same nine filters and -3.1 dB
+exported headroom. The previous stereo left/right interpretation was incorrect.
 
-The active `channel-dsp.yml` has no measured EQ. All four exciter outputs have
-the same temporary 500 Hz–5 kHz LR4 band and -12 dB fixed attenuation, plus their
-independent polarity controls. Outputs 1/2 carry left/right EX30HESF2-4; outputs
-3/4 carry left/right EX32VBDS-4. Outputs 5–8 have no input and remain silent.
+The user identified the preset with a **42.7 Hz high-pass and +3 dB peak at
+298 Hz** as EX32VBDS-4, outputs 3/4. That complete export has not yet been
+located. Outputs 3/4 have no measured EQ or exported headroom until it is
+found. Do not substitute the `dml2_R` export with its 120 Hz high-pass.
+The retired `exciter-panel-eq.yml` preset remains only in earlier Git commits
+and Pi backups. It must not be installed.
 
-The **DSP** page at `/dsp` shows **No verified measured EQ assigned**. Individual
-and bulk measured-EQ switches are disabled until a valid correction is assigned;
-polarity, level and mute controls remain available for the wired outputs. The
--12 dB attenuation is an audition setting, not a calibrated power limiter.
+All four outputs retain the same temporary 500 Hz–5 kHz LR4 band and -12 dB
+fixed attenuation. With EX30 EQ assigned, outputs 1/2 also retain its -3.1 dB
+headroom during bypass; outputs 3/4 have no measurement-specific attenuation.
+Polarity controls remain independent. Outputs 5–8 remain silent.
 
-For future verified measurements, `build_panel_eq.py BASE --ex30 EX30_EXPORT
+The **DSP** page at `/dsp` enables measured-EQ switches only for outputs with
+assigned correction. Unmeasured outputs still expose polarity, level and mute.
+The -12 dB attenuation is an audition setting, not a calibrated power limiter.
+
+For verified measurements, `build_panel_eq.py BASE --ex30 EX30_EXPORT
 --ex32 EX32_EXPORT --output PRESET` creates correction by exciter model after
-the stereo-to-output split. `channel_config` gives each output an independent
+the stereo-to-output split. Either model argument may be omitted to leave
+that model unmeasured. `channel_config` gives each output an independent
 bypass switch, using identical coefficients and headroom within each model's
 stereo pair. Never infer model identity from an old left/right filename.
 
@@ -52,7 +58,7 @@ restore the previous file and leave output muted. The service can write only
 this shared audio-configuration directory and its own private state directory.
 
 Copy this folder onto Octet and run `sudo python3 install.py` to install the
-unmeasured exciter setup with independent polarity controls. The installer
+current saved exciter setup with independent polarity controls. The installer
 validates the DSP preset, backs up current settings, and starts the system muted.
 It installs files under `/opt/octet-remote`, the audition config under
 `/opt/camilladsp/configs`, and the systemd unit under `/etc/systemd/system`.

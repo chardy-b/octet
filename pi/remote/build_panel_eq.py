@@ -38,15 +38,19 @@ def parse_export(text, prefix):
     return filters, names
 
 
-def build(base, ex30_text, ex32_text, ex30_source=None, ex32_source=None):
+def build(base, ex30_text=None, ex32_text=None, ex30_source=None, ex32_source=None):
+    if ex30_text is None and ex32_text is None:
+        raise ValueError('Supply at least one verified exciter measurement')
     config = dict(base)
     config['title'] = 'Measured exciter EQ'
-    config['description'] = 'EX30 EQ on outputs 1/2; EX32 EQ on 3/4; 5-8 silent. Temporary 500 Hz–5 kHz limits remain.'
+    config['description'] = 'Verified EX30 EQ uses outputs 1/2; verified EX32 EQ uses 3/4 when assigned. Unmeasured outputs retain audition filters; 5-8 silent.'
     filters = dict(base['filters'])
     stages = []
     for model, text, source, channels in (
             ('ex30', ex30_text, ex30_source, [0, 1]),
             ('ex32', ex32_text, ex32_source, [2, 3])):
+        if text is None:
+            continue
         prefix = 'exciter_' + model
         assigned, names = parse_export(text, prefix)
         if source:
@@ -61,11 +65,14 @@ def build(base, ex30_text, ex32_text, ex30_source=None, ex32_source=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', type=Path)
-    parser.add_argument('--ex30', type=Path, required=True, help='Export confirmed to measure the EX30HESF2-4')
-    parser.add_argument('--ex32', type=Path, required=True, help='Export confirmed to measure the EX32VBDS-4')
+    parser.add_argument('--ex30', type=Path, help='Export confirmed to measure the EX30HESF2-4')
+    parser.add_argument('--ex32', type=Path, help='Export confirmed to measure the EX32VBDS-4')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    config = build(yaml.safe_load(args.base.read_text()), args.ex30.read_text(), args.ex32.read_text(),
-                   args.ex30.parent.parent.name, args.ex32.parent.parent.name)
+    if args.ex30 is None and args.ex32 is None:
+        parser.error('Supply --ex30 and/or --ex32 with verified exports')
+    config = build(yaml.safe_load(args.base.read_text()),
+                   args.ex30.read_text() if args.ex30 else None, args.ex32.read_text() if args.ex32 else None,
+                   str(args.ex30) if args.ex30 else None, str(args.ex32) if args.ex32 else None)
     args.output.write_text('# Saved exciter EQ, explicitly assigned by model.\n' + yaml.safe_dump(config, sort_keys=False))
     print(json.dumps({'ex30': str(args.ex30), 'ex32': str(args.ex32), 'output': str(args.output)}))

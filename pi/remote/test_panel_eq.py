@@ -20,6 +20,14 @@ class PanelEQ(unittest.TestCase):
         self.assertEqual(config['filters']['exciter_ex30_2']['parameters'], {'type': 'Peaking', 'freq': 969., 'q': 3., 'gain': -7.8})
         self.assertEqual(config['filters']['exciter_ex32_2']['parameters'], {'type': 'Lowpass', 'freq': 2850., 'q': .71})
 
+    def test_unidentified_model_has_no_fabricated_filters(self):
+        config = build(dict(filters={}, pipeline=[]), ex30_text=LEFT)
+        self.assertEqual(len(config['pipeline']), 1)
+        self.assertEqual(config['pipeline'][0]['channels'], [0, 1])
+        self.assertFalse(any(name.startswith('exciter_ex32_') for name in config['filters']))
+        with self.assertRaises(ValueError):
+            build(dict(filters={}, pipeline=[]))
+
     def test_unknown_or_disabled_exports_are_rejected(self):
         for line in ('Filter 1: OFF PK Fc 1000 Hz Gain +3.0 dB Q 1',
                      'Filter 1: ON PK Fc 1000 Hz Gain +30.0 dB Q 1',

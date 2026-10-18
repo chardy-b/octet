@@ -111,6 +111,19 @@ class OutputControls(unittest.TestCase):
             self.assertFalse(server.polarity_parameters(config, output)['inverted'])
         self.assertNotIn('/opt/camilladsp/configs/exciter-panel-eq.yml', server.PROFILES)
 
+    def test_one_verified_model_leaves_other_model_unmeasured(self):
+        config = server.channel_config(dict(devices={}, filters={
+            'exciter_ex30_headroom': dict(type='Gain', parameters=dict(gain=-3.1)),
+            'exciter_ex30_1': dict(type='Biquad', parameters=dict(type='Highpass', freq=110, q=.71))},
+            pipeline=[dict(type='Mixer', name='pairs')]))
+        self.assertEqual(server.eq_block(config, 1)['names'], server.eq_block(config, 2)['names'])
+        for output in (3, 4):
+            self.assertIsNone(server.eq_block(config, output, required=False))
+        self.assertEqual(config['pipeline'][1]['channels'], [0, 1])
+        server.change_channel_setting(config, None, 'all-eq', False)
+        self.assertTrue(server.eq_block(config, 1)['bypassed'])
+        self.assertTrue(server.eq_block(config, 2)['bypassed'])
+
     def test_polarity_changes_only_one_sign_with_no_gain_or_eq_changes(self):
         base = dict(filters={'headroom': {'type': 'Gain', 'parameters': {'gain': -12}}},
                     pipeline=[dict(type='Filter', channels=[0, 1, 2, 3], names=['headroom'])])
