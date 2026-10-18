@@ -1,8 +1,7 @@
-# User-assigned model EQ: dml2_L on 1/2, dml2_R on 3/4.
+# No fixed audition attenuation. Temporary 500 Hz–5 kHz filters remain.
 title: Measured exciter EQ with independent output controls
-description: EX30 dml2_L on 1/2; EX32 dml2_R on 3/4. Matching EQ/headroom within each
-  stereo pair. No extra attenuation on 3/4; existing -12 dB audition attenuation on
-  1/2.
+description: EX30 dml2_L on 1/2; EX32 dml2_R on 3/4. Matching EQ and exported headroom
+  within each pair; no fixed audition attenuation. Independent channel mute and polarity.
 devices:
   samplerate: 48000
   chunksize: 1024
@@ -53,12 +52,6 @@ filters:
       type: LinkwitzRileyLowpass
       freq: 5000
       order: 4
-  fixed_attenuation:
-    type: Gain
-    parameters:
-      gain: -12
-      inverted: false
-      mute: false
   exciter_ex30_headroom:
     type: Gain
     parameters:
@@ -239,12 +232,6 @@ pipeline:
   names:
   - audition_hp
   - audition_lp
-- type: Filter
-  channels:
-  - 0
-  - 1
-  names:
-  - fixed_attenuation
 - type: Filter
   channels:
   - 0

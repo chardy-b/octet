@@ -8,8 +8,8 @@ and the existing `tidalapi` package. The installer also uses the existing PyYAML
 
 The initial `exciter-audition.yml` preset routes left/right to outputs 1/2
 (EX30HESF2-4) and 3/4 (EX32VBDS-4). Outputs 5–8 receive digital silence. Both
-exciter types play a temporary 500 Hz–5 kHz band with LR4 filters and 12 dB fixed
-attenuation. The standard main-fader range is -60…-18 dB. An explicit **Unlock
+exciter types play a temporary 500 Hz–5 kHz band with LR4 filters. There is no
+fixed audition attenuation. The standard main-fader range is -60…-18 dB. An explicit **Unlock
 higher levels** button extends it to 0 dB, without changing the current volume.
 Relocking clamps a higher current setting to -18 dB. These are provisional
 audition settings, not measured crossover or power limits. Physical L/R and
@@ -31,15 +31,17 @@ The earlier 42.7 Hz / 298 Hz recollection did not match a located export and
 is not used. The retired stereo-side `exciter-panel-eq.yml` preset must not be
 installed; model-specific correction is saved in `channel-dsp.yml` instead.
 
-All four outputs retain the temporary 500 Hz–5 kHz LR4 audition band. Outputs
-1/2 retain their existing -12 dB audition attenuation and -3.1 dB exported
-headroom. At the user's request, outputs 3/4 have **no extra -12 dB attenuation**;
-only their -2.9 dB exported preamp remains, in addition to master volume.
-Polarity controls remain independent. Outputs 5–8 remain silent.
+All four outputs retain the temporary 500 Hz–5 kHz LR4 audition band. There
+is **no extra -12 dB attenuation on any assigned output**. Outputs 1/2 retain
+only their -3.1 dB exported preamp, and outputs 3/4 retain only -2.9 dB, in
+addition to master volume. These are not calibrated power limits. Outputs 5–8
+remain silent.
 
-The **DSP** page at `/dsp` enables measured-EQ switches only for outputs with
-assigned correction. Unmeasured outputs still expose polarity, level and mute.
-The -12 dB attenuation is an audition setting, not a calibrated power limiter.
+The **DSP** page at `/dsp` has a **Mute channel / Unmute channel** button for
+each assigned output, separate from master mute. The setting persists in the
+same 0 dB output stage as polarity, without changing inversion, EQ, gain or
+another channel's mute. Restoring an individual channel leaves master mute
+unchanged. Unassigned outputs have disabled controls.
 
 For verified measurements, `build_panel_eq.py BASE --ex30 EX30_EXPORT
 --ex32 EX32_EXPORT --output PRESET` creates correction by exciter model after

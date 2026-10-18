@@ -141,6 +141,30 @@ class OutputControls(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             server.polarity_parameters(config, 5)
 
+    def test_channel_mute_preserves_polarity_gain_eq_and_other_outputs(self):
+        from pathlib import Path
+        import yaml
+        config = yaml.safe_load(Path(__file__).with_name('channel-dsp.yml').read_text(encoding='utf-8'))
+        server.polarity_parameters(config, 2)['inverted'] = True
+        server.eq_block(config, 2)['bypassed'] = True
+        before = json.loads(json.dumps(config))
+        server.change_channel_setting(config, 2, 'mute', True)
+        expected = json.loads(json.dumps(before))
+        expected['filters']['output_2_polarity']['parameters']['mute'] = True
+        self.assertEqual(config, expected)
+        server.change_channel_setting(config, 2, 'mute', False)
+        self.assertEqual(config, before)
+        with self.assertRaises(RuntimeError):
+            server.change_channel_setting(config, 5, 'mute', True)
+
+    def test_channel_mute_api_uses_output_control_not_master_mute(self):
+        with patch.object(server, 'set_channel_control') as change, patch.object(server, 'current_status', return_value={}):
+            server.action('channel-mute', dict(output=3, muted=True))
+        change.assert_called_once_with(3, 'mute', True)
+        for output, muted in ((True, True), (1, 'true'), (0, True), (9, True)):
+            with self.subTest(output=output, muted=muted), self.assertRaises(ValueError):
+                server.set_channel_control(output, 'mute', muted)
+
     def test_enable_all_preserves_polarity_and_protection(self):
         base = dict(devices={}, filters={}, pipeline=[dict(type='Mixer', name='pairs')])
         for side in ('ex30', 'ex32'):

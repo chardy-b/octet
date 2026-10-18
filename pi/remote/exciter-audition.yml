@@ -1,7 +1,6 @@
-# Temporary listening preset, not measured or final crossover protection.
-# 1/2 = L/R EX30HESF2-4; 3/4 = L/R EX32VBDS-4; 5-8 silent.
+# No fixed audition attenuation. Temporary 500 Hz–5 kHz filters remain.
 title: Exciter audition
-description: Stereo exciter pairs, restricted to 500 Hz–5 kHz pending measurements.
+description: "Stereo exciter pairs, restricted to 500 Hz\u20135 kHz pending measurements."
 devices:
   samplerate: 48000
   chunksize: 1024
@@ -18,29 +17,48 @@ devices:
     format: S32_LE
 mixers:
   exciter_pairs:
-    channels: {in: 2, out: 8}
+    channels:
+      in: 2
+      out: 8
     mapping:
-      - dest: 0
-        sources: [{channel: 0, gain: 0}]
-      - dest: 1
-        sources: [{channel: 1, gain: 0}]
-      - dest: 2
-        sources: [{channel: 0, gain: 0}]
-      - dest: 3
-        sources: [{channel: 1, gain: 0}]
+    - dest: 0
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 1
+      sources:
+      - channel: 1
+        gain: 0
+    - dest: 2
+      sources:
+      - channel: 0
+        gain: 0
+    - dest: 3
+      sources:
+      - channel: 1
+        gain: 0
 filters:
   audition_hp:
     type: BiquadCombo
-    parameters: {type: LinkwitzRileyHighpass, freq: 500, order: 4}
+    parameters:
+      type: LinkwitzRileyHighpass
+      freq: 500
+      order: 4
   audition_lp:
     type: BiquadCombo
-    parameters: {type: LinkwitzRileyLowpass, freq: 5000, order: 4}
-  fixed_attenuation:
-    type: Gain
-    parameters: {gain: -12, inverted: false, mute: false}
+    parameters:
+      type: LinkwitzRileyLowpass
+      freq: 5000
+      order: 4
 pipeline:
-  - type: Mixer
-    name: exciter_pairs
-  - type: Filter
-    channels: [0, 1, 2, 3]
-    names: [audition_hp, audition_lp, fixed_attenuation]
+- type: Mixer
+  name: exciter_pairs
+- type: Filter
+  channels:
+  - 0
+  - 1
+  - 2
+  - 3
+  names:
+  - audition_hp
+  - audition_lp

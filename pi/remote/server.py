@@ -296,6 +296,8 @@ def change_channel_setting(config, output, control, enabled):
         eq_block(config, output)['bypassed'] = not enabled
     elif control == 'polarity':
         polarity_parameters(config, output)['inverted'] = enabled
+    elif control == 'mute':
+        polarity_parameters(config, output)['mute'] = enabled
     elif control == 'all-eq':
         blocks = [eq_block(config, channel, required=False) for channel in range(1, 5)]
         blocks = [block for block in blocks if block is not None]
@@ -310,7 +312,7 @@ def change_channel_setting(config, output, control, enabled):
 def set_channel_control(output, control, enabled):
     if not isinstance(enabled, bool) or (control != 'all-eq' and
         (isinstance(output, bool) or not isinstance(output, int) or output not in range(1, 9))):
-        raise ValueError('Expected an output number and EQ setting')
+        raise ValueError('Expected an output number and boolean setting')
     with DSP() as dsp:
         if dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE):
             raise RuntimeError('The independent output preset is not active')
@@ -339,6 +341,8 @@ def set_channel_control(output, control, enabled):
                     applied = all(bool(eq_block(loaded, channel).get('bypassed')) == (not enabled) for channel in range(1, 5) if eq_block(config, channel, required=False) is not None)
                 elif control == 'eq':
                     applied = bool(eq_block(loaded, output).get('bypassed')) == (not enabled)
+                elif control == 'mute':
+                    applied = bool(polarity_parameters(loaded, output).get('mute')) == enabled
                 else:
                     applied = bool(polarity_parameters(loaded, output).get('inverted')) == enabled
                 if applied:
@@ -383,6 +387,7 @@ def dsp_status():
                                       measurement=(filters.get(('exciter_ex30_' if output <= 2 else 'exciter_ex32_') + 'headroom', {}).get('description') or 'Measured ' + roles[output - 1] + ' EQ') if block else None,
                                       available=available, eq_available=block is not None, enabled=not bool(block.get('bypassed')) if block else False,
                                       inverted=bool(polarity_parameters(config, output).get('inverted')) if available else False,
+                                      muted=bool(polarity_parameters(config, output).get('mute')) if available else False,
                                       filters=[describe(name) for name in names],
                                       always_active=[describe(name) for name in protected]))
     return result
@@ -435,6 +440,8 @@ def action(name, data):
             LEVELS_UNLOCKED = enabled
         elif name == 'channel-eq':
             set_channel_eq(data.get('output'), data.get('enabled'))
+        elif name == 'channel-mute':
+            set_channel_control(data.get('output'), 'mute', data.get('muted'))
         elif name == 'channel-polarity':
             set_channel_control(data.get('output'), 'polarity', data.get('inverted'))
         elif name == 'all-eq':

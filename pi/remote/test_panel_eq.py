@@ -33,7 +33,7 @@ class PanelEQ(unittest.TestCase):
     def test_saved_model_pairs_have_matching_eq_and_requested_gain(self):
         from server import eq_block
         config = yaml.safe_load(Path(__file__).with_name('channel-dsp.yml').read_text(encoding='utf-8'))
-        for first, second, highpass, preamp, extra in ((1, 2, 110, -3.1, True), (3, 4, 120, -2.9, False)):
+        for first, second, highpass, preamp, extra in ((1, 2, 110, -3.1, False), (3, 4, 120, -2.9, False)):
             self.assertEqual(eq_block(config, first)['names'], eq_block(config, second)['names'])
             for output in (first, second):
                 eq = [config['filters'][name] for name in eq_block(config, output)['names']]
