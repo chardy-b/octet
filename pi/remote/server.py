@@ -449,15 +449,93 @@ def change_channel_setting(config, output, control, enabled):
         raise ValueError('Unknown output control')
 
 
+def always_active_controls(config, output):
+    """Editable values outside measured EQ and the dedicated mute/polarity stage."""
+    block = eq_block(config, output, required=False)
+    controls = {}
+    for stage in config['pipeline']:
+        if (stage.get('type') != 'Filter' or output - 1 not in stage.get('channels', [])
+                or stage is block or stage.get('bypassed')):
+            continue
+        for name in stage.get('names', []):
+            fil = config['filters'][name]
+            params = fil.get('parameters', {})
+            kind = params.get('type', '')
+            if fil.get('type') == 'Gain' and name != f'output_{output}_polarity':
+                controls[name] = dict(name=name, parameter='gain', label='Attenuation', unit='dB', value=params['gain'])
+            elif fil.get('type') in ('Biquad', 'BiquadCombo') and kind in (
+                    'Highpass', 'Lowpass', 'LinkwitzRileyHighpass', 'LinkwitzRileyLowpass',
+                    'ButterworthHighpass', 'ButterworthLowpass'):
+                controls[name] = dict(name=name, parameter='freq', label='High-pass' if 'Highpass' in kind else 'Low-pass',
+                                      unit='Hz', value=params['freq'])
+    if not any(item['parameter'] == 'gain' for item in controls.values()):
+        controls['__attenuation'] = dict(name='__attenuation', parameter='gain', label='Attenuation', unit='dB', value=0)
+    return list(controls.values())
+
+
+
+def change_always_active(config, output, values):
+    polarity_parameters(config, output)
+    controls = always_active_controls(config, output)
+    if not isinstance(values, dict) or set(values) != {item['name'] for item in controls}:
+        raise ValueError('Output settings changed; reload the page and try again')
+    nyquist = config['devices']['samplerate'] / 2
+    for item in controls:
+        value = values[item['name']]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError('Enter finite numbers for all output settings')
+        if item['parameter'] == 'gain' and not -60 <= value <= 0:
+            raise ValueError('Attenuation must be between -60 and 0 dB')
+        if item['parameter'] == 'freq' and not 0 < value < nyquist:
+            raise ValueError(f'Frequencies must be above 0 and below {nyquist:g} Hz')
+    highs = [values[item['name']] for item in controls if item['label'] == 'High-pass']
+    lows = [values[item['name']] for item in controls if item['label'] == 'Low-pass']
+    if highs and lows and max(highs) >= min(lows):
+        raise ValueError('High-pass must be below low-pass')
+    replacements = {}
+    for item in controls:
+        name = item['name']
+        if values[name] == item['value']:
+            continue
+        # Private names and split stages keep edits from affecting any other output.
+        prefix = f'output_{output}_active_'
+        private = name if name.startswith(prefix) else prefix + name
+        fil = (dict(type='Gain', parameters=dict(gain=0, inverted=False, mute=False))
+               if name == '__attenuation' else json.loads(json.dumps(config['filters'][name])))
+        fil['parameters'][item['parameter']] = values[name]
+        config['filters'][private] = fil
+        replacements[name] = private
+    pipeline = []
+    for stage in config['pipeline']:
+        if (stage.get('type') == 'Filter' and output - 1 in stage.get('channels', [])
+                and any(name in replacements for name in stage.get('names', []))):
+            own = dict(stage, channels=[output - 1], names=[replacements.get(name, name) for name in stage['names']])
+            others = [channel for channel in stage['channels'] if channel != output - 1]
+            if others:
+                pipeline.append(dict(stage, channels=others))
+            pipeline.append(own)
+        else:
+            pipeline.append(stage)
+    if '__attenuation' in replacements:
+        pipeline.append(dict(type='Filter', channels=[output - 1], names=[replacements['__attenuation']],
+                             description=f'Output {output} attenuation'))
+    config['pipeline'] = pipeline
+
+
+
 def set_channel_control(output, control, enabled):
-    if not isinstance(enabled, bool) or (control != 'all-eq' and
-        (isinstance(output, bool) or not isinstance(output, int) or output not in range(1, 9))):
-        raise ValueError('Expected an output number and boolean setting')
+    if control != 'all-eq' and (isinstance(output, bool) or not isinstance(output, int) or output not in range(1, 9)):
+        raise ValueError('Expected an output number from 1 to 8')
+    if control != 'always-active' and not isinstance(enabled, bool):
+        raise ValueError('Expected a boolean setting')
     with DSP() as dsp:
         if dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE):
             raise RuntimeError('The independent output preset is not active')
         config = json.loads(dsp.call('GetConfigJson'))
-        change_channel_setting(config, output, control, enabled)
+        if control == 'always-active':
+            change_always_active(config, output, enabled)
+        else:
+            change_channel_setting(config, output, control, enabled)
         previous_mute = dsp.call('GetMute')
     import yaml
     previous = CHANNEL_PROFILE.read_bytes()
@@ -477,7 +555,9 @@ def set_channel_control(output, control, enabled):
             time.sleep(.08)
             with DSP() as dsp:
                 loaded = json.loads(dsp.call('GetConfigJson'))
-                if control == 'all-eq':
+                if control == 'always-active':
+                    applied = always_active_controls(loaded, output) == always_active_controls(config, output)
+                elif control == 'all-eq':
                     applied = all(bool(eq_block(loaded, channel).get('bypassed')) == (not enabled) for channel in range(1, 5) if eq_block(config, channel, required=False) is not None)
                 elif control == 'eq':
                     applied = bool(eq_block(loaded, output).get('bypassed')) == (not enabled)
@@ -510,6 +590,7 @@ def dsp_status():
         result = dict(profile=config.get('title', 'CamillaDSP'), volume=dsp.call('GetVolume'),
                       muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
                       min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
+        result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
     filters = config.get('filters', {})
     roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4', 'Subwoofer', 'Subwoofer', 'PRO Neo-8 tweeter', 'PRO Neo-8 tweeter']
     for output in range(1, 9):
@@ -534,6 +615,7 @@ def dsp_status():
                                       inverted=bool(polarity_parameters(config, output).get('inverted')) if available else False,
                                       muted=bool(polarity_parameters(config, output).get('mute')) if available else False,
                                       filters=[describe(name) for name in names],
+                                      always_active_controls=always_active_controls(config, output) if available else [],
                                       always_active=[describe(name) for name in protected]))
     return result
 
@@ -591,6 +673,8 @@ def action(name, data):
             set_channel_control(data.get('output'), 'mute', data.get('muted'))
         elif name == 'channel-polarity':
             set_channel_control(data.get('output'), 'polarity', data.get('inverted'))
+        elif name == 'channel-always-active':
+            set_channel_control(data.get('output'), 'always-active', data.get('values'))
         elif name == 'all-eq':
             set_channel_control(None, 'all-eq', data.get('enabled'))
         elif name == 'stop':
@@ -775,7 +859,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.path.startswith('/api/control/'):
                 return self.send({'error': 'Not found'}, 404)
             self.send(action(self.path.removeprefix('/api/control/'), data))
-        except (KeyError, TypeError, ValueError):
+        except ValueError as error:
+            self.send({'error': str(error)}, 400)
+        except (KeyError, TypeError):
             self.send({'error': 'Invalid control request'}, 400)
         except Exception as error:
             message = str(error) if isinstance(error, RuntimeError) else 'Could not reach the music player'

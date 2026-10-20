@@ -112,6 +112,16 @@ a brief mute, and saved in `/var/lib/octet-dsp/channel-dsp.yml`. Failed changes
 restore the previous file and leave output muted. The service can write only
 this shared audio-configuration directory and its own private state directory.
 
+Expand **Always active** on any assigned output to edit attenuation (−60 to 0 dB),
+high-pass and low-pass frequencies in numeric text fields, then press **Save output**.
+Values apply only when saved, independently for that output, even when its original
+filters were shared with another channel. Filter types, slopes, Q, measured EQ,
+polarity and channel mute are preserved. Frequencies must be above zero and below
+half the DSP sample rate, with high-pass below low-pass. Outputs without a level
+filter get a separate attenuation stage when a nonzero value is saved. Unsaved
+entries survive status refreshes; successful saves use the same validated,
+briefly muted reload and persistent configuration as the output switches.
+
 Copy this folder onto Octet and run `sudo python3 install.py` to install the
 current saved exciter setup with independent polarity controls. The installer
 validates the DSP preset, backs up current settings, and starts the system muted.
