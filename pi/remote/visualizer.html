@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Octet · Visualizer</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/visualizer.css">
+  <script src="/visualizer-solar.js" defer></script>
+  <script src="/visualizer-themes.js" defer></script>
+  <script src="/visualizer-audio.js" defer></script>
+  <script src="/visualizer.js" defer></script>
+  <script src="/visualizer-sync.js" defer></script>
+</head>
+<body class="visualizer-page">
+  <header>
+    <a class="brand" href="/" aria-label="Octet home"><span class="mark">◈</span> octet<span class="brand-note">MUSIC SYSTEM</span></a>
+    <nav class="main-nav" aria-label="Main navigation"><a href="/">Music</a><a href="/dsp">DSP</a><a href="/visualizer" aria-current="page">Visualizer</a></nav>
+  </header>
+  <main>
+    <section class="visualizer-heading" aria-labelledby="theme-title">
+      <div><p class="eyebrow">LIGHT, LISTENING.</p><h1 id="theme-title">turell 1</h1></div>
+      <div class="visualizer-actions">
+        <label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select"><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label>
+        <label id="palette-control" class="theme-control" for="palette-select"><span>Palette</span><select id="palette-select"><option value="cycle">Slow color cycle</option><option value="scrub">Hold scrubbed color</option></select></label>
+        <span id="signal-status" role="status" aria-live="polite">Connecting to audio…</span>
+        <button id="simulate-music" class="quiet-button" aria-pressed="false">Simulate music</button>
+        <button id="enter-fullscreen" class="quiet-button">Full screen <span aria-hidden="true">⤢</span></button>
+      </div>
+    </section>
+    <section class="simulation-panel" aria-label="Local sample music">
+      <label class="theme-control" for="simulation-track"><span>Sample music</span><select id="simulation-track"><option value="edm">Electronic · EDM Detection Mode</option><option value="classical">Classical · Gymnopédie No. 1</option></select></label>
+      <audio id="simulation-audio" controls loop preload="none" aria-label="Sample music playback"></audio>
+      <div id="sample-response" class="sample-response" hidden aria-label="Sample frequency response"><label>Bass <meter id="sample-bass" min="0" max="1" value="0"></meter></label><label>Mid <meter id="sample-mid" min="0" max="1" value="0"></meter></label><label>High <meter id="sample-high" min="0" max="1" value="0"></meter></label></div>
+      <p class="sample-credit"><span id="sample-credit-title">EDM Detection Mode</span> · Kevin MacLeod · <a href="https://incompetech.com" target="_blank" rel="noopener noreferrer">incompetech.com</a> · <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener noreferrer">CC BY 3.0</a></p>
+    </section>
+    <div id="visualizer-workbench" class="visualizer-workbench">
+    <section id="visualizer-stage" class="visualizer-stage" aria-label="turell 1 audiovisual theme">
+      <canvas id="visualizer-canvas" role="img" aria-label="A blue circle with a sound-reactive warm halo inside a large field of colored light. Everything outside the outer circle is black."></canvas>
+      <canvas id="scene-canvas" role="img" aria-label="Geometric audiovisual artwork" hidden></canvas>
+      <div id="immersive-controls" class="immersive-controls">
+        <div class="immersive-selectors"><label class="theme-control immersive-theme" for="immersive-theme-select"><span class="sr-only">Fullscreen theme</span><select id="immersive-theme-select"><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label><label id="immersive-palette-control" class="theme-control" for="immersive-palette"><span class="sr-only">Fullscreen palette</span><select id="immersive-palette"><option value="cycle">Slow color cycle</option><option value="scrub">Hold scrubbed color</option></select></label></div>
+        <div class="immersive-actions"><label class="theme-control" for="immersive-track"><span class="sr-only">Fullscreen sample track</span><select id="immersive-track"><option value="edm">Electronic</option><option value="classical">Classical piano</option></select></label><button id="immersive-pause" class="quiet-button" hidden>Pause music</button><button id="immersive-simulate" class="quiet-button" aria-pressed="false">Simulate music</button><button id="exit-fullscreen" class="quiet-button">Exit full screen <span aria-hidden="true">⤡</span></button></div>
+        <div id="immersive-color-tools" class="immersive-color-tools">
+          <section id="immersive-video-controls" class="video-controls" hidden aria-label="Fullscreen background video">
+            <div class="video-controls-heading"><label id="immersive-video-position-label" for="immersive-video-scrub">Video position</label><button id="immersive-video-play" class="quiet-button">Pause video</button></div>
+            <input id="immersive-video-scrub" type="range" min="0" max="1" step="0.1" value="0" aria-label="Fullscreen video position">
+            <output id="immersive-video-time">Loading video…</output>
+            <label class="video-zoom-label" for="immersive-video-zoom"><span id="immersive-video-zoom-label">Video zoom</span><output id="immersive-video-zoom-value">100%</output></label>
+            <input id="immersive-video-zoom" type="range" min="50" max="300" step="1" value="100">
+<div id="immersive-solar-settings" class="solar-settings" hidden>
+ <label class="palette-setting" for="immersive-solar-mode"><span>Eclipse mode</span><select id="immersive-solar-mode"><option value="realism" selected>Realism</option><option value="artistic">Artistic &middot; colored field</option></select></label>
+ <label class="palette-setting" for="immersive-solar-treatment"><span>Solar color</span><select id="immersive-solar-treatment"><option value="natural">Natural · source color</option><option value="cycle">Yellow → red cycle</option><option value="yellow">Bright yellow</option><option value="amber">Amber</option><option value="red">Deep red</option></select></label>
+ <label class="palette-setting" for="immersive-solar-speed"><span>Eclipse speed</span><select id="immersive-solar-speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1× · 12 minutes</option><option value="2">2×</option><option value="4">4×</option></select></label>
+ <div class="solar-jumps"><button id="immersive-solar-sun" class="quiet-button">Full Sun</button><button id="immersive-solar-diamond" class="quiet-button">Diamond ring</button><button id="immersive-solar-totality-jump" class="quiet-button">Totality</button></div>
+ </div>
+
+          </section>
+          <div id="immersive-response-controls" class="immersive-response-controls"><label class="theme-control" for="immersive-response-mode"><span>Response</span><select id="immersive-response-mode"><option value="original">Original</option><option value="bloom">Bass Bloom</option><option value="depth">Gradient Depth</option><option value="rim">Outer Rim</option><option value="shimmer">Treble Shimmer</option><option value="combined">Combined</option></select></label><label class="theme-control" for="immersive-response-intensity"><span>Intensity</span><select id="immersive-response-intensity"><option value="subtle">Subtle</option><option value="balanced">Balanced</option><option value="strong">Strong</option></select></label></div>
+          <label for="immersive-palette-scrub">Color cycle</label><button id="immersive-palette-play" class="quiet-button">Pause cycle</button>
+          <div class="cycle-rails" aria-hidden="true"><i class="field-rail"></i><i class="halo-rail"></i><i class="inner-rail"></i><b class="cycle-marker"></b></div>
+          <input id="immersive-palette-scrub" type="range" min="0" max="12000" step="1" value="0" aria-label="Fullscreen color cycle position">
+        </div>
+      </div>
+    </section>
+    <aside id="palette-panel" class="palette-panel" aria-labelledby="palette-panel-title">
+      <section id="video-controls" class="video-controls" hidden aria-labelledby="video-controls-title">
+        <div class="video-controls-heading"><h2 id="video-controls-title">Background video</h2><button id="video-play" class="quiet-button">Pause video</button></div>
+        <label id="video-position-label" class="sr-only" for="video-scrub">Video position</label><input id="video-scrub" type="range" min="0" max="1" step="0.1" value="0">
+        <output id="video-time">Loading video…</output>
+        <label class="video-zoom-label" for="video-zoom"><span id="video-zoom-label">Video zoom</span><output id="video-zoom-value">100%</output></label>
+        <input id="video-zoom" type="range" min="50" max="300" step="1" value="100">
+<div id="solar-settings" class="solar-settings" hidden>
+ <label class="palette-setting" for="solar-mode"><span>Eclipse mode</span><select id="solar-mode"><option value="realism" selected>Realism</option><option value="artistic">Artistic &middot; colored field</option></select></label>
+ <label class="palette-setting" for="solar-treatment"><span>Solar color</span><select id="solar-treatment"><option value="natural">Natural · source color</option><option value="cycle">Yellow → red cycle</option><option value="yellow">Bright yellow</option><option value="amber">Amber</option><option value="red">Deep red</option></select></label>
+ <label class="palette-setting" for="solar-speed"><span>Eclipse speed</span><select id="solar-speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1" selected>1× · 12 minutes</option><option value="2">2×</option><option value="4">4×</option></select></label>
+ <div class="solar-jumps"><button id="solar-sun" class="quiet-button">Full Sun</button><button id="solar-diamond" class="quiet-button">Diamond ring</button><button id="solar-totality-jump" class="quiet-button">Totality</button></div>
+ </div>
+
+        <p id="video-scrub-note" class="palette-hint">Scrub through this local video excerpt. Music keeps playing independently.</p>
+
+      </section>
+      <section id="response-panel" class="response-panel" aria-labelledby="response-title">
+        <h2 id="response-title">Music response</h2>
+        <label class="palette-setting" for="response-mode"><span>Effect</span><select id="response-mode"><option value="original">Original</option><option value="bloom">Bass Bloom</option><option value="depth">Gradient Depth</option><option value="rim">Outer Rim</option><option value="shimmer">Treble Shimmer</option><option value="combined" selected>Combined</option></select></label>
+        <label class="palette-setting" for="response-intensity"><span>Intensity</span><select id="response-intensity"><option value="subtle">Subtle</option><option value="balanced" selected>Balanced</option><option value="strong">Strong</option></select></label>
+        <p id="response-description" class="palette-hint"></p>
+        <button id="response-preview" class="quiet-button">Play preview music</button>
+        <p id="response-source-note" class="palette-hint"></p>
+      </section>
+      <div class="palette-panel-heading"><div><h2 id="palette-panel-title">Color cycle</h2><p>12 pairs · click to hold</p></div><button id="palette-play" class="quiet-button">Pause cycle</button></div>
+      <div id="palette-swatches" class="palette-swatches" aria-label="Color pair previews"></div>
+      <div class="cycle-reading"><strong id="palette-now">Lime / periwinkle</strong><span id="palette-position">Cycling · 0%</span></div>
+      <div class="cycle-map"><div class="cycle-legend" aria-hidden="true"><span>Field</span><span>Halo</span><span>Center</span></div><div class="cycle-rails" aria-hidden="true"><i class="field-rail"></i><i class="halo-rail"></i><i class="inner-rail"></i><b class="cycle-marker"></b></div></div>
+      <label class="sr-only" for="palette-scrub">Color cycle position</label><input id="palette-scrub" type="range" min="0" max="12000" step="1" value="0" aria-describedby="palette-scrub-help">
+      <p id="palette-scrub-help" class="palette-hint">Drag to hold any intermediate color. Resume continues from here.</p>
+      <div class="palette-values">
+        <span><i id="palette-field-chip"></i>Field <code id="palette-field-hex"></code></span><span><i id="palette-inner-chip"></i>Center rim <code id="palette-inner-hex"></code></span>
+        <span><i id="palette-halo-chip"></i>Halo <code id="palette-halo-hex"></code></span><span><i id="palette-edge-chip"></i>Edge <code id="palette-edge-hex"></code></span>
+      </div>
+      <label class="palette-setting" for="halo-style"><span>Inner halo</span><select id="halo-style"><option value="curated">Paired colors</option><option value="bridge">Soft bridge</option><option value="contrast">Opposite center</option></select></label>
+      <p id="halo-advice" class="palette-hint"></p>
+      <label class="edge-setting" for="edge-light"><span>Outer edge glow</span><output id="edge-value">35%</output><input id="edge-light" type="range" min="0" max="100" value="35"></label>
+      <p id="palette-media-note" class="palette-hint" hidden>Video stays natural. Field, halo and edge follow the cycle.</p>
+    </aside>
+    </div>
+    <div class="visualizer-caption"><span id="theme-description">One field. One halo. Your music.</span><span id="palette-caption">Lime / periwinkle</span><a id="solar-credit" href="https://www.youtube.com/watch?v=8GeNWKnfWaQ" target="_blank" rel="noopener noreferrer" hidden>Sun footage · timeanddate.com · hybrid eclipse</a><a id="lunar-credit" href="https://www.youtube.com/watch?v=YrK0kwqL_-E" target="_blank" rel="noopener noreferrer" hidden>Moon phase simulation · Solid Screen</a><span id="visualizer-source">Live source audio · Octet</span></div>
+    <p id="visualizer-notice" role="status" aria-live="polite"></p>
+    <details class="performance-panel"><summary>Performance · <output id="render-fps">Measuring…</output></summary><p id="render-performance"></p></details>
+  </main>
+  <div id="nature-videos" hidden aria-hidden="true">
+    <video id="sky-video" muted loop playsinline preload="none" data-src="/visualizer-media/sky.mp4" poster="/visualizer-media/sky.jpg"></video>
+    <video id="water-video" muted loop playsinline preload="none" data-src="/visualizer-media/water.mp4" poster="/visualizer-media/water.jpg"></video>
+    <video id="stars-video" muted loop playsinline preload="none" data-src="/visualizer-media/stars.mp4" poster="/visualizer-media/stars.jpg"></video>
+    <video id="sun-video" muted loop playsinline preload="none" data-src="/visualizer-media/sun.mp4" poster="/visualizer-media/sun.jpg"></video>
+    <video id="lunar-video" muted loop playsinline preload="none" data-src="/visualizer-media/lunar.mp4" poster="/visualizer-media/lunar.jpg"></video>
+  </div>
+</body>
+</html>

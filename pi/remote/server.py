@@ -18,11 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
+from visualizer_state import VisualizerState
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
 ROOT = Path(__file__).parent
 STATE = Path(os.environ.get('STATE_DIRECTORY', '/var/lib/octet-remote'))
+VISUALIZER = VisualizerState(STATE / 'visualizer.json')
 PROFILE = '/opt/camilladsp/configs/exciter-audition.yml'
 PROFILES = {
     PROFILE: ('Exciter audition', 'Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent'),
@@ -740,6 +742,22 @@ def action(name, data):
     return current_status()
 
 
+def visualizer_frame(dsp):
+    """Read source envelopes before output volume/EQ, without another audio clock."""
+    levels = dsp.call('GetSignalLevelsSince', 0.1)
+    running = dsp.call('GetState') == 'Running'
+
+    def channels(name):
+        values = levels.get(name, [])
+        return [max(-120.0, min(0.0, float(value)))
+                if isinstance(value, (int, float)) and math.isfinite(value) else -120.0
+                for value in values[:2]] if isinstance(values, list) else []
+
+    rms, peak = channels('capture_rms'), channels('capture_peak')
+    return dict(available=True, active=running and bool(rms) and bool(peak),
+                rms=rms if running else [], peak=peak if running else [])
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'Octet'
 
@@ -760,6 +778,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def valid_host(self):
         return self.headers.get('Host', '').lower() in {f'{BIND}:{PORT}', f'octet:{PORT}', f'octet.tailf55458.ts.net:{PORT}'}
+
+    def serve_media(self, name, head_only=False):
+        """Bounded local media delivery with byte ranges for seeking/looping."""
+        path = ROOT / 'visualizer-media' / name
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        byte_range = self.headers.get('Range')
+        if byte_range:
+            match = re.fullmatch(r'bytes=([0-9]{0,20})-([0-9]{0,20})', byte_range)
+            valid = bool(match and any(match.groups()))
+            if valid:
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = min(int(last), size - 1) if last else size - 1
+                else:
+                    valid = int(last) > 0
+                    start = max(0, size - int(last))
+                valid = valid and 0 <= start <= end < size
+            if not valid:
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            status = 206
+        self.send_response(status)
+        self.send_header('Content-Type', 'video/mp4' if name.endswith('.mp4') else 'audio/mpeg')
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(end - start + 1))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        if status == 206:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.end_headers()
+        if head_only:
+            return
+        try:
+            with path.open('rb') as stream:
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except OSError:
+            self.close_connection = True
+
+    def do_HEAD(self):
+        if not self.valid_host():
+            self.send_error(403)
+            return
+        name = urlparse(self.path).path.removeprefix('/visualizer-media/')
+        if self.path.startswith('/visualizer-media/') and name in ('sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3'):
+            return self.serve_media(name, head_only=True)
+        self.send_error(404)
 
     def stream_audio(self, url):
         """Buffer the beginning of a progressive stream; preserve byte-range seeks."""
@@ -794,15 +870,65 @@ class Handler(BaseHTTPRequestHandler):
                 # Once headers are sent, never append a JSON error to audio.
                 self.close_connection = True
 
+    def stream_visualizer(self):
+        # One read-only control socket per visible viewer. No PCM, Tidal URLs,
+        # microphone permissions, FIFO output, or playback changes are needed.
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.close_connection = True
+
+        def emit(frame):
+            self.wfile.write(('data: ' + json.dumps(frame, allow_nan=False) + '\n\n').encode())
+            self.wfile.flush()
+
+        try:
+            self.wfile.write(b'retry: 2000\n\n')
+            with DSP() as dsp:
+                while True:
+                    started = time.monotonic()
+                    emit(visualizer_frame(dsp))
+                    time.sleep(max(0, 1 / 15 - (time.monotonic() - started)))
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
+            try:
+                emit(dict(available=False, active=False, rms=[], peak=[]))
+            except OSError:
+                pass
+
     def do_GET(self):
         if not self.valid_host():
             return self.send({'error': 'Unrecognized host'}, 403)
         parsed = urlparse(self.path)
         try:
-            if parsed.path in ('/', '/dsp', '/app.js', '/dsp.js', '/style.css'):
-                name = {'/': 'index.html', '/dsp': 'dsp.html', '/app.js': 'app.js', '/dsp.js': 'dsp.js', '/style.css': 'style.css'}[parsed.path]
+            if parsed.path == '/visualizer/display':
+                body = (ROOT / 'visualizer.html').read_bytes().replace(b'class="visualizer-page"', b'class="visualizer-page projection"')
+                return self.send(body, content_type='text/html; charset=utf-8')
+            if parsed.path == '/visualizer-sync.js':
+                return self.send((ROOT / 'visualizer-sync.js').read_bytes(), content_type='text/javascript; charset=utf-8')
+            if parsed.path == '/api/visualizer/settings':
+                query = parse_qs(parsed.query)
+                if query.get('display') == ['1']:
+                    try:
+                        view = json.loads(query.get('view', ['null'])[0][:512])
+                    except ValueError:
+                        view = None
+                    VISUALIZER.heartbeat(query.get('revision', [''])[0], view)
+                return self.send(VISUALIZER.read())
+            if parsed.path in ('/', '/dsp', '/visualizer', '/app.js', '/dsp.js', '/visualizer.js', '/visualizer-themes.js', '/visualizer-solar.js', '/visualizer-audio.js', '/style.css', '/visualizer.css'):
+                name = {'/': 'index.html', '/dsp': 'dsp.html', '/visualizer': 'visualizer.html', '/app.js': 'app.js', '/dsp.js': 'dsp.js', '/visualizer.js': 'visualizer.js', '/visualizer-themes.js': 'visualizer-themes.js', '/visualizer-solar.js': 'visualizer-solar.js', '/visualizer-audio.js': 'visualizer-audio.js', '/style.css': 'style.css', '/visualizer.css': 'visualizer.css'}[parsed.path]
                 kind = ('text/html' if name.endswith('.html') else 'text/javascript' if name.endswith('.js') else 'text/css') + '; charset=utf-8'
                 return self.send((ROOT / name).read_bytes(), content_type=kind)
+            if parsed.path in ('/visualizer-media/sky.jpg', '/visualizer-media/water.jpg', '/visualizer-media/stars.jpg', '/visualizer-media/solar.jpg', '/visualizer-media/sun.jpg', '/visualizer-media/lunar.jpg'):
+                return self.send((ROOT / parsed.path.lstrip('/')).read_bytes(), content_type='image/jpeg')
+            if parsed.path in ('/visualizer-media/sky.mp4', '/visualizer-media/water.mp4', '/visualizer-media/stars.mp4', '/visualizer-media/solar.mp4', '/visualizer-media/sun.mp4', '/visualizer-media/lunar.mp4', '/visualizer-media/edm.mp3', '/visualizer-media/classical.mp3'):
+                return self.serve_media(parsed.path.rsplit('/', 1)[1])
+            if parsed.path == '/api/visualizer':
+                return self.stream_visualizer()
             if parsed.path == '/api/status':
                 return self.send(current_status())
             if parsed.path == '/api/dsp':
@@ -856,6 +982,8 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError('Expected an object')
+            if self.path == '/api/control/visualizer':
+                return self.send(VISUALIZER.update(data))
             if not self.path.startswith('/api/control/'):
                 return self.send({'error': 'Not found'}, 404)
             self.send(action(self.path.removeprefix('/api/control/'), data))

@@ -3,3 +3,8 @@
 pi/** text eol=lf
 *.sh text eol=lf
 *.service text eol=lf
+
+# Full-resolution projection media are stored through Git LFS.
+pi/remote/visualizer-media/*.mp4 filter=lfs diff=lfs merge=lfs -text
+pi/remote/visualizer-media/*.mp3 filter=lfs diff=lfs merge=lfs -text
+pi/remote/visualizer-media/*.jpg filter=lfs diff=lfs merge=lfs -text

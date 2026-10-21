@@ -1,0 +1,10 @@
+[Unit]
+Description=Octet HDMI visualizer
+
+[Service]
+ExecStart=/opt/octet-remote/launch-visualizer.sh
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Restart=always
+RestartSec=5
+TimeoutStopSec=15

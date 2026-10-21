@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Octet HDMI visualizer
+Exec=systemctl --user start octet-visualizer.service
+Terminal=false
+X-GNOME-Autostart-enabled=true

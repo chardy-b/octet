@@ -6,6 +6,7 @@ __pycache__/
 # build output
 dist/
 build/
+out/
 *.egg-info/
 
 # raw recordings and results (100+ MB); the code regenerates everything from them

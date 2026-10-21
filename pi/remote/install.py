@@ -30,9 +30,14 @@ def main():
             shutil.copy2(path, backup / path.name)
     target = Path('/opt/octet-remote')
     target.mkdir(mode=0o755, exist_ok=True)
-    for name in ['server.py', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'README.md']:
+    for name in ['server.py', 'visualizer_state.py', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+                 'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)
+    (target / 'visualizer-media').mkdir(mode=0o755, exist_ok=True)
+    for name in ['sky.jpg', 'water.jpg', 'stars.jpg', 'solar.jpg', 'sun.jpg', 'lunar.jpg', 'sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3', 'README.md']:
+        shutil.copy2(source / 'visualizer-media' / name, target / 'visualizer-media' / name)
+        os.chmod(target / 'visualizer-media' / name, 0o644)
     for name in ['exciter-audition.yml']:
         if (source / name).exists():
             shutil.copy2(source / name, Path('/opt/camilladsp/configs') / name)

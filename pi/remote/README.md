@@ -1,6 +1,33 @@
 # Octet remote music controls
 
 Runs on the Pi at **http://100.100.177.81:8767**, bound only to its Tailscale address.
+
+### HDMI projection and remote selection
+
+`/visualizer` controls the Pi's selected artwork. Theme, palette, halo, response,
+video framing, eclipse lighting/speed, playback position and pause state are
+shared through `/api/visualizer/settings` and `/api/control/visualizer`, with the
+same host/origin checks as the music controls. Settings are validated and saved
+atomically in `/var/lib/octet-remote/visualizer.json`. A display heartbeat tells
+the controller when the HDMI browser has applied the latest settings. Its
+`display.view` report includes the actual theme, viewport dimensions, renderer,
+whether the artwork fills that viewport, and the count of visible controls.
+This verifies the kiosk browser even when HDMI is unplugged; it does not verify
+a physical projector image.
+
+`/visualizer/display` is the artwork-only view: a full viewport with black
+surroundings, no navigation, controls, cursor or playback overlays. The Pi's
+existing auto-login desktop starts `octet-visualizer.service` through the XDG
+autostart entry. Chromium runs in Wayland kiosk mode with a dedicated profile;
+the launcher waits for both the compositor and web service and restarts after
+a browser failure. Plug the projector/display into either active HDMI output.
+
+For visualizer-only updates, copy this directory to a staging folder on Octet
+and run `sudo python3 install-visualizer.py` there. It backs up replaced files,
+updates the web app and media, installs the per-user kiosk service/autostart,
+and restarts only the web server and kiosk. It preserves music/DSP configuration
+and their running services. This assumes Octet's existing `octet` desktop user,
+UID 1000, automatic graphical login and Tailscale address.
 Provides Tidal track/album search, favorites, saved playlists, queue, playback, seeking, DSP volume,
 and stop/mute. Tidal credentials stay on the Pi and use the existing upmpdcli login.
 No external web hosting or browser plugins are needed. The server uses Python 3
@@ -16,6 +43,226 @@ audition settings, not measured crossover or power limits. Physical L/R and
 polarity remain to be confirmed. The app permits the audition preset and the
 independent output preset described below. Other configurations block playback
 and unmute through these controls.
+
+## Visualizer
+
+Open **Visualizer** in the navigation, or `/visualizer`. The first theme,
+**turell 1**, is a fixed colored disc and a soft halo inside a large circular
+light field. Everything outside the outer circle is pure black.
+
+The **Theme** selector also offers **turell 2 · Sky** (moving daytime sky inside
+a fixed circular aperture), **turell 3 · Night** (a night-sky timelapse),
+**turell 4 · Eclipse** (a fixed black disc and luminous corona), **Well** (four
+square stone ledges opening onto stars), **turell 5 · Solar** (real solar
+surface footage with a modeled eclipse, corona), **Overlap** (three translucent discs
+holding sky, water and night), and **Water · Underwater** (a maximum-size circular
+water movie with subtle refraction, cyan light and drifting caustic highlights).
+The same selector is available in fullscreen, and the choice is remembered on
+this browser. Switching themes keeps the live audio connection or simulation
+running. These themes use WebGL with analytic 3D intersections, beveled
+edges, soft fill/rim lighting, subtle parallax and slow independent movement.
+Sky, water and stars are actual muted 4K video textures at their native frame
+rates: 29.97, 60 and 30 fps. Source frames are remuxed without another lossy
+encode. Solar's surface texture uses an unobscured 1080p/30 section of the
+broadcast; the Moon and corona update at the renderer's cadence.
+Only the videos used by the visible theme play; hidden pages pause them.
+Reduced-motion preferences freeze the video and geometric motion. Devices
+without WebGL show simplified geometric versions. See `visualizer-media/README.md`.
+**Full screen** expands the artwork; **Esc** or **Exit full screen** returns to
+the page. Move the pointer or tap to reveal the fullscreen controls. Browsers
+without the Fullscreen API use a view that fills the browser window instead.
+
+The same-origin `/api/visualizer` event stream supplies live pre-DSP input RMS
+and peak levels at up to 15 Hz, using CamillaDSP's read-only
+`GetSignalLevelsSince` and `GetState` commands. Source energy expands the halo,
+peaks brighten it, and accumulated energy gently affects color-cycle speed.
+This is envelope-based visualization, not frequency spectrum analysis. It works
+with whatever audio reaches CamillaDSP, independently of listening volume or
+output EQ; the source can still animate while the output is muted.
+Live Pi audio continues to play on the Pi; no microphone permission is required.
+
+Each visible viewer has one control connection; hiding or leaving the page
+closes the stream. Silence settles to a still image, stale/disconnected data
+fades out, and the browser reconnects automatically. Reduced-motion preferences
+soften size/brightness changes and color movement. The disabled MPD FIFO stays
+disabled, avoiding an additional playback timing clock. The installer copies
+the visualizer scripts, styles and local media alongside the existing pages.
+
+**Simulate music** plays the selected local MP3: **EDM Detection Mode**, an
+electronic dance track, or Satie's solo-piano **Gymnopédie No. 1**, both by/
+performed by Kevin MacLeod under CC BY 3.0. Track credits and license links are
+shown beside the player. Native controls provide play/pause, seeking and volume;
+the track selector and pause button are also available in fullscreen. Music
+continues across theme changes and stops when leaving the page.
+
+The music actually heard in the browser is analyzed with Web Audio: RMS/peak,
+30–200 Hz bass, 200 Hz–3 kHz mids, 3–14 kHz highs, and spectral centroid. Smoothed
+frequency balance changes the palette and surface lighting. Bass/mid/high meters
+show the response. The local mode closes the Pi meter stream; **Stop simulation**
+pauses the sample and reconnects to the Pi. The Pi feed remains envelope-based
+and does not claim to supply frequency bands. Local music needs no Pi connection.
+
+The inner disc stays fixed in size. Two-stage envelope smoothing gives the halo
+gentle inertia, with layered atmospheric light and a tighter corona. OKLab
+palette interpolation and subtle static dithering keep long color transitions
+smooth. Both canvas backing surfaces allow 16 megapixels and 8192 pixels per
+axis, supporting a full UHD/4K projection without the previous downscaling.
+
+**Color cycle** shows all twelve color relationships as clickable circular
+previews, including saturated magenta/periwinkle, magenta/ultraviolet and
+lagoon/orchid studies drawn from the supplied references. Three aligned bands
+show the field, halo and center colors throughout the entire closed cycle.
+Dragging the scrubber holds an exact intermediate blend; **Resume cycle**
+continues from that position. The compact scrubber also works in fullscreen.
+Clicking a preview or choosing a named palette holds that pair. RGB/hex swatches
+show the current field, center rim, halo and outer-edge tint.
+
+The field, inner disc and halo all transition together; the inner disc can be
+teal, apricot, amber, celadon, lavender, vermilion, pale lemon and midnight, as
+well as the original periwinkle. Colors are remembered and also selectable in
+fullscreen. Sky, Night and Solar use the paired field/halo while preserving the movie
+inside the aperture.
+
+**Background video** provides an independent timeline, zoom and play/pause for
+Sky, Night and Lunar, beside the artwork and in fullscreen. Scrubbing updates
+paused video too, without seeking or pausing the music. Zoom (50–300%) changes
+sampling inside the fixed circular aperture and is remembered per theme.
+
+### Hybrid Solar
+
+Solar uses `sun.mp4`, an unobscured, original-cadence 18-second clip from the
+beginning of the source broadcast, rather than its damaged eclipse sequence.
+A stabilized source crop retains the real filaments, active regions and fine
+surface detail. The Moon, its uneven limb, corona, chromosphere, illustrative
+prominence loops and additional restrained sunspot groups are generated in a
+separate shader. Solar has an independent 12-minute eclipse clock, not a video
+seek: the path compresses ingress/egress and provides at least four minutes of
+totality at 1×. Quarter speed extends that to at least 16 minutes.
+This is an illustrative installation, rather than an ephemeris reconstruction.
+
+**Eclipse mode** defaults to **Realism**: the Moon's coverage progressively
+darkens the ambient field and eclipsed side of the inner halo. At totality the
+colored glow recedes, revealing white coronal streamers and pink prominences.
+**Artistic · colored field** retains more ambient color through totality. Both
+modes use the same contact geometry and speed control; timing is stretched for
+the installation rather than following a real observer's ephemeris.
+
+**Solar color** compares **Natural · source color** with **Yellow → red cycle**;
+bright yellow, amber and deep-red holds are also available. Natural preserves
+the recording's filtered orange palette. The other choices grade the same
+surface detail; they do not model a cooling Sun. Near contact the remaining
+light resolves into beads and a diamond-ring bloom. The white corona and
+pink-red chromosphere emerge as the photosphere is covered, following
+[NASA's eclipse guide](https://science.nasa.gov/feature/solar-eclipse-guide/).
+The Sun's apparent zoom (50–300%) scales the whole eclipse view, independently
+of music. The large outer circle and black surroundings stay fixed.
+
+**Full Sun**, **Diamond ring**, and **Totality** jump to useful comparison points.
+Play/pause, scrubbing, quarter/half/normal/double/quadruple speed, treatment,
+zoom and lighting controls also work in fullscreen. Eclipse speed does not
+accelerate the real surface clip or coronal motion. Hiding the page,
+reduced-motion preferences, and pausing the eclipse hold all solar motion.
+
+During totality a brighter white inner corona extends into broad asymmetric
+streamers and a long, soft falloff. Low-amplitude angular bending, outward
+filament flow and slow exposure breathing add continuous subtle motion. This
+animation has its own elapsed-time clock, so changing eclipse speed or scrubbing
+the Moon does not make the corona jerk or race. The black lunar disc and the
+outer circular boundary stay fixed in size.
+
+Solar and the other WebGL themes cache separate shader programs. Surface shading
+runs once per pixel; extra samples are confined to geometric silhouettes, and
+Solar uses analytic pixel-width antialiasing. Video uploads occur only on decoded
+frames. **Performance** shows render-loop cadence, native video cadence and
+browser-reported dropped frames; it does not measure the host display refresh.
+
+**Inner halo** compares the curated pairing, a lighter/desaturated bridge
+between the field and center, and a pale hue opposite the center. Curated violet
+works especially well between magenta and blue; soft violet bridges teal and
+orchid, while amber/cream separates lime from periwinkle. Context and luminance
+contrast matter alongside hue: a saturated complementary band can overpower
+the quiet composition. **Outer edge glow** independently controls a broader
+wash and narrower rim inside the outer circle. Outside remains pure black.
+
+The central disc has an off-center radial gradient: a warmer, brighter core
+transitions to a deeper, cooler rim, with a sharp silhouette and no beat-driven
+scaling. Palette interpolation includes the core color so it stays coordinated
+through scrubbing and cycling. The ultraviolet study uses a magenta-violet core
+and electric-violet rim inspired by the user's second reference.
+
+### Constructing the reference gradients
+
+Keep geometry, spatial light falloff and time-based color changes independent.
+For any shape, evaluate its signed distance `d` (zero on the boundary), then
+layer `exp(-(d / width)^2)` light bands at different widths and intensities.
+A narrow saturated band and a much wider, weaker wash suggest light scattering
+without distorting the shape. A sharp interior mask preserves the flat aperture.
+The same model works for circles, rounded rectangles and triangles, using the
+corresponding distance function. The current implementation applies this idea
+to the circular inner halo and outer-edge wash; the reference's rectangle and
+triangle are design directions, not new selectable themes.
+
+The blue/magenta reference suggests a blue field with a violet transition to
+a magenta surround; the teal/orchid reference suggests a violet boundary around
+a pale orchid plane against a green-blue field. These are interpretations of
+the supplied images, not measurements of the original installations. Store
+field, center rim, center core, halo and edge as separate colors, interpolate
+them perceptually, and use smoothstep easing for slow movement through time.
+Music can gently affect halo width/brightness while geometry stays still.
+
+The palette studies draw on [UT Austin's description of The Color Inside](https://www.youtube.com/watch?v=y4XO0YJI2_k):
+pink, purple, white, green and yellow light, including teal sky against saturated
+watermelon illumination. [Landmarks](https://landmarks.utexas.edu/artwork/color-inside)
+describes how the surrounding light alters perceived sky color. The
+[Albers Foundation](https://www.albersfoundation.org/alberses/teaching/interaction-of-color)
+provides the contextual-color principle behind the paired compositions; warm/cool
+and complementary relationships guide the additional studies. RGB values are
+digital approximations, not Turrell's lighting specifications. Perceptual OKLab
+interpolation follows the [CSS Color 4](https://www.w3.org/TR/css-color/)
+approach for smooth gradients.
+
+### Turell 1 music response preview
+
+The Music response panel offers Original, Bass Bloom, Gradient Depth, Outer Rim,
+Treble Shimmer, and Combined. Combined layers bloom, depth and rim; shimmer stays
+an independent comparison. Subtle, Balanced and Strong scale the light response.
+Both circle radii remain constant. These choices persist and synchronize with the
+fullscreen controls. Play preview music uses the selected electronic or classical
+MP3; pausing lets the light settle. Selecting a response does not start audio.
+
+New responses read the local analyser before the slower artwork smoothing:
+bass opens the halo, overall dynamics increase core/rim gradient contrast,
+a slower envelope breathes the outer edge, and upper-frequency energy lights a
+soft narrow inner halo. Attack/release smoothing avoids random flicker, and
+reduced-motion preferences attenuate the response. Original retains the previous
+slow halo. The Pi feed currently carries overall RMS/peak dynamics, so live Pi
+responses use those envelopes; separate bass/treble behavior requires local sample
+playback. The interface explains this distinction.
+
+Turell Lunar plays a locally stored 4K, 25 fps lunar-phase simulation from Solid
+Screen. A fixed square crop fits the lunar disc to the circular aperture. The
+source video audio is muted; Octet music drives the surrounding light.
+
+### Proposed installation: Reclaimed
+
+A restrained brutalist garden viewed from below: three enormous concrete beams
+frame one offset opening to daylight. Deep reveals, board-formed grain, chamfered
+edges and contact shadows make the ceiling read as architecture. The camera
+stays still. Most of the image remains calm, pale concrete and black negative
+space, with greenery concentrated along seams.
+
+Vines follow predetermined branching curves through cracks, then produce small
+paired leaves. Ferns unfold at a few ledges; occasional white or pale yellow
+flowers open in the light. Growth unfolds over minutes, with older growth
+receding in shadow before a gentle loop. Avoid covering the whole composition
+or creating a rapidly changing jungle.
+
+Rendering direction: instanced leaf meshes along spline stems, progressive
+curve reveal, concrete normal/roughness maps, ambient occlusion and leaf contact
+shadows. Translucent leaf lighting and one slowly drifting cloud shadow provide
+depth. Sustained musical energy can slightly accelerate growth and warm the
+daylight; individual beats should never move or resize the concrete structures.
+This concept is not yet a selectable theme.
 
 ## Tidal playlists
 
