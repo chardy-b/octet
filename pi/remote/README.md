@@ -33,6 +33,56 @@ and stop/mute. Tidal credentials stay on the Pi and use the existing upmpdcli lo
 No external web hosting or browser plugins are needed. The server uses Python 3
 and the existing `tidalapi` package. The installer also uses the existing PyYAML.
 
+## Audio sources
+
+The **Speaker output levels** panel shows all eight digital playback channels
+after speaker DSP, with output numbers and the configured labels (or Octet's
+EX30, EX32, subwoofer and tweeter left/right assignments). Each has RMS, peak hold,
+near-clipping and latched clip indicators. Output clip indicators have their own
+reset button. These are CamillaDSP playback meters, not amplifier power or
+acoustic SPL measurements. They share the input-meter sampler and polling request;
+stalled, stopped or missing output readings show unavailable rather than old levels.
+
+The **Input levels** panel shows every available analogue USB input, including
+unselected inputs while Tidal is playing. RMS bars, a one-second peak marker and
+numeric peak/RMS readings are measured before speaker volume and EQ, so they also
+work with the outputs muted. **Signal** means a peak above −80 dBFS; **Near clip**
+warns at −3 dBFS. The red **CLIP** indicator is triggered within 0.01 dB of digital
+full scale and stays lit until **Reset clip indicators** is pressed. This detects
+digital full-scale peaks; distortion earlier in an analogue source can occur
+without reaching digital full scale.
+
+Visible Music pages share one meter sampler. For the interface selected in the
+DSP, it reads CamillaDSP's raw capture levels for all analogue inputs, independently
+of the mono/stereo routing. Other interfaces use an in-memory `arecord` reader;
+no audio is saved or sent to the browser. Capture readers release before a source
+change or Auto Tune start and stop within three seconds of the last visible viewer.
+Busy, disconnected and stale inputs show unavailable instead of old signal values.
+
+The Music page's **Audio source** selector switches between Tidal and connected
+USB capture inputs. With the current Audient iD14, choose **Inputs 1 / 2 · stereo**,
+**Input 1 · mono**, or **Input 2 · mono**. Mono feeds both sides of the speaker
+pipeline. HDMI ports and the internal ALSA loopback are not offered as line inputs.
+The iD14's eight optical capture channels are excluded until a separate external
+digital clock setup is implemented; they are not additional analogue sockets.
+
+Choose a source and press **Switch source**. Switching pauses Tidal, retains its
+queue and position, and leaves the output muted. For a line input, press **Unmute**
+when ready. For Tidal, press **Play** to resume. Input 1 may have a live microphone
+connected, so start at an appropriate listening level to avoid feedback.
+The same crossover, EQ, polarity, output mutes and master level apply to all
+sources. Track transport is hidden while a physical input is selected; browsing
+and adding tracks to the Tidal queue remain available.
+
+Source switching requires the **Output DSP controls** preset. It adds a source
+mixer before the existing stereo-to-eight-output pipeline and captures all ten
+iD14 channels in the hardware's native format. USB inputs use asynchronous
+resampling and rate adjustment to follow the DAC8x clock. Returning to Tidal
+restores its original capture and clock settings. The source is saved in the
+existing DSP preset and survives service restarts; boot remains muted. Each
+candidate is checked by CamillaDSP before activation. A failed activation restores
+the previous preset and stays muted. A disconnected source is shown as unavailable.
+
 The initial `exciter-audition.yml` preset routes left/right to outputs 1/2
 (EX30HESF2-4) and 3/4 (EX32VBDS-4). Outputs 5–8 receive digital silence. Both
 exciter types play a temporary 500 Hz–3.5 kHz band with LR4 filters. There is no

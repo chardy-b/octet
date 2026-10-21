@@ -81,7 +81,7 @@ class Playlists(unittest.TestCase):
     def dsp(self):
         dsp = MagicMock()
         dsp.__enter__.return_value = dsp
-        dsp.call.side_effect = lambda name, *args: str(server.CHANNEL_PROFILE) if name == 'GetConfigFilePath' else False
+        dsp.call.side_effect = lambda name, *args: str(server.CHANNEL_PROFILE) if name == 'GetConfigFilePath' else json.dumps({'devices': {'capture': {'device': 'hw:Loopback,1,0'}}}) if name == 'GetConfigJson' else False
         return dsp
 
     def contents(self):

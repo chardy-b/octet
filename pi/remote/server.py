@@ -19,6 +19,8 @@ from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 from visualizer_state import VisualizerState
+from audio_sources import discover_sources, source_config, source_metadata, meter_channels
+from input_levels import InputLevels
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
@@ -41,6 +43,7 @@ CATALOG = {}
 PLAYLIST_CACHE = {}
 PLAYLIST_CACHE_SECONDS = 60
 MAX_PLAYLIST_TRACKS = 10000
+ACTIVE_CAPTURE_CHANNELS = (0, 1)
 STREAM_PREBUFFER_BYTES = 1024 * 1024
 logging.getLogger('tidalapi').setLevel(logging.ERROR)
 try:
@@ -139,6 +142,19 @@ class DSP:
             if result.get('result') != 'Ok':
                 raise RuntimeError('DSP could not complete that action')
             return result.get('value')
+
+
+def meter_audio_owned():
+    # The local ownership record avoids polling the Auto Tune HTTP service at meter rate.
+    try:
+        return bool(json.loads(Path('/var/lib/octet-autotune/current.json').read_text()).get('audio_owned'))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
+INPUT_LEVELS = InputLevels(LOCK, DSP, discover_sources, meter_audio_owned)
 
 
 def decode_credentials(data):
@@ -263,6 +279,7 @@ def play_playlist(data):
     commands = ['addid ' + quote(f'http://{BIND}:{PORT}/stream/{track_id(row["id"])}') for row in rows]
     with LOCK, DSP() as dsp:
         approved(dsp)
+        require_tidal(dsp)
         STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
         with TIDAL_LOCK:
             (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
@@ -310,6 +327,67 @@ def stream_url(identifier):
 def approved(dsp):
     if dsp.call('GetConfigFilePath') not in PROFILES:
         raise RuntimeError('Select an approved exciter DSP preset before playback')
+
+
+def require_tidal(dsp):
+    if source_metadata(json.loads(dsp.call('GetConfigJson')))['id'] != 'tidal':
+        raise RuntimeError('Select Tidal as the source before starting music')
+
+
+def select_source(identifier):
+    global ACTIVE_CAPTURE_CHANNELS
+    import yaml
+    if not isinstance(identifier, str):
+        raise ValueError('Choose an audio source')
+    source = next((item for item in discover_sources() if item['id'] == identifier), None)
+    if source is None:
+        raise ValueError('That input is no longer connected. Refresh the available sources.')
+    with DSP() as dsp:
+        if dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE):
+            raise RuntimeError('Source selection requires the Output DSP controls preset')
+        config = json.loads(dsp.call('GetConfigJson'))
+        if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
+            return
+    updated = source_config(config, source)
+    candidate = CHANNEL_PROFILE.with_name('channel-dsp-source-candidate.yml')
+    previous = CHANNEL_PROFILE.read_bytes()
+    try:
+        candidate.write_text(yaml.safe_dump(updated, sort_keys=False))
+        candidate.chmod(0o640)
+        validation = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(candidate)], capture_output=True, timeout=10)
+        if validation.returncode:
+            raise RuntimeError('DSP rejected the source; the previous source was retained')
+        INPUT_LEVELS.release()
+        with DSP() as dsp:
+            dsp.call('SetMute', True)
+        try:
+            # Retain the queue and its position, but never play Tidal in the background.
+            mpd('pause 1')
+            candidate.replace(CHANNEL_PROFILE)
+            with DSP() as dsp:
+                dsp.call('Reload')
+            for _ in range(60):
+                time.sleep(.1)
+                with DSP() as dsp:
+                    loaded = json.loads(dsp.call('GetConfigJson'))
+                    if (source_metadata(loaded)['id'] == identifier
+                            and all(loaded['devices']['capture'].get(key) == value
+                                    for key, value in updated['devices']['capture'].items())
+                            and dsp.call('GetState') == 'Running'):
+                        ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
+                        return  # Explicit Unmute/Play is required after a source change.
+            raise RuntimeError('The selected input did not start')
+        except Exception:
+            candidate.write_bytes(previous)
+            candidate.chmod(0o640)
+            candidate.replace(CHANNEL_PROFILE)
+            with DSP() as dsp:
+                dsp.call('SetMute', True)
+                dsp.call('Reload')
+            ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
+            raise RuntimeError('Source change failed; the previous source was restored and output is muted')
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def volume_ceiling():
@@ -475,7 +553,6 @@ def always_active_controls(config, output):
     return list(controls.values())
 
 
-
 def change_always_active(config, output, values):
     polarity_parameters(config, output)
     controls = always_active_controls(config, output)
@@ -522,7 +599,6 @@ def change_always_active(config, output, values):
         pipeline.append(dict(type='Filter', channels=[output - 1], names=[replacements['__attenuation']],
                              description=f'Output {output} attenuation'))
     config['pipeline'] = pipeline
-
 
 
 def set_channel_control(output, control, enabled):
@@ -623,10 +699,12 @@ def dsp_status():
 
 
 def current_status():
+    global ACTIVE_CAPTURE_CHANNELS
     result = dict(tidal_connected=SESSION is not None, profile='Exciter audition',
                   profile_description='Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent',
                   min_db=MIN_DB, max_db=volume_ceiling(), level_unlocked=LEVELS_UNLOCKED,
-                  queue=[], playback='stop', elapsed=0, duration=0)
+                  queue=[], playback='stop', elapsed=0, duration=0,
+                  sources=discover_sources(), source='unknown', source_label='Source unavailable')
     try:
         status, song, playlist = mpd('status', 'currentsong', 'playlistinfo')
         status, song = dict(status), dict(song)
@@ -644,12 +722,21 @@ def current_status():
     except (OSError, RuntimeError, ValueError):
         result['player_error'] = 'Music player is offline'
     try:
-        with DSP() as dsp:
+        with LOCK, DSP() as dsp:
             profile = dsp.call('GetConfigFilePath')
+            config = json.loads(dsp.call('GetConfigJson'))
+            source = source_metadata(config)
+            ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
+            selected = next((item for item in result['sources'] if item['id'] == source['id']), None)
+            if selected is None:
+                result['sources'].append(dict(id=source['id'], label=source['label'] + ' · disconnected',
+                                              available=False, group='Unavailable', description='Reconnect the interface or choose Tidal.'))
+            result.update(source=source['id'], source_label=source['label'])
             label, description = PROFILES.get(profile, ('Other DSP preset', 'Playback controls require an approved exciter preset'))
             result.update(volume=dsp.call('GetVolume'), muted=dsp.call('GetMute'),
-                          dsp_state=dsp.call('GetState'), ready=profile in PROFILES,
+                          dsp_state=dsp.call('GetState'), ready=profile in PROFILES and selected is not None,
                           profile=label, profile_description=description)
+            result['source_switching_available'] = profile == str(CHANNEL_PROFILE)
     except (OSError, RuntimeError, ValueError):
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
     return result
@@ -660,7 +747,9 @@ def action(name, data):
     if name == 'play-playlist':
         return play_playlist(data)
     with LOCK:
-        if name == 'unlock':
+        if name == 'source':
+            select_source(data.get('id'))
+        elif name == 'unlock':
             enabled = data.get('enabled')
             if not isinstance(enabled, bool):
                 raise ValueError('Expected an unlock setting')
@@ -689,6 +778,9 @@ def action(name, data):
             with DSP() as dsp:
                 if not data['muted']:
                     approved(dsp)
+                    source = source_metadata(json.loads(dsp.call('GetConfigJson')))['id']
+                    if source not in {item['id'] for item in discover_sources()} or dsp.call('GetState') != 'Running':
+                        raise RuntimeError('The selected source is unavailable. Reconnect it or choose Tidal.')
                 dsp.call('SetMute', data['muted'])
         elif name == 'volume':
             value = float(data['db'])
@@ -706,6 +798,8 @@ def action(name, data):
             (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
             with DSP() as dsp:
                 approved(dsp)
+                if name == 'play':
+                    require_tidal(dsp)
                 result = mpd('addid ' + quote(f'http://{BIND}:{PORT}/stream/{identifier}'))
                 songid = dict(result[0])['Id']
                 if name == 'play':
@@ -718,6 +812,7 @@ def action(name, data):
         elif name in ('resume', 'next', 'previous', 'position'):
             with DSP() as dsp:
                 approved(dsp)
+                require_tidal(dsp)
                 command = {'resume': 'play', 'next': 'next', 'previous': 'previous'}.get(name)
                 if name == 'position':
                     position = int(data['position'])
@@ -730,12 +825,15 @@ def action(name, data):
             mpd('pause 1')
         elif name == 'clear':
             with DSP() as dsp:
-                dsp.call('SetMute', True)
+                if source_metadata(json.loads(dsp.call('GetConfigJson')))['id'] == 'tidal':
+                    dsp.call('SetMute', True)
             mpd('clear')
         elif name == 'seek':
             seconds = float(data['seconds'])
             if not math.isfinite(seconds) or seconds < 0 or seconds > 86400:
                 raise ValueError('Invalid seek position')
+            with DSP() as dsp:
+                require_tidal(dsp)
             mpd('seekcur ' + str(seconds))
         else:
             raise ValueError('Unknown control')
@@ -751,7 +849,8 @@ def visualizer_frame(dsp):
         values = levels.get(name, [])
         return [max(-120.0, min(0.0, float(value)))
                 if isinstance(value, (int, float)) and math.isfinite(value) else -120.0
-                for value in values[:2]] if isinstance(values, list) else []
+                for channel in ACTIVE_CAPTURE_CHANNELS if channel < len(values)
+                for value in [values[channel]]] if isinstance(values, list) else []
 
     rms, peak = channels('capture_rms'), channels('capture_peak')
     return dict(available=True, active=running and bool(rms) and bool(peak),
@@ -905,6 +1004,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'error': 'Unrecognized host'}, 403)
         parsed = urlparse(self.path)
         try:
+            if parsed.path == '/input-levels.js':
+                return self.send((ROOT / 'input-levels.js').read_bytes(), content_type='text/javascript; charset=utf-8')
             if parsed.path == '/visualizer/display':
                 body = (ROOT / 'visualizer.html').read_bytes().replace(b'class="visualizer-page"', b'class="visualizer-page projection"')
                 return self.send(body, content_type='text/html; charset=utf-8')
@@ -931,6 +1032,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_visualizer()
             if parsed.path == '/api/status':
                 return self.send(current_status())
+            if parsed.path == '/api/input-levels':
+                return self.send(INPUT_LEVELS.snapshot())
             if parsed.path == '/api/dsp':
                 return self.send(dsp_status())
             if parsed.path == '/api/playlists':
@@ -1001,6 +1104,7 @@ if __name__ == '__main__':
     try:
         with DSP() as dsp:
             LEVELS_UNLOCKED = dsp.call('GetVolume') > MAX_DB
+            ACTIVE_CAPTURE_CHANNELS = meter_channels(json.loads(dsp.call('GetConfigJson')))
     except (OSError, RuntimeError):
         pass
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)

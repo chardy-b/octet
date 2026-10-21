@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,7 @@ class PlaybackGuards(unittest.TestCase):
     def dsp(self, config=server.PROFILE):
         mock = MagicMock()
         mock.__enter__.return_value = mock
-        mock.call.side_effect = lambda command, *args: config if command == 'GetConfigFilePath' else None
+        mock.call.side_effect = lambda command, *args: config if command == 'GetConfigFilePath' else json.dumps({'devices': {'capture': {'device': 'hw:Loopback,1,0'}}}) if command == 'GetConfigJson' else None
         return mock
 
     def test_volume_rejects_excessive_or_nonfinite_levels(self):
