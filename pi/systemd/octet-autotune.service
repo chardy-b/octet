@@ -1,0 +1,26 @@
+[Unit]
+Description=Octet automatic measurement and tuning
+After=sound.target network.target
+
+[Service]
+Type=simple
+User=octet
+Group=audio
+WorkingDirectory=/opt/octet-measure
+Environment=OCTET_TUNE_DATA=/var/lib/octet-autotune
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OPENBLAS_NUM_THREADS=2
+ExecStart=/opt/octet-tune-venv/bin/python -m octetmeasure.autotune.web
+StateDirectory=octet-autotune
+StateDirectoryMode=0750
+UMask=0027
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+PrivateTmp=true
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -68,13 +68,13 @@ def find_device(name: str, kind: str, api: str | None = None) -> int:
     if not name:
         idx = default_device(kind)
         if idx is None:
-            raise SystemExit(f"No {kind} device found. Run `devices` to list them.")
+            raise RuntimeError(f"No {kind} device found. Run `devices` to list them.")
         return idx
     api = api or preferred_api()
     hits = [d for d in list_devices()
             if name.lower() in d["name"].lower() and d["api"] == api and d[key] > 0]
     if not hits:
-        raise SystemExit(f"No {kind} device matching {name!r} on {api}. Run `devices` to list them.")
+        raise RuntimeError(f"No {kind} device matching {name!r} on {api}. Run `devices` to list them.")
     return hits[0]["index"]
 
 

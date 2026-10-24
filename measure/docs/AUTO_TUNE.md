@@ -5,6 +5,66 @@ Windows, macOS or Linux controls the same service. Eight physical outputs map to
 left/right sub, exciter A, exciter B and tweeter. The original measurement UI and
 CLI remain available.
 
+## Auto mode in the music controls
+
+On the deployed Pi, open the music app’s **DSP** page and use **Auto mode**.
+Connect EMM-6 serial 38327 to Audient iD14 input 1 with phantom power, fix it at
+the listening position, enter a profile name, confirm microphone readiness and
+press **Start Auto mode**. The fixed-position workflow automatically runs levels,
+eight-driver measurements, crossover search, candidate measurements, one-position
+room EQ, final verification and active-path verification. Completed runs appear
+in **Saved system profiles** and are applied muted at a main level of −36 dB.
+Unmute/start music deliberately after the result is ready.
+
+Choose the connected **Channel pairs to measure** before starting: A / EX30
+(1/2), B / EX32 (3/4), subs (5/6), and tweeters (7/8). At least A or B must be
+selected. Only selected pairs play or participate in crossover and EQ fitting;
+unselected outputs remain silent and muted in the saved eight-output profile.
+With one exciter pair, tuning searches its crossovers to the selected sub and/or
+tweeter pairs. An included driver with insufficient signal still stops the run;
+deselect a disconnected pair deliberately instead of accepting a bad measurement.
+The last successful start remembers the pair selection. Existing saved profiles
+keep their original selection; profiles predating this option include all pairs.
+
+Automatic level checks reuse a compatible previous driver recording, including
+recordings from runs that stopped on a disconnected driver. They estimate a test
+level with six dB of margin above the configured signal-quality floor, then play
+a short protected check. The check stops once the signal has adequate margin;
+additional three-dB steps occur only when needed and never exceed the configured
+ceiling. With no usable recording the check starts at the configured quiet level.
+Crossover, room and active-path checks also respect these measured test levels.
+These are digital dBFS levels, not calibrated room SPL; changes in amplifier gain,
+microphone gain or background noise are checked again. The guided workflow still
+uses its manual ramp and review step.
+
+For the Oct 23 recording with B disconnected, the estimated repeat levels are
+about **−39 dBFS for A** and **−36 dBFS for subs and tweeters**, compared with
+the previous −30 dBFS. Short checks confirm or adjust these estimates.
+
+**Stop tones** interrupts direct playback. **Restore before tuning** recovers the
+saved pre-run configuration. Music and manual DSP changes are blocked while a run
+owns the audio devices, including after cancellation until settings are restored.
+Profile recall validates the saved checksum, tweeter guards and output ceilings;
+it does not play a new verification sweep or require the microphone.
+
+The standalone service is `octet-autotune` on loopback port 8766, proxied through
+the existing Tailscale-only music server. Code is installed in `/opt/octet-measure`,
+with the dedicated Python environment `/opt/octet-tune-venv`. Runs and profile
+manifests live in `/var/lib/octet-autotune`. The live speaker profile is
+`/var/lib/octet-autotune/speaker.yaml`; device names and test ceilings live there.
+The deployment keeps its original web files, audio configuration and state file
+under `/var/backups/octet-autotune`.
+
+The sub/panel search now extends to **500 Hz**. Tweeters on outputs 7/8 retain a
+separate, mandatory **3500 Hz LR4 or LR8 safety high-pass** during raw measurements,
+rendered candidates and exported playback. The music page also rejects lowering
+the manual tweeter high-pass below this floor. Relative gain matching uses
+attenuation only, and every tuned output ends with a hard digital sample ceiling.
+These ceilings are configured bounds, not automatic amplifier/excursion ratings.
+
+The guided multi-position workflow below remains available through the original
+measurement app and CLI. Physical microphone moves are not automated.
+
 ## Try it without hardware
 
 ```sh
@@ -161,3 +221,14 @@ emergency stop, microphone disconnection, failed activation and rollback on the
 actual Pi. Confirm the reference-position result also holds across the listening
 area. Absolute SPL, thermal protection and mechanically moving the microphone
 are outside the software's capabilities.
+
+### Saved-profile measurement graphs
+
+Select a saved profile on the DSP page and press **View measurements**. This is
+read-only and works independently of the active listening profile. Left/right
+system plots compare the measured response before room EQ with the final measured
+response and target shape. The output selector shows individual driver response,
+predicted response with DSP, measured/predicted phase, delay, polarity and relative
+attenuation. Hover or use arrow keys to read graph values. Levels are relative dB,
+not calibrated SPL. Manual settings backups show an explicit no-measurements
+message; they do not fabricate an acoustic result.

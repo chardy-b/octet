@@ -17,14 +17,24 @@ def _edge(spec, auto, kind, lo, hi, step):
 def fit_measurements(names, cal=None, gate_ms=None, clock_ppm=0.0, clock_for=None, bass_db=4.0, corner=105.0, tilt=-0.4,
                      hp="auto", lp="auto", rolloff_db=10.0, bands=8, fmin=100.0, fmax=16000.0, max_boost=3.0,
                      max_cut=6.0, max_q=3.0, smooth=3.0, fs=48000.0) -> dict:
-    mags, freq = [], None
+    names = list(names)
+    responses = []
     for name in names:
         rec, sw, meta = store.load_recording(name)
         res = analysis.measure(rec, sw, mic_ch=meta.get("mic_ch", 0), ref_ch=None, cal=cal, smoothing=None,
                                post_ms=gate_ms, f_lo=max(sw.f1, 60.0), f_hi=sw.f2,
                                clock_ppm=clock_for(meta) if clock_for else clock_ppm)
-        freq = res.response.freq
-        mags.append(res.response.mag_db_raw)
+        responses.append((res.response.freq, res.response.mag_db_raw))
+    if not responses:
+        raise ValueError('Select at least one measurement to fit EQ.')
+    low = max(f[0] for f, _ in responses)
+    high = min(f[-1] for f, _ in responses)
+    freq = responses[0][0]
+    freq = freq[(freq >= low) & (freq <= high)]
+    if len(freq) < 4:
+        raise ValueError('Measurements need an overlapping frequency range with at least four response points.')
+    # Interpolate in log-frequency dB space; never extrapolate beyond any measured band.
+    mags = [np.interp(np.log(freq), np.log(f), m) for f, m in responses]
     # several positions are averaged in power, which is what a DML needs: one spot is not representative
     mag = 10 * np.log10(np.mean([10 ** (m / 10) for m in mags], axis=0))
     target = peqmod.harman_target(freq, bass_db, corner, tilt)
@@ -33,8 +43,8 @@ def fit_measurements(names, cal=None, gate_ms=None, clock_ppm=0.0, clock_for=Non
     lp_f = _edge(lp, peqmod.rolloff_freq(freq, mag, "high", rolloff_db), "LP", 1500.0, 12000.0, 50)
     fixed = [p for p in (hp_f, lp_f) if p]
     # keep the peaking filters clear of the edge filters, so they do not spend boost fighting a corner
-    f_lo = max(fmin, hp_f.fc * 1.15) if hp_f else fmin
-    f_hi = min(fmax, lp_f.fc / 1.15) if lp_f else fmax
+    f_lo = max(float(freq[0]), fmin, hp_f.fc * 1.15 if hp_f else fmin)
+    f_hi = min(float(freq[-1]), fmax, lp_f.fc / 1.15 if lp_f else fmax)
     filters, info = peqmod.fit_peq(freq, mag, target, fs, min(bands, 10 - len(fixed)), f_lo, f_hi,
                                    max_boost, max_cut, max_q, smooth=smooth, fixed=fixed)
     allf = ([hp_f] if hp_f else []) + filters + ([lp_f] if lp_f else [])

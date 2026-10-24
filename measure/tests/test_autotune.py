@@ -61,7 +61,7 @@ def test_ramp_ceiling_and_protected_routing():
         block=signal[slot['start']:slot['start']+slot['length']]
         assert np.count_nonzero(np.max(abs(block),axis=0))==1
         assert np.max(abs(block[:,d['output']-1]))<=10**(d['max_db']/20)*1.00001
-    _,h=sosfreqz(dsp.protection(cfg['drivers'][-1],cfg['fs']),worN=[100,4000],fs=cfg['fs'])
+    _,h=sosfreqz(dsp.protection(cfg['drivers'][-1],cfg['fs']),worN=[100,6000],fs=cfg['fs'])
     assert 20*np.log10(abs(h[0]/h[1])) < -90
 
 

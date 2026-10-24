@@ -6,6 +6,17 @@ from pathlib import Path
 
 import yaml
 
+TWEETER_MIN_HZ = 3500
+PAIRS = ('a', 'b', 'sub', 'tweeter')
+
+
+def selected_pairs(cfg):
+    return cfg.get('selected_pairs', list(PAIRS))
+
+
+def active_drivers(cfg):
+    return [d for d in cfg['drivers'] if d['role'] in selected_pairs(cfg)]
+
 
 def example():
     drivers = []
@@ -13,7 +24,7 @@ def example():
     models = {'a': 'Dayton EX30HESF2-4', 'b': 'Dayton EX32VBDS-4',
               'sub': 'Dayton 12-inch Reference kit, sealed', 'tweeter': 'Dayton PRO Neo-8 / H6512'}
     for side in ('L', 'R'):
-        for role, low, high in [('sub', 30, 400), ('a', 150, 12000), ('b', 150, 12000), ('tweeter', 2500, 20000)]:
+        for role, low, high in [('sub', 30, 700), ('a', 150, 12000), ('b', 150, 12000), ('tweeter', TWEETER_MIN_HZ, 20000)]:
             drivers.append(dict(id=f'{side}_{role}', side=side, role=role, output=outputs[role][0 if side == 'L' else 1],
                                 model=models[role],
                                 min_hz=low, max_hz=high, order=4, start_db=-48, max_db=-24,
@@ -24,6 +35,7 @@ def example():
                 clip_db=-3, jump_db=9, min_snr_db=15, room_positions=5,
                 gate_ms=8, target_bass_db=4, target_tilt=-0.4,
                 verification_db=4, max_clock_ppm=300, drivers=drivers,
+                automatic=False, auto_apply=False, sub_crossover_max=500, selected_pairs=list(PAIRS),
                 camilla=dict(binary='/opt/camilladsp/camilladsp', service='camilladsp',
                              statefile='/opt/camilladsp/statefile.yml',
                              capture='hw:Loopback,1,0', playback='hw:sndrpihifiberry,0',
@@ -47,7 +59,7 @@ def validate(raw, hardware=False):
                         ('clip_db', -18, -0.5), ('jump_db', 3, 18), ('min_snr_db', 6, 60),
                         ('room_positions', 1, 9), ('gate_ms', 2, 50), ('verification_db', 1, 8),
                         ('max_clock_ppm', 10, 1000), ('target_bass_db', 0, 8), ('target_tilt', -2, 0),
-                        ('input_channels', 1, 8), ('mic_channel', 0, 7)]:
+                        ('input_channels', 1, 8), ('mic_channel', 0, 7), ('sub_crossover_max', 200, 500)]:
         number(cfg[key], key, lo, hi)
     for key in ('fs', 'peq_bands', 'room_positions', 'input_channels', 'mic_channel'):
         if int(cfg[key]) != cfg[key]:
@@ -56,6 +68,18 @@ def validate(raw, hardware=False):
     if cfg['mic_channel'] >= cfg['input_channels']:
         raise ValueError('Microphone channel is outside the capture channels (zero-based).')
     drivers = cfg['drivers']
+    pairs = cfg['selected_pairs']
+    if (not isinstance(pairs, list) or any(not isinstance(p, str) or p not in PAIRS for p in pairs)
+            or len(set(pairs)) != len(pairs)):
+        raise ValueError('selected_pairs must list unique channel pairs: a, b, sub, tweeter.')
+    if not {'a', 'b'}.intersection(pairs):
+        raise ValueError('Select at least one exciter pair: A (1/2) or B (3/4).')
+    cfg['selected_pairs'] = [p for p in PAIRS if p in pairs]
+    for key in ('automatic', 'auto_apply'):
+        if type(cfg[key]) is not bool:
+            raise ValueError(f'{key} must be a boolean.')
+    if cfg['automatic'] and cfg['room_positions'] != 1:
+        raise ValueError('Automatic mode uses one fixed microphone position.')
     if not isinstance(drivers, list) or len(drivers) != 8:
         raise ValueError('Exactly eight drivers are required.')
     if any(not isinstance(d,dict) or type(d.get('output')) is not int or not isinstance(d.get('id'),str) for d in drivers):
@@ -77,6 +101,11 @@ def validate(raw, hardware=False):
             raise ValueError(f"Invalid frequency or ramp limits for {d['id']}.")
         if d.get('order') not in (4, 8):
             raise ValueError('Protection order must be 4 or 8 (LR24 or LR48).')
+        if d['role'] == 'tweeter' and d['min_hz'] < TWEETER_MIN_HZ:
+            raise ValueError('Tweeter safety high-pass must remain at or above 3500 Hz.')
+        expected = {'a': (1, 2), 'b': (3, 4), 'sub': (5, 6), 'tweeter': (7, 8)}
+        if hardware and d['output'] != expected[d['role']][d['side'] == 'R']:
+            raise ValueError('Hardware output mapping must preserve tweeters on outputs 7/8.')
     c = cfg['camilla']
     if not isinstance(cfg['quiesce_services'],list) or any(not isinstance(s,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*',s) for s in cfg['quiesce_services']):
         raise ValueError('quiesce_services must be a list of service names.')

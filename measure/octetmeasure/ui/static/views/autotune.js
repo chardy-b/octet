@@ -4,7 +4,7 @@ import { LineChart } from '../charts.js';
 export async function mount(root) {
   let closed = false, state = await api('/api/auto'), charts = [], chartRun = null;
   const header = h('div', {class:'page-head'}, h('div',{},h('h1',{text:'Auto Tune'}),
-    h('p',{class:'muted',text:'Measure all eight drivers, choose crossovers, correct the listening area, and verify the result.'})));
+    h('p',{class:'muted',text:'Measure the selected driver pairs, choose crossovers, correct the listening area, and verify the result.'})));
   const status = h('div',{class:'card',role:'status','aria-live':'polite'});
   const controls = h('div',{class:'row'});
   const details = h('div',{class:'card'});
@@ -47,7 +47,13 @@ export async function mount(root) {
       for(const [id,r] of Object.entries(state.level_report))body.append(h('tr',{},... [id,r.amp_group,`${r.output_db} dBFS`,`${r.peak_db.toFixed(1)} dBFS`].map(x=>h('td',{text:x}))));
       table.append(body);summary.push(table);
     }
-    if(state.chosen)for(const [side,c] of Object.entries(state.chosen))summary.push(h('p',{text:`${side}: ${c.strategy==='both'?'Both exciters overlap':'Split exciters'} · ${c.low.toFixed(0)} Hz / ${c.high.toFixed(0)} Hz · LR${c.order*6}`}));
+    if(state.chosen)for(const [side,c] of Object.entries(state.chosen)) {
+      const pairs=state.cfg.selected_pairs||['a','b','sub','tweeter'];
+      const parts=[c.strategy==='both'?'Both exciters overlap':c.strategy==='split'?'Split exciters':'One exciter pair'];
+      if(pairs.includes('sub'))parts.push(`${c.low.toFixed(0)} Hz sub / exciter`);
+      if(pairs.includes('tweeter'))parts.push(`${c.high.toFixed(0)} Hz exciter / tweeter`);
+      parts.push(`LR${c.order*6}`);summary.push(h('p',{text:`${side}: ${parts.join(' · ')}`}));
+    }
     if(state.config_path)summary.push(h('div',{class:'row'},h('a',{class:'btn',href:'/api/auto/artifacts/camilladsp.yml',text:'Download CamillaDSP config'}),h('a',{class:'btn',href:'/api/auto/artifacts/report.json',text:'Download report'})));
     details.replaceChildren(...summary);
     details.hidden=summary.length===0;

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from input_levels import CaptureProbe, InputLevels, pcm_levels
+import server
 
 
 def sources():
@@ -90,6 +91,13 @@ class InputMeterTests(unittest.TestCase):
         probe.close.assert_called_once()
         self.assertIn('Auto Tune',frame['message'])
         self.assertTrue(all(not row['available'] for row in frame['inputs']))
+
+    def test_audio_mutation_releases_meter_before_auto_start(self):
+        order=[]
+        with patch.object(server.INPUT_LEVELS,'release',side_effect=lambda:order.append('release')), \
+             patch.object(server.TUNING,'request',side_effect=lambda *args:order.append('start')):
+            server.action('auto-start',{})
+        self.assertEqual(order,['release','start'])
 
     def test_short_clip_is_retained_until_sampler_drains_the_reader(self):
         process=MagicMock()

@@ -395,4 +395,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd is None:                                  # no command: open the app
         a = ap.parse_args(["ui"])
-    a.fn(a)
+    try:
+        a.fn(a)
+    except RuntimeError as error:
+        ap.exit(1, str(error) + '\n')

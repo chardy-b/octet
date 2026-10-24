@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 from visualizer_state import VisualizerState
 from audio_sources import discover_sources, source_config, source_metadata, meter_channels
+from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
@@ -34,6 +35,7 @@ PROFILES = {
 MIN_DB, MAX_DB = -60.0, -18.0
 HIGH_DB = 0.0
 LEVELS_UNLOCKED = False
+TUNING = TuningProxy()
 CHANNEL_PROFILE = Path('/var/lib/octet-dsp/channel-dsp.yml')
 PROFILES[str(CHANNEL_PROFILE)] = ('Output DSP controls', 'EX30 → 1/2 · EX32 → 3/4 · subs → 5/6 · tweeters → 7/8')
 LOCK = threading.RLock()
@@ -325,7 +327,8 @@ def stream_url(identifier):
 
 
 def approved(dsp):
-    if dsp.call('GetConfigFilePath') not in PROFILES:
+    path = dsp.call('GetConfigFilePath')
+    if path not in PROFILES and not TUNING.active(path):
         raise RuntimeError('Select an approved exciter DSP preset before playback')
 
 
@@ -567,6 +570,8 @@ def change_always_active(config, output, values):
             raise ValueError('Attenuation must be between -60 and 0 dB')
         if item['parameter'] == 'freq' and not 0 < value < nyquist:
             raise ValueError(f'Frequencies must be above 0 and below {nyquist:g} Hz')
+        if output in (7, 8) and item['label'] == 'High-pass' and value < 3500:
+            raise ValueError('Tweeter safety high-pass must remain at or above 3500 Hz')
     highs = [values[item['name']] for item in controls if item['label'] == 'High-pass']
     lows = [values[item['name']] for item in controls if item['label'] == 'Low-pass']
     if highs and lows and max(highs) >= min(lows):
@@ -669,6 +674,10 @@ def dsp_status():
                       muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
                       min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
         result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
+    tuned = TUNING.active(path) if path != str(CHANNEL_PROFILE) else None
+    if tuned:
+        result.update(auto_tuned=True, tuning=tuned, profile=tuned['name'])
+        return result
     filters = config.get('filters', {})
     roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4', 'Subwoofer', 'Subwoofer', 'PRO Neo-8 tweeter', 'PRO Neo-8 tweeter']
     for output in range(1, 9):
@@ -732,9 +741,10 @@ def current_status():
                 result['sources'].append(dict(id=source['id'], label=source['label'] + ' · disconnected',
                                               available=False, group='Unavailable', description='Reconnect the interface or choose Tidal.'))
             result.update(source=source['id'], source_label=source['label'])
-            label, description = PROFILES.get(profile, ('Other DSP preset', 'Playback controls require an approved exciter preset'))
+            tuned = TUNING.active(profile)
+            label, description = PROFILES.get(profile, (tuned['name'], 'Saved system tuning · tweeter safety high-pass active') if tuned else ('Other DSP preset', 'Playback controls require an approved exciter preset'))
             result.update(volume=dsp.call('GetVolume'), muted=dsp.call('GetMute'),
-                          dsp_state=dsp.call('GetState'), ready=profile in PROFILES and selected is not None,
+                          dsp_state=dsp.call('GetState'), ready=(profile in PROFILES or bool(tuned)) and selected is not None,
                           profile=label, profile_description=description)
             result['source_switching_available'] = profile == str(CHANNEL_PROFILE)
     except (OSError, RuntimeError, ValueError):
@@ -743,7 +753,22 @@ def current_status():
 
 
 def action(name, data):
+    # The ownership check and the mutation share the same lock as starting Auto mode.
+    with LOCK:
+        return _action(name, data)
+
+
+def _action(name, data):
     global LEVELS_UNLOCKED
+    if name.startswith('auto-'):
+        with LOCK:
+            INPUT_LEVELS.release()
+            return TUNING.request(name.removeprefix('auto-'), data)
+    tuning = TUNING.status()
+    if tuning.get('audio_owned'):
+        if name == 'stop' or (name == 'mute' and data.get('muted') is True):
+            return TUNING.request('stop', {})
+        raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before using music or manual DSP controls.')
     if name == 'play-playlist':
         return play_playlist(data)
     with LOCK:
@@ -1004,6 +1029,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'error': 'Unrecognized host'}, 403)
         parsed = urlparse(self.path)
         try:
+            if parsed.path == '/api/auto':
+                return self.send(TUNING.status())
+            measurement = re.fullmatch(r'/api/auto/profiles/([A-Za-z0-9-]{1,100})/measurements', parsed.path)
+            if measurement:
+                return self.send(TUNING.measurements(measurement.group(1)))
+            if parsed.path == '/auto.js':
+                return self.send((ROOT / 'auto.js').read_bytes(), content_type='text/javascript; charset=utf-8')
+            if parsed.path == '/measurements.js':
+                return self.send((ROOT / 'measurements.js').read_bytes(), content_type='text/javascript; charset=utf-8')
             if parsed.path == '/input-levels.js':
                 return self.send((ROOT / 'input-levels.js').read_bytes(), content_type='text/javascript; charset=utf-8')
             if parsed.path == '/visualizer/display':

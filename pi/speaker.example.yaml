@@ -31,7 +31,7 @@ drivers:
   output: 5
   model: Dayton 12-inch Reference kit, sealed
   min_hz: 30
-  max_hz: 400
+  max_hz: 700
   order: 4
   start_db: -48
   max_db: -24
@@ -69,7 +69,7 @@ drivers:
   role: tweeter
   output: 7
   model: Dayton PRO Neo-8 / H6512
-  min_hz: 2500
+  min_hz: 3500
   max_hz: 20000
   order: 4
   start_db: -48
@@ -83,7 +83,7 @@ drivers:
   output: 6
   model: Dayton 12-inch Reference kit, sealed
   min_hz: 30
-  max_hz: 400
+  max_hz: 700
   order: 4
   start_db: -48
   max_db: -24
@@ -121,7 +121,7 @@ drivers:
   role: tweeter
   output: 8
   model: Dayton PRO Neo-8 / H6512
-  min_hz: 2500
+  min_hz: 3500
   max_hz: 20000
   order: 4
   start_db: -48

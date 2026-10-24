@@ -464,3 +464,33 @@ of appending a JSON error to audio.
 
 The accompanying MPD configuration uses a 16 MB decoded buffer and a bounded
 128 MB input cache. The separate browser playlist cache stores metadata only.
+
+## Automatic system tuning
+
+The DSP page includes **Auto mode** and a **Saved system profiles** dropdown.
+With the calibrated EMM-6 on iD14 input 1, the Pi runs protected per-output sweeps,
+fits EQ, searches 150–500 Hz sub/panel and 3.5–5 kHz panel/tweeter handoffs,
+compares delay/polarity/attenuation, then measures actual candidate sums and the
+final CamillaDSP path. One fixed microphone position is used in this mode.
+A successful run is named, saved and applied at −36 dB with master mute enabled.
+Starting music and unmuting remain deliberate listening actions.
+
+The independent 3.5 kHz tweeter safety high-pass cannot be lowered by Auto mode or
+the manual frequency editor. Stop tones cancels direct DAC playback; Restore
+before tuning recovers pre-run settings. While the tuner owns the audio devices,
+music, source switching and manual DSP mutations are blocked. Saved profile
+recall verifies the stored checksum and protective filters without playing tones.
+The current manual configuration is also saved in the dropdown before each run.
+See [Auto Tune operating guide](../../measure/docs/AUTO_TUNE.md) for deployment
+paths, guided multi-position tuning and recovery.
+
+### Saved-profile measurement graphs
+
+Select a saved profile on the DSP page and press **View measurements**. This is
+read-only and works independently of the active listening profile. Left/right
+system plots compare the measured response before room EQ with the final measured
+response and target shape. The output selector shows individual driver response,
+predicted response with DSP, measured/predicted phase, delay, polarity and relative
+attenuation. Hover or use arrow keys to read graph values. Levels are relative dB,
+not calibrated SPL. Manual settings backups show an explicit no-measurements
+message; they do not fabricate an acoustic result.

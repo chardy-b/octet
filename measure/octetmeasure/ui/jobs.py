@@ -94,8 +94,10 @@ class JobManager:
             session = self.session
 
             def work():
-                getattr(session, method)(cfg, **kw)
-                self.bus.publish({"type": "idle", "job": kind})
+                try:
+                    getattr(session, method)(cfg, **kw)
+                finally:
+                    self.bus.publish({"type": "idle", "job": kind})
 
             self.thread = threading.Thread(target=work, daemon=True, name=f"octet-{kind}")
             self.thread.start()

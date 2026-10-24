@@ -30,7 +30,7 @@ def main():
             shutil.copy2(path, backup / path.name)
     target = Path('/opt/octet-remote')
     target.mkdir(mode=0o755, exist_ok=True)
-    for name in ['server.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+    for name in ['server.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
                  'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)

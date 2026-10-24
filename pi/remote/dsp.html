@@ -1,9 +1,33 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#111714"><title>Octet · DSP</title><link rel="stylesheet" href="/style.css"><script src="/dsp.js" defer></script></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#111714"><title>Octet · DSP</title><link rel="stylesheet" href="/style.css"><script src="/measurements.js" defer></script><script src="/auto.js" defer></script><script src="/dsp.js" defer></script></head>
 <body><header><a class="brand" href="/" aria-label="Octet home"><span class="mark">◈</span> octet<span class="brand-note">MUSIC SYSTEM</span></a><nav class="main-nav" aria-label="Main navigation"><a href="/">Music</a><a href="/dsp" aria-current="page">DSP</a><a href="/visualizer">Visualizer</a></nav><span id="connection" class="connection">Connecting</span></header>
 <main><section class="hero"><div><p class="eyebrow">THE SIGNAL, OUTPUT BY OUTPUT.</p><h1>Every output.<br>Under control.</h1><p class="intro">Set attenuation and crossover frequencies under Always active for each output.</p></div><div class="system-note"><span class="live-dot"></span><div><strong id="profile-name">Exciter output controls</strong><p>Measured EQ requires verified measurements.<br>Always-active settings are saved per output.</p></div></div></section>
 <section class="dsp-master" aria-label="Master controls"><div><p class="eyebrow">MASTER LEVEL</p><label class="sr-only" for="volume">Listening level</label><input id="volume" type="range" min="-60" max="-18" step="1" value="-36"><output id="volume-value">−36 dB</output></div><button id="unlock-level" class="unlock-button">Unlock higher levels</button><button id="global-mute" class="quiet-button stop">Mute all</button><p id="level-range-note" class="volume-note">Standard range: −60 to −18 dB.</p></section>
 <div id="notice" role="status" aria-live="polite"></div>
+<section class="auto-panel" aria-labelledby="auto-heading">
+<div><p class="eyebrow">MEASURE · TUNE · SAVE</p><h2 id="auto-heading">Auto mode</h2><p class="auto-intro">Tune each output, then measure how they work together. EQ, crossovers, timing and levels are saved as one system profile.</p></div>
+<p class="auto-protection">Tweeter protection stays active: 3.5 kHz safety high-pass and bounded test levels.</p>
+<form id="auto-start-form"><label>Profile name<input id="auto-name" maxlength="80" placeholder="Listening position · October"></label>
+<fieldset id="auto-pairs"><legend>Channel pairs to measure</legend>
+<label><input type="checkbox" name="auto-pair" value="a" checked> A · EX30 · channels 1/2</label>
+<label><input type="checkbox" name="auto-pair" value="b" checked> B · EX32 · channels 3/4</label>
+<label><input type="checkbox" name="auto-pair" value="sub" checked> Subs · channels 5/6</label>
+<label><input type="checkbox" name="auto-pair" value="tweeter" checked> Tweeters · channels 7/8</label>
+<p id="auto-pair-note" class="volume-note">Select at least A or B. Unchecked pairs stay silent in tests and the saved profile.</p></fieldset>
+<p class="volume-note auto-level-note">Short level checks reuse previous recordings to choose quieter test levels, increasing only if the signal needs it.</p>
+<label class="auto-ready"><input id="auto-ready" type="checkbox" required> EMM-6 is on iD14 input 1 with phantom power; microphone is fixed at the listening position and the room is quiet.</label><button id="auto-start" type="submit" class="quiet-button" disabled>Start Auto mode</button></form>
+<p id="auto-status" role="status" aria-live="polite">Connecting to Auto Tune…</p><p id="auto-meter" class="volume-note"></p>
+<div class="auto-actions"><button id="auto-stop" class="quiet-button stop" disabled>Stop tones</button><button id="auto-restore" class="quiet-button" disabled>Restore before tuning</button></div>
+<form id="auto-profile-form"><label for="auto-profiles">Saved system profiles</label><select id="auto-profiles"><option value="">No saved tuning profiles yet</option></select><button id="auto-view" type="button" class="quiet-button" disabled>View measurements</button><button id="auto-select" type="submit" class="quiet-button" disabled>Apply profile</button></form>
+<p id="auto-summary" class="volume-note">Auto mode runs with one fixed microphone position. A completed run is saved and applied after verification; music resumes at −36 dB when unmuted.</p>
+<section id="profile-measurements" class="measurement-panel" aria-labelledby="measurement-title" hidden>
+<div class="measurement-heading"><h3 id="measurement-title">Profile measurements</h3><button id="measurement-close" type="button" class="quiet-button">Close graphs</button></div>
+<p id="measurement-status" role="status" aria-live="polite"></p>
+<div id="measurement-systems" class="measurement-grid"></div>
+<div id="measurement-driver-controls" hidden><label for="measurement-driver">Individual output</label><select id="measurement-driver"></select><p id="measurement-settings" class="volume-note"></p></div>
+<div id="measurement-driver-charts" class="measurement-grid"></div><p id="measurement-notes" class="volume-note"></p>
+</section>
+</section>
 <div class="section-top dsp-output-toolbar"><div><h2>Output processing</h2><p id="eq-count" class="volume-note">Reading output states…</p></div><button id="enable-all" class="quiet-button" aria-pressed="false" disabled>Enable DSP for all</button></div>
 <section id="channels" class="channel-grid" aria-label="Output DSP"><p class="empty">Reading the active DSP configuration…</p></section>
 <footer><span>OCTET / RASPBERRY PI 5</span><span>Filter states are saved on Octet</span></footer></main></body></html>

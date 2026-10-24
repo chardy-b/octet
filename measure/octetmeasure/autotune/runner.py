@@ -93,7 +93,7 @@ class Runner:
         if action == 'start':
             cfg = config.validate(profile or config.parse(self.profile()),hardware=not self.demo)
             self.state = dict(id=uuid.uuid4().hex,cfg=cfg,demo=self.demo,status='starting',stage='levels',
-                              running=True,levels={},room_count=0,history=[])
+                              running=True,audio_owned=True,levels={},room_count=0,history=[])
         elif not self.state.get('id'):
             raise ValueError('Start an Auto Tune run first.')
         elif bool(self.state['demo']) != self.demo:
@@ -121,7 +121,7 @@ class Runner:
         else:
             raise ValueError('Unknown Auto Tune action.')
         self.cancel = threading.Event()
-        self.state.update(running=True,status='running',message='Starting '+self.state['stage'])
+        self.state.update(running=True,audio_owned=True,status='running',message='Starting '+self.state['stage'])
         self.save()
         self.thread = threading.Thread(target=self._work,daemon=True,name='octet-auto')
         self.thread.start()
@@ -154,6 +154,23 @@ class Runner:
             self.backend = (self.backend_factory or (Simulated if self.demo else Hardware))(cfg)
             if self.state['stage'] != 'rollback':
                 self.backend.take_dac()
+            if self.state['stage'] == 'levels' and hasattr(self.backend, 'preflight'):
+                self._message('Checking the microphone after releasing the music input')
+                try:
+                    self.backend.preflight()
+                except InterruptedError:
+                    raise
+                except Exception as error:
+                    if self.cancel.is_set():
+                        raise InterruptedError('Playback stopped.') from error
+                    try:
+                        self.backend.restore_preflight()
+                    except InterruptedError:
+                        raise
+                    except Exception as recovery:
+                        raise RuntimeError(f'{error} Could not restore the previous audio services: {recovery}. Use Restore before tuning.') from error
+                    self.state['audio_owned'] = False
+                    raise RuntimeError(f'{error} No tones played; previous audio services and master settings restored.') from error
             while True:
                 if self.cancel.is_set():
                     raise InterruptedError('Stopped.')
@@ -161,7 +178,15 @@ class Runner:
                 self._message(stage.capitalize())
                 next_stage = getattr(self,'_'+stage)()
                 if next_stage is None:
-                    break
+                    if cfg.get('automatic'):
+                        next_stage = {'await_levels': 'measure', 'await_room': 'room',
+                                      'await_reference': 'finish'}.get(self.state['status'])
+                        if self.state['status'] == 'ready' and cfg.get('auto_apply'):
+                            next_stage = 'apply'
+                        if next_stage:
+                            self.state['status'] = 'running'
+                    if next_stage is None:
+                        break
                 self.state['stage'] = next_stage
                 self.save()
         except InterruptedError as e:
@@ -171,7 +196,7 @@ class Runner:
         finally:
             if self.backend and self.state.get('status') in ('failed','cancelled'):
                 self.backend.stop()
-                if not self.demo:
+                if not self.demo and self.state.get('audio_owned', True):
                     try:
                         self.backend.systemctl('stop')
                     except Exception as e:
@@ -182,12 +207,59 @@ class Runner:
             finally:
                 self.lease.close()
 
+    def _reference_levels(self):
+        """Reuse recordings with the same input, routing and protected bands; play nothing."""
+        cfg = self.state['cfg']
+        for path in sorted(self.root.glob('*/run.json'), key=lambda p:p.stat().st_mtime, reverse=True):
+            if path.parent == self.directory:
+                continue
+            try:
+                previous = json.loads(path.read_text(encoding='utf-8'))
+                old = previous['cfg']
+                if previous.get('demo') != self.demo or any(old[k] != cfg[k] for k in (
+                        'fs', 'input_device', 'output_device', 'input_channels', 'mic_channel', 'calibration')):
+                    continue
+                report = previous.get('signal_report')
+                if report is None:
+                    raw = path.parent/'drivers-raw.npz'
+                    if not raw.exists():
+                        continue
+                    with np.load(raw, allow_pickle=False) as data:
+                        rec = data['capture']
+                    playback, slots = dsp.sequence(old, previous['levels'])
+                    cal = load_cal(old['calibration']) if old['calibration'] else None
+                    _, responses, _, _ = dsp.extract(rec, playback, slots, old, cal)
+                    report = dsp.signal_report(rec, old, previous['levels'], responses)
+                compatible = {d['id'] for d in config.active_drivers(cfg) if any(
+                    all(other.get(k) == d.get(k) for k in ('id', 'output', 'min_hz', 'max_hz', 'order'))
+                    for other in config.active_drivers(old))}
+                report = {key:value for key,value in report.items() if key in compatible
+                          and np.isfinite([value['margin_db'], value['output_db']]).all()
+                          and value['margin_db'] >= cfg['min_snr_db']}
+                if report:
+                    self.state['level_reference'] = previous['id']
+                    return report
+            except (ValueError, KeyError, OSError):
+                continue
+        return {}
+
     def _levels(self):
         cfg, fs = self.state['cfg'], self.state['cfg']['fs']
         summaries = {}
-        for d in cfg['drivers']:
+        automatic = cfg.get('automatic', False)
+        reference = self._reference_levels() if automatic else {}
+        cal = load_cal(cfg['calibration']) if cfg['calibration'] else None
+        for d in config.active_drivers(cfg):
             previous = None
-            for level in config.ramp(d):
+            ramp = dict(d)
+            prior = reference.get(d['id'])
+            if prior:
+                # Aim six dB above the acceptance floor, rather than at the ceiling.
+                estimate = prior['output_db'] + cfg['min_snr_db'] + 6 - prior['margin_db']
+                ramp['start_db'] = float(np.clip(round(estimate/d['step_db'])*d['step_db'],
+                                                  d['start_db'], d['max_db']))
+            checks = 0
+            for level in config.ramp(ramp):
                 self._message(f"{d['id']}: {level:g} dBFS; amp group {d.get('amp_group',d['id'])}")
                 x = dsp.protected_sweep(d,cfg,level,duration=1)
                 signal = np.zeros((len(x)+int(d['step_seconds']*fs),8))
@@ -199,13 +271,23 @@ class Runner:
                 if previous is not None and peak-previous[0] > level-previous[1]+cfg['jump_db']:
                     raise ValueError(f"{d['id']}: unexpected level jump. Check amplifier and microphone settings.")
                 previous = peak,level
-            noise = float(np.sqrt(np.mean(rec[-fs//4:]**2)))
-            freq = np.geomspace(d['min_hz']*1.2,d['max_hz']/1.2,120)
-            onset = max(0,int(dsp._arrival(rec,x)) - int(.04*fs))
-            response,_ = dsp.transfer(rec[onset:],x,fs,freq)
-            sensitivity = float(np.median(20*np.log10(np.maximum(abs(response),1e-12))))
+                noise = max(float(np.sqrt(np.mean(rec[:int(.15*fs)]**2))), 1e-12)
+                freq = np.geomspace(d['min_hz']*1.15,d['max_hz']/1.15,120)
+                onset = max(0,int(dsp._arrival(rec,x)) - int(.04*fs))
+                response,_ = dsp.transfer(rec[onset:],x,fs,freq)
+                if cal is not None:
+                    response *= 10**(-cal.at(freq)/20)
+                sensitivity = float(np.median(20*np.log10(np.maximum(abs(response),1e-12))))
+                margin = sensitivity+level-20*np.log10(noise)
+                checks += 1
+                if automatic and margin >= cfg['min_snr_db']+3:
+                    break
+            if automatic and margin < cfg['min_snr_db']:
+                raise ValueError(f"Insufficient signal for {d['id']}; check its connection or deselect its channel pair before starting a new run.")
             summaries[d['id']] = dict(peak_db=peak,output_db=level,noise_db=float(20*np.log10(max(noise,1e-12))),
-                                      sensitivity_db=sensitivity,amp_group=d.get('amp_group',d['id']))
+                                      sensitivity_db=sensitivity,amp_group=d.get('amp_group',d['id']),
+                                      signal_margin_db=float(margin), checks=checks,
+                                      reused_recording=bool(prior))
             self.state['levels'][d['id']] = level
         reference = min(v['sensitivity_db'] for k,v in summaries.items() if k.endswith(('_a','_b')))
         groups = {}
@@ -225,12 +307,10 @@ class Runner:
         cal = load_cal(cfg['calibration']) if cfg['calibration'] else None
         f,responses,impulses,ppm = dsp.extract(rec,playback,slots,cfg,cal)
         # Estimate noise from the silent lead-in; reject absent or unusable driver responses.
-        noise = max(float(np.sqrt(np.mean(rec[:int(.15*cfg['fs'])]**2))),1e-12)
-        for d in cfg['drivers']:
-            r = responses[d['id']]
-            signal = float(np.median(abs(r['h'][r['valid']]))) * 10**(self.state['levels'][d['id']]/20)
-            if 20*np.log10(max(signal,1e-12)/noise) < cfg['min_snr_db']:
-                raise ValueError(f"Insufficient signal for {d['id']}; check routing, microphone position and configured ceiling.")
+        self.state['signal_report'] = dsp.signal_report(rec, cfg, self.state['levels'], responses)
+        for key, reading in self.state['signal_report'].items():
+            if reading['margin_db'] < cfg['min_snr_db']:
+                raise ValueError(f"Insufficient signal for {key}; check its connection or deselect its channel pair before starting a new run.")
         data = dict(freq=f,**{key:r['h'] for key,r in responses.items()},
                     **{key+'_flatten':r['flatten'] for key,r in responses.items()},
                     **{key+'_ir':ir for key,ir in impulses.items()})
@@ -242,7 +322,7 @@ class Runner:
     def _tune(self):
         with np.load(self.directory/'drivers.npz') as data:
             f = data['freq']
-            responses = {d['id']:dict(h=data[d['id']]) for d in self.state['cfg']['drivers']}
+            responses = {d['id']:dict(h=data[d['id']]) for d in config.active_drivers(self.state['cfg'])}
             self.state['candidates'] = {}
             for side in ('L','R'):
                 self._message(f'Searching {side} crossovers, exciter strategies, delay, polarity and attenuation')
@@ -251,24 +331,30 @@ class Runner:
 
     def _sum(self, side, candidate, room=(), loopback=False):
         cfg, fs = self.state['cfg'], self.state['cfg']['fs']
-        lo = min(d['min_hz'] for d in cfg['drivers'])
-        hi = max(d['max_hz'] for d in cfg['drivers'])
+        lo = min(d['min_hz'] for d in config.active_drivers(cfg))
+        hi = max(d['max_hz'] for d in config.active_drivers(cfg))
         # Exported attenuation already limits full-scale music. Avoid applying a
         # second -30 dB test attenuation, which would bury real verification in noise.
         sw = make_sweep(fs,cfg['duration'],lo,hi,-3 if 'preamp' in self.state else -30)
         stimulus = np.pad(sw.signal,(0,int(cfg['gap_seconds']*fs)))
         out,scale = dsp.render_chain(cfg,side,candidate,self.state['eq'],stimulus,room)
+        # Use the exact exported gain for both direct and active-path checks.
+        if 'preamp' in self.state:
+            out *= self.state['preamp'][side]/scale
+            scale = self.state['preamp'][side]
+        quiet = 1.
+        if cfg.get('automatic'):
+            quiet = min(1., *[10**(self.state['levels'][d['id']]/20)/max(
+                float(np.max(abs(out[:,d['output']-1]))), 1e-12)
+                for d in config.active_drivers(cfg) if d['side'] == side])
+        out *= quiet
         if loopback:
             signal = np.zeros((len(stimulus),2))
-            signal[:,0 if side=='L' else 1] = stimulus
+            signal[:,0 if side=='L' else 1] = stimulus*quiet
             rec = self._capture(signal,loopback=True)
-            scale = self.state['preamp'][side]
         else:
-            # Render at the EXACT exported global gain for comparable verification.
-            if 'preamp' in self.state:
-                out *= self.state['preamp'][side]/scale
-                scale = self.state['preamp'][side]
             rec = self._capture(out)
+        scale *= quiet
         peak = float(np.max(abs(rec)))
         if peak < 1e-6 or peak >= 10**(cfg['clip_db']/20):
             raise ValueError('Verification is silent or clipped.')
@@ -291,16 +377,18 @@ class Runner:
         baseline = {}
         with np.load(self.directory/'drivers.npz') as data:
             driver_f = data['freq']
-            driver_h = {d['id']:data[d['id']] for d in self.state['cfg']['drivers']}
+            driver_h = {d['id']:data[d['id']] for d in config.active_drivers(self.state['cfg'])}
         for side in ('L','R'):
             results = []
             for index,c in enumerate(self.state['candidates'][side]):
-                self._message(f'Measuring {side} crossover candidate {index+1}/3')
+                self._message(f"Measuring {side} crossover candidate {index+1}/{len(self.state['candidates'][side])}")
                 f,mag,ir,rec = self._sum(side,c)
-                mask = (f>c['low']*.7)&(f<c['high']*1.3)
+                pairs = config.selected_pairs(self.state['cfg'])
+                mask = (f > c['low']*.7 if 'sub' in pairs else np.ones(len(f), dtype=bool))
+                mask &= (f < c['high']*1.3 if 'tweeter' in pairs else np.ones(len(f), dtype=bool))
                 score = float(np.std(mag[mask]))
                 predicted = np.zeros(len(f),dtype=complex)
-                for d in self.state['cfg']['drivers']:
+                for d in config.active_drivers(self.state['cfg']):
                     if d['side'] == side:
                         h = driver_h[d['id']]
                         measured = np.interp(f,driver_f,h.real)+1j*np.interp(f,driver_f,h.imag)
@@ -388,7 +476,7 @@ class Runner:
                 if error > self.state['cfg']['verification_db']:
                     raise ValueError(f'{side}: active CamillaDSP path differs by {error:.1f} dB; rolling back.')
         Deployment(self.state['cfg'],self.backend,self.directory).apply(self.directory/'camilladsp.yml',verify)
-        self.state.update(status='applied',message='Configuration active and acoustic verification passed.')
+        self.state.update(status='applied',audio_owned=False,message='Configuration active and acoustic verification passed. Listening level is −36 dB; playback is muted until you resume music.')
         return None
 
     def _rollback(self):

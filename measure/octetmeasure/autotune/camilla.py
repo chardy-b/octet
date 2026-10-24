@@ -1,4 +1,5 @@
 """Exact SOS export and transactional CamillaDSP activation."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,20 @@ from .. import peq
 from .dsp import branch_sos
 
 
+def control(commands):
+    """Local CamillaDSP control; only the tuner service needs this dependency."""
+    import websocket
+    with closing(websocket.create_connection('ws://127.0.0.1:1234', timeout=5, suppress_origin=True)) as sock:
+        results = []
+        for name, value in commands:
+            sock.send(json.dumps(name if value is None else {name: value}))
+            response = json.loads(sock.recv())[name]
+            if response.get('result') != 'Ok':
+                raise RuntimeError(f'CamillaDSP rejected {name}: {response}')
+            results.append(response.get('value'))
+        return results
+
+
 def atomic(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -25,12 +40,14 @@ def atomic(path, text):
 
 
 def export(cfg, chosen, eq, room):
+    from .config import validate, active_drivers, selected_pairs
+    validate(cfg)
     fs = cfg['fs']
     filters, pipeline, mapping, scales = {}, [], [], {}
     grid = np.geomspace(10, fs*.499, 4096)
     for side in ('L','R'):
         peak = 0.
-        for d in cfg['drivers']:
+        for d in active_drivers(cfg):
             if d['side'] != side:
                 continue
             sections = branch_sos(cfg,d,chosen[side],eq[d['id']])
@@ -42,12 +59,27 @@ def export(cfg, chosen, eq, room):
         scales[side] = 10**(-(max(0.,peak)+3)/20)
     for d in cfg['drivers']:
         key, side, channel = d['id'], d['side'], d['output']-1
+        if d['role'] not in selected_pairs(cfg):
+            # Keep the DAC map fixed. No source feeds an excluded output, and a
+            # muted gain also prevents signal if a saved config is inspected/edited.
+            mapping.append(dict(dest=channel, sources=[]))
+            filters[f'{key}_safety_hp'] = dict(type='BiquadCombo', parameters=dict(
+                type='LinkwitzRileyHighpass', freq=d['min_hz'], order=d['order']))
+            filters[f'{key}_gain'] = dict(type='Gain', parameters=dict(gain=0., inverted=False, mute=True))
+            filters[f'{key}_limit'] = dict(type='Limiter', parameters=dict(clip_limit=d['max_db'], soft_clip=False))
+            pipeline.append(dict(type='Filter', channels=[channel], names=[
+                f'{key}_safety_hp', f'{key}_gain', f'{key}_limit']))
+            continue
         c = chosen[side]
         mapping.append(dict(dest=channel,sources=[dict(channel=0 if side=='L' else 1,gain=0)]))
-        sections = branch_sos(cfg,d,c,eq[key])
+        sections = branch_sos(cfg,d,c,eq[key])[d['order']//2:]
         if room.get(side):
             sections = np.vstack([peq.sos_for([peq.Peq(**p) for p in room[side]],fs),sections])
-        names = []
+        # Keep protection explicit and outside every optional correction stage.
+        safety = f'{key}_safety_hp'
+        filters[safety] = dict(type='BiquadCombo', parameters=dict(type='LinkwitzRileyHighpass',
+                               freq=d['min_hz'], order=d['order']))
+        names = [safety]
         for index, row in enumerate(sections):
             name = f'{key}_sos{index}'
             b0,b1,b2,a0,a1,a2 = map(float,row)
@@ -96,7 +128,11 @@ class Deployment:
             self.backend.systemctl('start')
             time.sleep(1)
             self.backend.systemctl('is-active')
+            if hasattr(self.backend, 'master'):
+                self.backend.master(0, False)  # Output ceilings remain in the exported chain.
             verify()
+            if hasattr(self.backend, 'master'):
+                self.backend.master(-36, True)
         except BaseException:
             self.backend.systemctl('stop')
             if original is not None:

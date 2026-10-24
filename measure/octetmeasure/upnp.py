@@ -104,7 +104,7 @@ def find_renderer(query: str, timeout: float = 3.0) -> Renderer:
     hits = [r for r in rs if q == r.ip or q in r.name.lower() or q in r.model.lower()]
     if not hits:
         names = ", ".join(f"{r.name} ({r.ip})" for r in rs) or "none found"
-        raise SystemExit(f"No renderer matching {query!r}. Found: {names}")
+        raise RuntimeError(f"No renderer matching {query!r}. Found: {names}")
     return hits[0]
 
 

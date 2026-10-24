@@ -6,6 +6,7 @@ A CamillaDSP speaker system on a Raspberry Pi 5 with a HiFiBerry DAC8x, and the 
 |---|---|
 | [`measure/`](measure/README.md) | **Octet Measure**: a browser app (and command line) that records a loudspeaker with a measurement microphone, shows the results, and fits a parametric EQ. Windows, macOS and Linux. |
 | [`pi/`](pi/README.md) | Configuration of the Raspberry Pi: CamillaDSP, MPD and upmpdcli (Tidal). |
+| [`tools/tidal/`](tools/tidal/README.md) | Local Tidal playlist CLI on Sonata: search, export, plan, and verified edits without the Pi. |
 
 ## Try the measurement app
 

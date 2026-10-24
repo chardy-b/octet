@@ -29,7 +29,7 @@ class ActiveSettings(unittest.TestCase):
                 before = copy.deepcopy(config)
                 values = self.values(config, output)
                 for item in server.always_active_controls(config, output):
-                    values[item['name']] = -18 if item['parameter'] == 'gain' else 80 if item['label'] == 'High-pass' else 8000
+                    values[item['name']] = -18 if item['parameter'] == 'gain' else (4000 if output >= 7 else 80) if item['label'] == 'High-pass' else 8000
                 server.change_always_active(config, output, values)
                 actual = server.always_active_controls(config, output)
                 self.assertEqual([item['value'] for item in actual], list(values.values()))

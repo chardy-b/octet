@@ -8,6 +8,7 @@ from scipy.signal import butter, correlate, correlation_lags, sosfilt, sosfreqz
 
 from .. import peq
 from ..sweep import make_sweep
+from .config import TWEETER_MIN_HZ, active_drivers, selected_pairs
 
 
 def lr(freq, kind, order, fs):
@@ -16,6 +17,8 @@ def lr(freq, kind, order, fs):
 
 
 def protection(d, fs):
+    if d['role'] == 'tweeter' and (d['min_hz'] < TWEETER_MIN_HZ or d['order'] not in (4, 8)):
+        raise ValueError('Tweeter protection requires a 3500 Hz or higher LR4/LR8 high-pass.')
     return np.vstack([lr(d['min_hz'], 'highpass', d['order'], fs),
                       lr(d['max_hz'], 'lowpass', d['order'], fs)])
 
@@ -32,11 +35,12 @@ def protected_sweep(d, cfg, level, duration=None):
 def sequence(cfg, levels):
     """One DAC buffer; identical protected acoustic markers bracket the eight sweeps."""
     fs, gap = cfg['fs'], int(cfg['gap_seconds'] * cfg['fs'])
-    pilot_driver = next(d for d in cfg['drivers'] if d['id'] == 'L_a')
-    pilot = protected_sweep(pilot_driver, cfg, levels['L_a'], duration=1)
+    drivers = active_drivers(cfg)
+    pilot_driver = next(d for d in drivers if d['side'] == 'L' and d['role'] in ('a', 'b'))
+    pilot = protected_sweep(pilot_driver, cfg, levels[pilot_driver['id']], duration=1)
     chunks, slots, cursor = [np.zeros((gap, 8))], [], gap
     items = [(pilot_driver, pilot, 'pilot_start')]
-    items += [(d, protected_sweep(d, cfg, levels[d['id']]), d['id']) for d in cfg['drivers']]
+    items += [(d, protected_sweep(d, cfg, levels[d['id']]), d['id']) for d in drivers]
     items += [(pilot_driver, pilot, 'pilot_end')]
     for d, x, name in items:
         block = np.zeros((len(x)+gap, 8))
@@ -123,7 +127,7 @@ def extract(rec, playback, slots, cfg, cal=None):
 
 def flatten(cfg, f, responses):
     out = {}
-    for d in cfg['drivers']:
+    for d in active_drivers(cfg):
         r = responses[d['id']]
         lo, hi = d['min_hz']*1.2, d['max_hz']/1.2
         if lo >= hi:
@@ -133,6 +137,18 @@ def flatten(cfg, f, responses):
                                 cfg['max_cut_db'], 2, ref_band=(lo, hi), smooth=3)
         out[d['id']] = [asdict(p) for p in filters]
     return out
+
+
+def signal_report(rec, cfg, levels, responses):
+    """The same conservative signal check used for acceptance and repeat levels."""
+    noise = max(float(np.sqrt(np.mean(rec[:int(.15*cfg['fs'])]**2))), 1e-12)
+    report = {}
+    for d in active_drivers(cfg):
+        response = responses[d['id']]
+        signal = float(np.median(abs(response['h'][response['valid']]))) * 10**(levels[d['id']]/20)
+        report[d['id']] = dict(output_db=levels[d['id']], noise_db=float(20*np.log10(noise)),
+                               margin_db=float(20*np.log10(max(signal, 1e-12)/noise)))
+    return report
 
 
 def branch_sos(cfg, d, candidate, eq):
@@ -145,7 +161,10 @@ def branch_sos(cfg, d, candidate, eq):
     elif role == 'tweeter':
         sos.append(lr(high, 'highpass', order, fs))
     else:
-        sos.extend([lr(low, 'highpass', order, fs), lr(high, 'lowpass', order, fs)])
+        if 'sub' in selected_pairs(cfg):
+            sos.append(lr(low, 'highpass', order, fs))
+        if 'tweeter' in selected_pairs(cfg):
+            sos.append(lr(high, 'lowpass', order, fs))
         if candidate['strategy'] == 'split':
             sos.append(lr(split, 'lowpass' if role == 'a' else 'highpass', order, fs))
     if eq:
@@ -177,13 +196,20 @@ def fast_lr(f, fc, kind, order, fs):
 
 
 def search(cfg, f, responses, eq, side, cancel=None):
-    drivers = [d for d in cfg['drivers'] if d['side'] == side]
+    drivers = [d for d in active_drivers(cfg) if d['side'] == side]
     byrole = {d['role']: d for d in drivers}
-    low_bounds = (max(150, byrole['a']['min_hz'], byrole['b']['min_hz']), min(300, byrole['sub']['max_hz']))
-    high_bounds = (max(2500, byrole['tweeter']['min_hz']), min(4000, byrole['a']['max_hz'], byrole['b']['max_hz']))
-    if low_bounds[0] >= low_bounds[1] or high_bounds[0] >= high_bounds[1]:
+    panels = [d for d in drivers if d['role'] in ('a', 'b')]
+    low_bounds = ((max(150, *[d['min_hz'] for d in panels]),
+                   min(cfg.get('sub_crossover_max', 500), byrole['sub']['max_hz']/1.2))
+                  if 'sub' in byrole else None)
+    high_bounds = ((max(TWEETER_MIN_HZ, byrole['tweeter']['min_hz']),
+                    min(5000, *[d['max_hz'] for d in panels]))
+                   if 'tweeter' in byrole else None)
+    if any(b is not None and b[0] >= b[1] for b in (low_bounds, high_bounds)):
         raise ValueError('Driver limits leave no crossover search overlap.')
-    mask = (f >= low_bounds[0]*.65) & (f <= high_bounds[1]*1.4)
+    lo = low_bounds[0]*.65 if low_bounds else min(d['min_hz'] for d in panels)*1.2
+    hi = high_bounds[1]*1.4 if high_bounds else max(d['max_hz'] for d in panels)/1.2
+    mask = (f >= lo) & (f <= hi)
     ff = f[mask][::3]
     hh = {d['id']: responses[d['id']]['h'][mask][::3] for d in drivers}
     fixed = {}
@@ -193,41 +219,56 @@ def search(cfg, f, responses, eq, side, cancel=None):
             sections = np.vstack([sections,peq.sos_for([peq.Peq(**p) for p in eq[d['id']]],cfg['fs'])])
         fixed[d['role']] = hh[d['id']]*sosfreqz(sections,worN=ff,fs=cfg['fs'])[1]
     candidates = []
-    for strategy, order in itertools.product(('both', 'split'), (4, 8)):
-        for signs in itertools.product((-1, 1), repeat=3):
+    roles = list(byrole)
+    count = len(roles)-1
+    strategies = ('both', 'split') if 'a' in byrole and 'b' in byrole else ('single',)
+    for strategy, order in itertools.product(strategies, (4, 8) if len(roles)>1 else (4,)):
+        geometry = {key: bounds for key, bounds in (('low', low_bounds), ('high', high_bounds),
+                    ('split', (500, 1500) if strategy == 'split' else None)) if bounds is not None}
+        bounds = [*geometry.values(), *[(-4, 4)]*count, *[(-24, 24)]*count]
+        initial = [*[np.mean(b) for b in geometry.values()], *[0.]*count, *[-3.]*count]
+        offset = len(geometry)
+        for signs in itertools.product((-1, 1), repeat=count):
             if cancel is not None and cancel.is_set():
                 raise InterruptedError('Tuning stopped.')
             def unpack(x):
-                delays = np.array([0, *x[3:6]])
+                delays = np.array([0, *x[offset:offset+count]])
                 delays -= delays.min()
-                return dict(strategy=strategy, order=order, low=float(x[0]), high=float(x[1]), split=float(x[2]),
-                            delays=dict(zip(('sub','a','b','tweeter'), delays.tolist())),
-                            gains=dict(zip(('sub','a','b','tweeter'), [0., *map(float, x[6:9])])),
-                            polarity=dict(zip(('sub','a','b','tweeter'), [1, *signs])))
+                gains = np.array([0., *x[offset+count:]])
+                gains -= gains.max()  # Relative matching uses attenuation only, including the sub.
+                frequencies = dict(low=min(d['min_hz'] for d in panels), high=max(d['max_hz'] for d in panels), split=1000.)
+                frequencies.update(zip(geometry, map(float, x[:offset])))
+                return dict(strategy=strategy, order=order, **frequencies, active_pairs=roles,
+                            delays=dict(zip(roles, delays.tolist())), gains=dict(zip(roles, gains.tolist())),
+                            polarity=dict(zip(roles, [1, *signs])))
             def cost(x):
                 if cancel is not None and cancel.is_set():
                     raise InterruptedError('Tuning stopped.')
                 c = unpack(x)
-                low_lp = fast_lr(ff,x[0],'lowpass',order,cfg['fs'])
-                low_hp = fast_lr(ff,x[0],'highpass',order,cfg['fs'])
-                high_lp = fast_lr(ff,x[1],'lowpass',order,cfg['fs'])
-                high_hp = fast_lr(ff,x[1],'highpass',order,cfg['fs'])
-                cross = dict(sub=low_lp,a=low_hp*high_lp,b=low_hp*high_lp,tweeter=high_hp)
+                panel = np.ones(len(ff), dtype=complex)
+                cross = {}
+                if 'sub' in byrole:
+                    cross['sub'] = fast_lr(ff,c['low'],'lowpass',order,cfg['fs'])
+                    panel *= fast_lr(ff,c['low'],'highpass',order,cfg['fs'])
+                if 'tweeter' in byrole:
+                    cross['tweeter'] = fast_lr(ff,c['high'],'highpass',order,cfg['fs'])
+                    panel *= fast_lr(ff,c['high'],'lowpass',order,cfg['fs'])
+                cross.update({r:panel for r in roles if r in ('a','b')})
                 if strategy == 'split':
-                    cross['a'] = cross['a']*fast_lr(ff,x[2],'lowpass',order,cfg['fs'])
-                    cross['b'] = cross['b']*fast_lr(ff,x[2],'highpass',order,cfg['fs'])
+                    cross['a'] = cross['a']*fast_lr(ff,c['split'],'lowpass',order,cfg['fs'])
+                    cross['b'] = cross['b']*fast_lr(ff,c['split'],'highpass',order,cfg['fs'])
                 branches = [fixed[r]*cross[r]*10**(c['gains'][r]/20)*c['polarity'][r]*delay_response(ff,c['delays'][r],cfg['fs'])
-                            for r in ('sub','a','b','tweeter')]
+                            for r in roles]
                 summed = np.sum(branches, axis=0)
                 db = 20*np.log10(np.maximum(abs(summed), 1e-10))
                 smoothness = np.mean((db-np.median(db))**2)
                 cancellation = np.maximum(20*np.log10(np.maximum(np.sum(np.abs(branches), axis=0), 1e-10)) - db - 4, 0)
-                return float(smoothness + .4*np.mean(cancellation**2) + .015*np.sum(x[6:9]**2) + .02*np.sum(x[3:6]**2))
-            bounds = [low_bounds, high_bounds, (500,1500), *[(-4,4)]*3, *[(-12,0)]*3]
-            x = np.array([np.mean(low_bounds), np.mean(high_bounds), 900, 0,0,0, -3,-3,-3.])
-            result = minimize(cost, x, method='Powell', bounds=bounds, options=dict(maxiter=12, maxfev=700, xtol=.03))
-            candidate = unpack(result.x)
-            candidate['score'] = cost(result.x)
+                return float(smoothness + .4*np.mean(cancellation**2) + .015*np.sum(x[offset+count:]**2) + .02*np.sum(x[offset:offset+count]**2))
+            x = np.array(initial)
+            if bounds:
+                x = minimize(cost, x, method='Powell', bounds=bounds, options=dict(maxiter=12, maxfev=700, xtol=.03)).x
+            candidate = unpack(x)
+            candidate['score'] = cost(x)
             candidates.append(candidate)
     return sorted(candidates, key=lambda c: c['score'])[:3]
 
@@ -236,7 +277,7 @@ def render_chain(cfg, side, candidate, eq, stimulus, room=()):
     fs = cfg['fs']
     x = sosfilt(peq.sos_for([peq.Peq(**p) for p in room], fs), stimulus) if room else stimulus
     out = np.zeros((len(x)+int(.1*fs), 8))
-    for d in cfg['drivers']:
+    for d in active_drivers(cfg):
         if d['side'] != side:
             continue
         y = sosfilt(branch_sos(cfg, d, candidate, eq[d['id']]), np.pad(x, (0, int(.1*fs))))
@@ -244,7 +285,7 @@ def render_chain(cfg, side, candidate, eq, stimulus, room=()):
         y = np.interp(np.arange(len(y))-delay, np.arange(len(y)), y, left=0, right=0)
         out[:,d['output']-1] = y*10**(candidate['gains'][d['role']]/20)*candidate['polarity'][d['role']]
     scale = min(1., *[10**(d['max_db']/20)/max(np.max(abs(out[:,d['output']-1])), 1e-12)
-                      for d in cfg['drivers'] if d['side'] == side])
+                      for d in active_drivers(cfg) if d['side'] == side])
     return out*scale, scale
 
 

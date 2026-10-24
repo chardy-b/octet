@@ -58,11 +58,71 @@ class Hardware:
                        capture_output=True, text=True, timeout=20)
 
     def take_dac(self):
+        from .camilla import control
+        services = list(dict.fromkeys([self.cfg['camilla']['service'], *self.cfg['quiesce_services']]))
+        self.previous_services = {service: subprocess.run(['systemctl', 'is-active', '--quiet', service],
+                                  capture_output=True, timeout=10).returncode == 0 for service in services}
+        self.previous_master = (control([('GetVolume', None), ('GetMute', None)])
+                                if self.previous_services[self.cfg['camilla']['service']] else None)
         # Stop producers as well: otherwise MPD and the verification stimulus can
         # contend for the same ALSA loopback playback endpoint during activation.
         for service in self.cfg['quiesce_services']:
             self.systemctl('stop',service)
         self.systemctl('stop')
+        # PortAudio hides busy ALSA devices during enumeration. Refresh after DAC takeover.
+        import sounddevice as sd
+        sd._terminate()
+        sd._initialize()
+
+    def preflight(self):
+        """Capture only after takeover, including when this USB input was the music source."""
+        import sounddevice as sd
+        if self.cancel.is_set():
+            raise InterruptedError('Playback stopped.')
+        cfg = self.cfg
+        ambient = sd.rec(int(.5*cfg['fs']), samplerate=cfg['fs'], channels=cfg['input_channels'],
+                         device=cfg['input_device'], dtype='float32', blocking=True)[:, cfg['mic_channel']]
+        if self.cancel.is_set():
+            raise InterruptedError('Playback stopped.')
+        peak = float(np.max(np.abs(ambient)))
+        if not np.isfinite(ambient).all() or peak < 1e-5:
+            raise ValueError('Microphone input is silent. Check EMM-6, phantom power and iD14 input 1 before starting tones.')
+        if peak >= 10**((cfg['clip_db']-6)/20):
+            raise ValueError('Microphone level is too high. Lower input gain before starting tones.')
+
+    def restore_preflight(self):
+        """No tones or DSP writes occurred: restore only services and prior master settings."""
+        from .camilla import control
+        if self.cancel.is_set():
+            raise InterruptedError('Playback stopped.')
+        camilla = self.cfg['camilla']['service']
+        if self.previous_services.get(camilla):
+            self.systemctl('start')
+            for _ in range(40):
+                if self.cancel.is_set():
+                    raise InterruptedError('Playback stopped.')
+                try:
+                    if control([('GetState', None)])[0] == 'Running':
+                        if self.cancel.is_set():
+                            raise InterruptedError('Playback stopped.')
+                        self.master(*self.previous_master)
+                        break
+                except InterruptedError:
+                    raise
+                except (OSError, RuntimeError):
+                    pass
+                time.sleep(.1)
+            else:
+                raise RuntimeError('Previous CamillaDSP source did not restart.')
+        for service, active in self.previous_services.items():
+            if self.cancel.is_set():
+                raise InterruptedError('Playback stopped.')
+            if active and service != camilla:
+                self.systemctl('start', service)
+
+    def master(self, volume, muted):
+        from .camilla import control
+        control([('SetMute', True), ('SetVolume', volume), ('SetMute', muted)])
 
     def stop(self):
         self.cancel.set()
@@ -77,7 +137,10 @@ class Hardware:
         if signal.ndim != 2 or signal.shape[1] != (2 if loopback else 8) or not np.isfinite(signal).all():
             raise ValueError('Invalid output buffer.')
         if not loopback:
+            from .config import selected_pairs
             for d in cfg['drivers']:
+                if d['role'] not in selected_pairs(cfg) and np.any(signal[:,d['output']-1]):
+                    raise ValueError(f"Deselected output must remain silent: {d['id']}.")
                 if np.max(abs(signal[:,d['output']-1])) > 10**(d['max_db']/20)*1.00001:
                     raise ValueError(f"Output ceiling exceeded on {d['id']}.")
         input_dev = cfg['input_device']
