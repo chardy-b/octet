@@ -624,3 +624,14 @@ confirm audible left/right output through protected filters; check MPD queue and
 position retention, −18 dB startup at maximum phone volume, output pair mute
 retention, source round trips, tuning exclusion, stop/start and service failure.
 Do not claim end-to-end playback from mocked tests alone.
+
+## Bluetooth A2DP preflight (WIL-249)
+
+`python3 pi/remote/bluetooth_preflight.py` performs a read-only prerequisite check
+and prints JSON (exit 0 for prerequisites present, 1 for blockers). It requires
+working BlueALSA daemon/player binaries and idle, exact snd_aloop subdevice-2
+playback/capture endpoints. MPD keeps subdevice 0 and AirPlay keeps subdevice 1.
+The existing two-substream setup intentionally fails this check. The command does
+not install, start, pair, play audio or advertise; even success leaves Bluetooth
+unavailable pending the protected route and lifecycle implementation. See the
+[design and acceptance notes](../../docs/superpowers/specs/2026-10-26-bluetooth-preflight-design.md).
