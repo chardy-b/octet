@@ -8,6 +8,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -97,20 +98,35 @@ class AirPlayController:
         self.recover()
 
     def recover(self):
+        self.needs_mute = True
         self.mute()
         if self.restore_pending is not None:
             path = self.server.CHANNEL_PROFILE
-            candidate = path.with_name('channel-dsp-airplay-rollback.yml')
+            candidate = None
             try:
-                candidate.write_bytes(self.restore_pending)
-                candidate.chmod(0o640)
+                # Never truncate the live profile, even when retrying a restore.
+                with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + '.rollback-',
+                                                 delete=False) as stream:
+                    candidate = Path(stream.name)
+                    stream.write(self.restore_pending)
+                    stream.flush()
+                    os.fchmod(stream.fileno(), 0o640)
+                    os.fsync(stream.fileno())
                 candidate.replace(path)
+                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
                 with self.server.DSP() as dsp:
-                    dsp.call('Reload')
-                    dsp.call('SetMute', True)
+                    try:
+                        dsp.call('Reload')
+                    finally:
+                        dsp.call('SetMute', True)
                 self.restore_pending = None
             finally:
-                candidate.unlink(missing_ok=True)
+                if candidate is not None:
+                    candidate.unlink(missing_ok=True)
         self.needs_mute = False
 
     def end(self):

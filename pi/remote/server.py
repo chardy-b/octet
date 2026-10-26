@@ -339,6 +339,15 @@ def require_tidal(dsp):
         raise RuntimeError('Select Tidal as the source before starting music')
 
 
+def restore_channel_profile(previous):
+    # Keep rollback bytes and the mute retry latched until durable restore and
+    # DSP reload both succeed. Cancel any pending automatic AirPlay unmute.
+    AIRPLAY_CONTROL.invalidate(manual=False)
+    AIRPLAY_CONTROL.restore_pending = previous
+    AIRPLAY_CONTROL.needs_mute = True
+    AIRPLAY_CONTROL.recover()
+
+
 def select_source(identifier, defer_ready=False):
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
@@ -386,12 +395,7 @@ def select_source(identifier, defer_ready=False):
                         return  # Explicit Unmute/Play is required after a source change.
             raise RuntimeError('The selected input did not start')
         except Exception:
-            candidate.write_bytes(previous)
-            candidate.chmod(0o640)
-            candidate.replace(CHANNEL_PROFILE)
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
-                dsp.call('Reload')
+            restore_channel_profile(previous)
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
             raise RuntimeError('Source change failed; the previous source was restored and output is muted')
     finally:
@@ -659,11 +663,7 @@ def set_channel_control(output, control, enabled):
                         return
         raise RuntimeError('DSP did not confirm the change')
     except Exception:
-        CHANNEL_PROFILE.write_bytes(previous)
-        CHANNEL_PROFILE.chmod(0o640)
-        with DSP() as dsp:
-            dsp.call('SetMute', True)
-            dsp.call('Reload')
+        restore_channel_profile(previous)
         raise RuntimeError('DSP change failed; previous settings restored and output muted')
 
 
