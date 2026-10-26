@@ -30,7 +30,7 @@ def main():
             shutil.copy2(path, backup / path.name)
     target = Path('/opt/octet-remote')
     target.mkdir(mode=0o755, exist_ok=True)
-    for name in ['server.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+    for name in ['server.py', 'airplay_control.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
                  'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)
@@ -46,7 +46,8 @@ def main():
     os.chmod(CHANNEL_PROFILE.parent, 0o2750)
     if CHANNEL_PROFILE.exists():
         shutil.copy2(CHANNEL_PROFILE, backup / CHANNEL_PROFILE.name)
-    CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
+    else:
+        CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
     os.chown(CHANNEL_PROFILE, pwd.getpwnam('upmpdcli').pw_uid, grp.getgrnam('audio').gr_gid)
     os.chmod(CHANNEL_PROFILE, 0o640)
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(CHANNEL_PROFILE)], check=True)

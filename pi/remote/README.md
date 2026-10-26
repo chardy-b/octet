@@ -494,3 +494,104 @@ predicted response with DSP, measured/predicted phase, delay, polarity and relat
 attenuation. Hover or use arrow keys to read graph values. Levels are relative dB,
 not calibrated SPL. Manual settings backups show an explicit no-measurements
 message; they do not fabricate an acoustic result.
+
+## Classic AirPlay (WIL-248)
+
+Select **Octet** in an iPhone/Mac's AirPlay audio picker on the same LAN. A cast
+pauses MPD without clearing its queue or position, selects the protected speaker
+DSP, sets master to **−18 dB**, and unmutes only after both loopback endpoints
+are RUNNING at 44100 Hz / S32_LE / stereo, capture application and hardware
+pointers advance, and DSP readiness checks pass. Phone volume is Shairport software attenuation; 100% phone
+volume does not raise the DSP master. Deliberate remote volume changes remain
+available. Output pair mutes, crossover, protection filters and EQ are preserved.
+Ending playback mutes and leaves AirPlay selected; Tidal never resumes itself.
+Choose Tidal explicitly and press Play to resume the saved queue.
+
+The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
+Manual source selection stays muted. Auto Tune excludes automatic playback;
+a missing receiver, loopback, unsupported preset or failed reload stays muted.
+Only the **Output DSP controls** preset supports source changes. Saved Auto Tune
+presets are not rewritten. A readiness timeout restores the previous config.
+Boot and remote restart mute; receiver loss is monitored, and remote service
+exit has a mute hook. These are software safeguards: if DSP control itself is
+unreachable, a mute command cannot be guaranteed until connectivity returns.
+
+### Install or upgrade on the Pi
+
+These commands are deployment instructions, not commands to run on a build host.
+First provision Debian's classic-only `shairport-sync`, `avahi-daemon` and
+`alsa-utils` packages through the normal OS maintenance process. The AirPlay
+installer never installs packages. AirPlay 2 builds are deliberately rejected
+pending separate capability verification; no NQPTP is needed.
+
+Upgrade the remote from this checkout with `sudo python3 pi/remote/install.py`,
+then run `sudo python3 pi/remote/install_airplay.py`. The remote installer preserves
+an existing channel DSP file, including output mutes. The AirPlay installer checks
+ALSA/Avahi binary capabilities using `shairport-sync -V`, resolves the Loopback
+card index and `snd_aloop` driver, and verifies both directions on subdevice 1.
+Open endpoints must have matching negotiated parameters; closed endpoints are
+opened nonblocking in bounded helpers to negotiate the exact format without
+playing or recording samples. It validates a candidate against the Pi's CamillaDSP
+binary, atomically installs the reviewed receiver config and service overrides,
+and restarts the remote muted. It enables disabled receiver/Avahi units, preserves
+static/indirect/alias/linked enable states, starts the services, and checks each
+service individually plus socket readiness. A failed activation
+restores its backed-up files and service state. No MPD or DSP service configuration
+is changed by the AirPlay installer.
+
+MPD owns `hw:Loopback,0,0` → `hw:Loopback,1,0`. Shairport owns
+`hw:Loopback,0,1` → `hw:Loopback,1,1`, **44100 Hz / S32_LE / stereo**. Existing
+`snd-aloop pcm_substreams=2` is required; there is no `plughw`, DAC or MPD fallback.
+Camilla's asynchronous input resampler converts to the 48000 Hz speaker pipeline.
+Confirm the installed Shairport version honors the supplied options and reports
+this PCM format during a real cast. Package/version checks and negotiation probes
+are not substitutes for that acceptance test. Configuration follows the
+[upstream Shairport sample](https://github.com/mikebrady/shairport-sync/blob/master/scripts/shairport-sync.conf).
+
+`/run/octet-airplay/control.sock` is accessible only through the dedicated
+`octet-airplay` group and verifies Linux peer credentials against the
+`shairport-sync` UID. It accepts only `start`/`stop`; there is no HTTP hook,
+password, client metadata or sudo grant. The service user can trigger the bounded
+startup level but cannot submit arbitrary commands. The before-play hook prepares
+the route muted and returns, allowing PCM to begin; the monitor then verifies
+capture and applies the startup level. Waiting for live PCM inside the blocking
+hook would deadlock playback. Hook preparation has a 20-second response deadline;
+a timeout cancels automatic unmute even if a blocked preparation operation later
+returns. Only one preparation worker can run at a time. Unmute also requires a
+successfully acknowledged hook response.
+
+Shairport's hooks contain no session generation. Stop events are debounced for
+one second and checked against running subdevice-1 playback and progressing capture. A stop/start pair resets
+the startup level; a stale stop while PCM is running is ignored. Manual override
+suppresses duplicate starts until PCM goes idle. This deliberately favors staying
+muted if a very rapid replacement cast cannot be distinguished from the overridden
+cast: stop casting, wait a second, and cast again. Missing hooks/crashes are caught
+by service and PCM monitoring; initial readiness has a ten-second deadline.
+Manual controls, hook changes and Auto Tune requests use the same control lock.
+
+### Network, rollback and acceptance
+
+Discovery uses Avahi/mDNS on the LAN, not Tailscale discovery. Permit mDNS UDP 5353,
+classic RTSP TCP 5000 and receiver UDP 6001–6010 on trusted LAN interfaces only;
+do not forward these ports to the internet. AirPlay video and AirPlay 2 are out of
+scope. The existing remote remains on its configured Tailscale address.
+
+`sudo python3 pi/remote/install_airplay.py --rollback` stops the receiver and
+restores managed config/overrides and enabled/active service states saved at the
+**first** installation in `/var/backups/octet-airplay`. Repeated installs keep that
+original rollback point. Backups and restoration preserve file ownership and mode.
+Rollback verifies restored files and service states, continues independent recovery
+steps after errors, and retains backups for an idempotent retry. If recovery is
+incomplete it reports all failures and does not restart the receiver. It leaves
+the inert system group and OS packages in place.
+Keep the matching checkout to run rollback. Remote-code downgrade uses the normal
+remote deployment backup separately; roll AirPlay back before removing its helper.
+Review prior receiver configuration before restoring any older deployment that
+may have routed audio directly to hardware.
+
+Physical acceptance is still required: verify the actual ALSA pairing and binary
+options; discover Octet from an iPhone/Mac; cast and inspect both DSP input meters;
+confirm audible left/right output through protected filters; check MPD queue and
+position retention, −18 dB startup at maximum phone volume, output pair mute
+retention, source round trips, tuning exclusion, stop/start and service failure.
+Do not claim end-to-end playback from mocked tests alone.

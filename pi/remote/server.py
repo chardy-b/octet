@@ -11,6 +11,7 @@ import re
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -22,6 +23,7 @@ from visualizer_state import VisualizerState
 from audio_sources import discover_sources, source_config, source_metadata, meter_channels
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
+from airplay_control import AirPlayController, serve as serve_airplay
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
@@ -337,7 +339,7 @@ def require_tidal(dsp):
         raise RuntimeError('Select Tidal as the source before starting music')
 
 
-def select_source(identifier):
+def select_source(identifier, defer_ready=False):
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
     if not isinstance(identifier, str):
@@ -350,7 +352,7 @@ def select_source(identifier):
             raise RuntimeError('Source selection requires the Output DSP controls preset')
         config = json.loads(dsp.call('GetConfigJson'))
         if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
-            return
+            return (None, config) if defer_ready else None
     updated = source_config(config, source)
     candidate = CHANNEL_PROFILE.with_name('channel-dsp-source-candidate.yml')
     previous = CHANNEL_PROFILE.read_bytes()
@@ -365,10 +367,13 @@ def select_source(identifier):
             dsp.call('SetMute', True)
         try:
             # Retain the queue and its position, but never play Tidal in the background.
-            mpd('pause 1')
+            if not defer_ready:
+                mpd('pause 1')
             candidate.replace(CHANNEL_PROFILE)
             with DSP() as dsp:
                 dsp.call('Reload')
+            if defer_ready:
+                return previous, updated
             for _ in range(60):
                 time.sleep(.1)
                 with DSP() as dsp:
@@ -749,7 +754,11 @@ def current_status():
             result['source_switching_available'] = profile == str(CHANNEL_PROFILE)
     except (OSError, RuntimeError, ValueError):
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
+    result['airplay'] = AIRPLAY_CONTROL.status()
     return result
+
+
+AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
 
 
 def action(name, data):
@@ -762,6 +771,7 @@ def _action(name, data):
     global LEVELS_UNLOCKED
     if name.startswith('auto-'):
         with LOCK:
+            AIRPLAY_CONTROL.invalidate()
             INPUT_LEVELS.release()
             return TUNING.request(name.removeprefix('auto-'), data)
     tuning = TUNING.status()
@@ -772,7 +782,13 @@ def _action(name, data):
     if name == 'play-playlist':
         return play_playlist(data)
     with LOCK:
+        if AIRPLAY_CONTROL.pending is not None and name in (
+                'channel-eq', 'channel-mute', 'channel-polarity', 'channel-always-active', 'all-eq'):
+            AIRPLAY_CONTROL.invalidate()
         if name == 'source':
+            AIRPLAY_CONTROL.invalidate()
+            with DSP() as dsp:
+                dsp.call('SetMute', True)
             select_source(data.get('id'))
         elif name == 'unlock':
             enabled = data.get('enabled')
@@ -794,10 +810,12 @@ def _action(name, data):
         elif name == 'all-eq':
             set_channel_control(None, 'all-eq', data.get('enabled'))
         elif name == 'stop':
+            AIRPLAY_CONTROL.invalidate()
             with DSP() as dsp:
                 dsp.call('SetMute', True)
             mpd('stop')
         elif name == 'mute':
+            AIRPLAY_CONTROL.invalidate()
             if not isinstance(data.get('muted'), bool):
                 raise ValueError('Expected a mute setting')
             with DSP() as dsp:
@@ -1133,13 +1151,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error': message}, 503)
 
 
-if __name__ == '__main__':
-    os.umask(0o077)
+def initialize_dsp():
+    global LEVELS_UNLOCKED, ACTIVE_CAPTURE_CHANNELS
     try:
         with DSP() as dsp:
+            dsp.call('SetMute', True)
             LEVELS_UNLOCKED = dsp.call('GetVolume') > MAX_DB
             ACTIVE_CAPTURE_CHANNELS = meter_channels(json.loads(dsp.call('GetConfigJson')))
     except (OSError, RuntimeError):
         pass
+
+
+if __name__ == '__main__':
+    os.umask(0o077)
+    initialize_dsp()
+    if Path('/run/octet-airplay').exists():
+        threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()

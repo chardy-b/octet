@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const sources = [
+  {id:'airplay',label:'AirPlay',group:'Music',available:true,description:'Cast to Octet on your LAN.'},
   {id:'tidal',label:'Tidal',group:'Music',available:true,description:'Tidal and the saved music queue.'},
   {id:'usb:iD14:pair-1',label:'Audient iD14 · Inputs 1 / 2 · stereo',group:'Audient iD14',available:true,description:'Stereo inputs.'},
   {id:'usb:iD14:mono-1',label:'Audient iD14 · Input 1 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
@@ -34,7 +35,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
       return route.fulfill({body:fs.readFileSync(path.join(__dirname,asset)),contentType:asset.endsWith('.js')?'text/javascript':asset.endsWith('.css')?'text/css':'text/html'});
     });
     await page.goto('http://octet.test/');
-    await page.waitForFunction(()=>document.getElementById('source-choice').options.length===4);
+    await page.waitForFunction(()=>document.getElementById('source-choice').options.length===5);
     assert.equal(await page.locator('#source-choice').inputValue(),'tidal');
     assert.equal(await page.locator('#source-apply').isDisabled(),true);
     await page.selectOption('#source-choice','usb:iD14:mono-1');
@@ -63,6 +64,14 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),false);
     assert.equal(await page.locator('#song-title').textContent(),'Saved song');
     assert.deepEqual(writes,[{id:'usb:iD14:mono-1'},{id:'tidal'},{id:'tidal'}]);
+    state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:false}};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#song-artist').textContent(),/Waiting/);
+    assert.equal(await page.locator('.transport').isVisible(),false);
+    state={...state,airplay:{active:true},muted:false,volume:-18};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#source-status').textContent(),/cast active/);
+    assert.equal(await page.locator('#queue-count').textContent(),'1');
     assert.deepEqual(errors,[]);
     console.log('Browser source flow passed: selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, mobile layout.');
   }finally{await browser.close();}

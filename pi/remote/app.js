@@ -8,7 +8,7 @@ function render(next){
   renderSources(next);
   if(liveInput()){
     $('player-title').textContent='LIVE INPUT';$('playback-label').textContent=next.ready?(next.muted?'Muted':'Listening'):'Unavailable';
-    $('song-title').textContent=next.source_label;$('song-artist').textContent='Playing through your speaker DSP.';
+    $('song-title').textContent=next.source_label;$('song-artist').textContent=next.source==='airplay'?(next.airplay?.active?'AirPlay cast active.':'Waiting for an AirPlay cast.'):'Playing through your speaker DSP.';
     $('cover').hidden=true;$('cover-placeholder').hidden=false;
     if(next.player_error)notice();
   }else $('player-title').textContent='NOW PLAYING';
@@ -38,7 +38,9 @@ function renderSources(next){
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
   if(!sourceBusy){
     $('source-status').textContent=!next.source_switching_available?'Select the Output DSP controls preset to change sources.':!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
-    $('source-status').classList.toggle('error',!next.ready);
+    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':'AirPlay selected · waiting for a cast.');
+    if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
+    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error));
   }
 }
 $('source-choice').onchange=()=>{$('source-choice').dataset.dirty='true';renderSources(state);};

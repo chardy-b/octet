@@ -50,3 +50,14 @@ The live output was disabled with `mpc disable 2`; no playback or DSP restart
 was needed. Keep this tap disabled during normal listening. Its prior enabled
 state can be selected manually for visualizer testing, which may reintroduce
 startup glitches. Audio quality, channel filters and listening levels are unchanged.
+
+### AirPlay audio
+
+Octet supports classic AirPlay through Shairport Sync on dedicated ALSA loopback
+subdevice 1, preserving MPD's subdevice 0 and the protected CamillaDSP speaker
+chain. Casting automatically pauses Tidal and starts at −18 dB master; phone
+volume attenuates the source. Playback end mutes without resuming Tidal.
+See [remote AirPlay installation, rollback and physical acceptance](remote/README.md#classic-airplay-wil-248).
+The optional installer requires already provisioned classic Shairport/Avahi
+packages and validates the real Pi loopback/configuration before enabling.
+Discovery requires the same LAN; Tailscale discovery and AirPlay 2 are not included.
