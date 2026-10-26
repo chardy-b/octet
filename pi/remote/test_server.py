@@ -59,5 +59,110 @@ class PlaybackGuards(unittest.TestCase):
         self.assertEqual(server.decode_credentials({'token_type': 'Bearer'}), {'token_type': 'Bearer'})
 
 
+class InitializationSafety(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.muted = False
+        self.dsp = MagicMock()
+        self.dsp.__enter__.return_value = self.dsp
+        self.dsp.call.side_effect = self.call
+        self.control = MagicMock(needs_mute=False, error=None)
+        self.control.recover.side_effect = self.recover
+        for item in (patch.object(server, 'DSP', return_value=self.dsp),
+                     patch.object(server, 'AIRPLAY_CONTROL', self.control),
+                     patch.object(server, 'LEVELS_UNLOCKED'),
+                     patch.object(server, 'ACTIVE_CAPTURE_CHANNELS')):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def call(self, name, *args):
+        self.calls.append((name, *args))
+        if name == 'SetMute':
+            self.muted = args[0]
+        if name == 'GetMute':
+            return self.muted
+        if name == 'GetVolume':
+            return -18
+        if name == 'GetConfigJson':
+            return '{}'
+
+    def recover(self):
+        self.calls.append(('recover',))
+        self.assertTrue(self.muted)
+        self.muted = False  # A reload can change mute state.
+        self.control.needs_mute = False
+
+    def test_mute_is_verified_before_and_after_recovery(self):
+        server.initialize_dsp()
+        self.assertEqual(self.calls[:5], [
+            ('SetMute', True), ('GetMute',), ('recover',),
+            ('SetMute', True), ('GetMute',)])
+        self.assertTrue(self.muted)
+
+    def test_recovery_failure_still_remutes_and_retains_retry(self):
+        def fail():
+            self.recover()
+            raise OSError('broken recovery journal')
+        self.control.recover.side_effect = fail
+        server.initialize_dsp()
+        self.assertTrue(self.muted)
+        self.assertEqual(self.calls[3:5], [('SetMute', True), ('GetMute',)])
+        self.assertTrue(self.control.needs_mute)
+        self.assertIn('recovery failed', self.control.error)
+
+    def test_initial_mute_failure_skips_recovery_and_retries(self):
+        for command in ('SetMute', 'GetMute'):
+            with self.subTest(command=command):
+                self.control.recover.reset_mock()
+                failed = False
+                def fail_once(name, *args):
+                    nonlocal failed
+                    if name == command and not failed:
+                        failed = True
+                        raise OSError('DSP unavailable')
+                    return self.call(name, *args)
+                self.dsp.call.side_effect = fail_once
+                server.initialize_dsp()
+                self.control.recover.assert_not_called()
+                self.assertTrue(self.muted)
+                self.assertTrue(self.control.needs_mute)
+
+    def test_unconfirmed_mute_prevents_both_services_starting(self):
+        for value in (False, None, 1):
+            with self.subTest(value=value):
+                self.control.recover.reset_mock()
+                self.dsp.call.side_effect = lambda name, *args: value if name == 'GetMute' else self.call(name, *args)
+                with patch.object(server.os, 'umask'), \
+                     patch.object(server.Path, 'exists', return_value=True), \
+                     patch.object(server.threading, 'Thread') as thread, \
+                     patch.object(server, 'ThreadingHTTPServer') as http, \
+                     self.assertRaisesRegex(RuntimeError, 'refusing remote startup'):
+                    server.main()
+                thread.assert_not_called()
+                http.assert_not_called()
+                self.control.recover.assert_not_called()
+                self.assertTrue(self.control.needs_mute)
+
+    def test_post_recovery_mute_failure_is_fatal(self):
+        for command in ('SetMute', 'GetMute', 'connect', 'unmuted'):
+            with self.subTest(command=command):
+                self.calls.clear()
+                def fail_after_recovery(name, *args):
+                    if command == 'unmuted' and ('recover',) in self.calls and name == 'GetMute':
+                        return False
+                    if ('recover',) in self.calls and name == command:
+                        raise OSError('DSP disconnected after reload')
+                    return self.call(name, *args)
+                self.dsp.call.side_effect = fail_after_recovery
+                def connect():
+                    if command == 'connect' and ('recover',) in self.calls:
+                        raise OSError('connection refused')
+                    return self.dsp
+                with patch.object(server, 'DSP', side_effect=connect), \
+                     self.assertRaisesRegex(RuntimeError, 'refusing remote startup'):
+                    server.initialize_dsp()
+                self.assertTrue(self.control.needs_mute)
+
+
 if __name__ == '__main__':
     unittest.main()

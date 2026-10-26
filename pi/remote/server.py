@@ -771,6 +771,14 @@ def action(name, data):
 
 def _action(name, data):
     global LEVELS_UNLOCKED
+    if AIRPLAY_CONTROL.needs_mute or AIRPLAY_CONTROL.baseline.exists():
+        if (name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True)) and TUNING.status().get('audio_owned'):
+            AIRPLAY_CONTROL.mute()
+            return TUNING.request('stop', {})
+        if AIRPLAY_CONTROL.needs_mute:
+            AIRPLAY_CONTROL.recover()
+        if AIRPLAY_CONTROL.baseline.exists():
+            AIRPLAY_CONTROL.invalidate()
     if name.startswith('auto-'):
         with LOCK:
             AIRPLAY_CONTROL.invalidate()
@@ -1204,19 +1212,46 @@ class Handler(BaseHTTPRequestHandler):
 
 def initialize_dsp():
     global LEVELS_UNLOCKED, ACTIVE_CAPTURE_CHANNELS
-    try:
+    def confirm_mute():
         with DSP() as dsp:
             dsp.call('SetMute', True)
-            LEVELS_UNLOCKED = dsp.call('GetVolume') > MAX_DB
-            ACTIVE_CAPTURE_CHANNELS = meter_channels(json.loads(dsp.call('GetConfigJson')))
-    except (OSError, RuntimeError):
-        pass
+            if dsp.call('GetMute') is not True:
+                raise RuntimeError('DSP mute could not be confirmed')
+
+    with LOCK:
+        AIRPLAY_CONTROL.needs_mute = True
+        try:
+            confirm_mute()
+            AIRPLAY_CONTROL.recover()
+        except Exception:
+            AIRPLAY_CONTROL.needs_mute = True
+            AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
+        finally:
+            # Recovery can reload the DSP or fail partway through. Always use a
+            # fresh connection to mute again, and refuse startup without proof.
+            try:
+                confirm_mute()
+            except Exception as error:
+                AIRPLAY_CONTROL.needs_mute = True
+                AIRPLAY_CONTROL.error = 'DSP mute could not be confirmed; refusing remote startup'
+                raise RuntimeError(AIRPLAY_CONTROL.error) from error
+        try:
+            with DSP() as dsp:
+                LEVELS_UNLOCKED = dsp.call('GetVolume') > MAX_DB
+                ACTIVE_CAPTURE_CHANNELS = meter_channels(json.loads(dsp.call('GetConfigJson')))
+        except Exception:
+            AIRPLAY_CONTROL.needs_mute = True
+            AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
 
 
-if __name__ == '__main__':
+def main():
     os.umask(0o077)
     initialize_dsp()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
+
+
+if __name__ == '__main__':
+    main()

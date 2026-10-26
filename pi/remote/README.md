@@ -504,14 +504,43 @@ are RUNNING at 44100 Hz / S32_LE / stereo, capture application and hardware
 pointers advance, and DSP readiness checks pass. Phone volume is Shairport software attenuation; 100% phone
 volume does not raise the DSP master. Deliberate remote volume changes remain
 available. Output pair mutes, crossover, protection filters and EQ are preserved.
-Ending playback mutes and leaves AirPlay selected; Tidal never resumes itself.
-Choose Tidal explicitly and press Play to resume the saved queue.
+Ending playback mutes; Tidal never resumes itself. With the classic channel profile,
+AirPlay stays selected: choose Tidal explicitly and press Play to resume the queue.
+With an approved Auto Tune baseline, the original baseline path and exact config
+are restored on stop or failure, still muted.
 
 The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
 Manual source selection stays muted. Auto Tune excludes automatic playback;
 a missing receiver, loopback, unsupported preset or failed reload stays muted.
-Only the **Output DSP controls** preset supports source changes. Saved Auto Tune
-presets are not rewritten. A readiness timeout restores the previous config.
+Manual source selection still requires the **Output DSP controls** preset. Automatic
+AirPlay also supports a SHA-verified `TUNING.active(path)` baseline directly under
+`/var/lib/octet-autotune/baselines`, provided its loaded JSON exactly equals the
+baseline YAML and it uses stereo Tidal loopback at a 48 kHz DSP rate. Unsupported
+configs fail closed; there is no fallback to the 37-filter channel preset.
+
+Baseline AirPlay uses `/var/lib/octet-dsp/airplay-baseline.yml` (0640), copied from
+the exact loaded config with only capture/clock routing changes. The original
+baseline is never written: all 129 filters in the verified baseline, pipeline,
+mixers, gains, output protections and playback device remain unchanged. The
+candidate must pass CamillaDSP `--check`. A bounded 0600 `airplay-recovery.json`
+journal records the original path and SHA-256, with fdatasync and directory fsync
+completed before `SetConfigFilePath(candidate)` followed by `Reload`. Readiness
+requires exact candidate config/path, unchanged approved baseline digest, running
+DSP and advancing capture PCM before setting −18 dB and unmuting.
+
+Stop/failure/restart mutes and restores using `SetConfigFilePath(original)` then
+`Reload`; cleanup follows verification of original path, exact config, running
+DSP and baseline digest. Failed recovery retains the journal and mute/retry latch.
+Manual controls end baseline AirPlay and complete recovery under the shared lock
+before proceeding; this deliberately narrow version does not edit baseline files
+or expose ephemeral profiles as general editable presets. Auto Tune handoff uses
+the same recovery gate. If Auto Tune already owns audio or has selected another
+path, mute and retain recovery evidence without overwriting its configuration.
+Recovery requires ownership to be released and a recognized path plus the original
+approval/digest; unknown, changed, malformed or oversized state blocks playback.
+An Auto Tune stop request remains available while recovery is blocked. Never delete
+the journal to bypass a failed restore. Remote initialization recovers before
+allowing AirPlay; a persisted route never implies a live cast.
 Boot and remote restart mute; receiver loss is monitored, and remote service
 exit has a mute hook. These are software safeguards: if DSP control itself is
 unreachable, a mute command cannot be guaranteed until connectivity returns.

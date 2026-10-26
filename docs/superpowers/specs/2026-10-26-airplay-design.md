@@ -20,10 +20,44 @@ Configure Shairport Sync's `sessioncontrol.run_this_before_play_begins` and `run
 
 On start: check Auto Tune ownership, selected approved DSP preset, loopback availability and receiver state. Mute the master; pause MPD while retaining queue/position; produce/check candidate DSP config; atomically activate and confirm running AirPlay capture. Set master to **−18 dB** on automatic AirPlay activation (never higher than −18 dB in this transition), then unmute only after verified readiness and while the current cast still owns the source. The iPhone controls Shairport Sync's software attenuation independently; at 100% AirPlay volume, the CamillaDSP master remains at −18 dB unless deliberately changed in the Octet remote. Do not change channel/output protection or their mute states. If Auto Tune is active or another prerequisite fails, remain muted, do not alter an unsupported preset, and surface a clear failure in logs/status. Source switching must never strip protective filters or activate previously muted output pairs.
 
-On end: mute, leave the AirPlay source selected for deliberate next action, and do not resume MPD. An explicit user source change overrides old hook events. Replaying from a new cast may reactivate automatically. At boot, restart or service crash, the persisted DSP starts muted; stale persisted `airplay` source alone never implies auto-unmute. Error recovery restores the previous config if validation/reload fails, keeps master muted, and preserves the MPD queue. A concurrent tuning start wins ownership and must prevent a subsequent AirPlay unmute.
+On end with the classic channel profile: mute, leave the AirPlay source selected for deliberate next action, and do not resume MPD. With an approved Auto Tune baseline, restore the original baseline path and exact config while muted. An explicit user source change overrides old hook events. Replaying from a new cast may reactivate automatically. At boot, restart or service crash, the persisted DSP starts muted; stale persisted `airplay` source alone never implies auto-unmute. Error recovery restores the previous config if validation/reload fails, keeps master muted, and preserves the MPD queue. A concurrent tuning start wins ownership and must prevent a subsequent AirPlay unmute.
 
 ## Deployment and verification
 
 Ship a reviewed Shairport config fragment, service integration, local hook/helper, and an installer or upgrade path that backs up prior config and service state. Check binary capabilities and the real ALSA subdevice before enabling; preserve existing MPD/DSP services and their settings. Document rollback, Avahi/LAN discovery, firewall requirements, output level and limitations. No passwords or AirPlay client metadata in logs. The remote displays AirPlay selection/status without implying a cast is active when merely selected.
 
 Cloud tests cover source round trips (Tidal → AirPlay → USB → Tidal), fixed rate/resampler and protected filters, success/failure and rollback, no Auto Tune collision, duplicate/stale hooks, manual override, boot/restart mute, and installer idempotency. Exact-head CI must pass. On the physical Pi, confirm Shairport appears from an iPhone/Mac on the same LAN, an actual cast reaches DSP meters and both channels, Tidal pauses without losing queue, gain stays bounded and output pairs retain protective limits. If Pi or client access is unavailable, report this physical acceptance gate explicitly rather than claiming end-to-end playback.
+
+## Approved Auto Tune baseline routing
+
+Automatic AirPlay must use the same active DSP chain as Tidal. The user-reported
+Pi baseline `/var/lib/octet-autotune/baselines/before-20261026-041307-327269.yml`
+has 129 filters; CHANNEL_PROFILE has 37 and is never a substitute. The Pi-reported
+`GetConfigJson == yaml.safe_load(active baseline)` is the required equality gate,
+not new physical evidence from this implementation session.
+
+Accept only SHA-verified `TUNING.active(path)` baselines with `audio_owned` exactly
+false, stereo Tidal loopback capture and 48 kHz DSP. Preserve every pipeline stage,
+filter, mixer, gain, protection and playback field. Only capture and source clock
+fields change in a restrictive ephemeral profile under `/var/lib/octet-dsp`.
+Validate with `--check`, persist/fdatasync the candidate and bounded recovery
+journal, fsync their directory, then use CamillaDSP 4.1 `SetConfigFilePath(string)`
+and `Reload`. Do not use `SetConfigJson` as a staging operation: it applies immediately.
+Never modify any baseline bytes or create files in the Auto Tune directory.
+
+Before unmuting, verify exact candidate config/path, original approval/digest,
+running DSP, capture progress and ownership; set master −18 dB only then. Keep
+recovery evidence through the entire cast. Stop/failure and remote startup mute,
+restore the original path with Reload, verify exact original config/path/digest,
+and only then durably remove candidate and journal. Failed restores retain a mute
+retry latch and journal. Malformed/oversized journals fail closed.
+
+Manual actions recover under LOCK before proceeding. If Auto Tune seizes audio,
+mute and retain evidence; never restore over its new config. A foreign active path
+blocks recovery even after ownership is released, until an authorized owner returns
+a recognized path and the approved baseline. Auto Tune stop remains available.
+The baseline route is intentionally limited to automatic casting; general manual
+source edits still require the channel profile. Classic channel rollback remains
+unchanged. Local tests simulate the documented API and crash boundaries with a
+representative 129-filter config; real binary validation and physical casting remain
+separate deployment acceptance gates.

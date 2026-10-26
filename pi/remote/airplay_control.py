@@ -13,6 +13,8 @@ import tempfile
 import threading
 import time
 
+from airplay_baseline import BaselineRoute
+
 from audio_sources import loopback_available, source_metadata, meter_channels, pcm_fields, pcm_params_match
 
 SOCKET = '/run/octet-airplay/control.sock'
@@ -60,6 +62,7 @@ def matches(actual, expected):
 class AirPlayController:
     def __init__(self, server):
         self.server = server
+        self.baseline = BaselineRoute(server)
         self.active = False
         self.pending = None
         self.stop_at = None
@@ -80,6 +83,12 @@ class AirPlayController:
 
     def invalidate(self, manual=True):
         # Called under the shared control lock for explicit user ownership changes.
+        if manual and self.baseline.exists():
+            # Finish recovery before permitting a manual mutation/Auto Tune request.
+            self.active = False
+            self.pending = None
+            self.needs_mute = True
+            self.recover()
         self.suppressed = manual
         if manual:
             self.error = None
@@ -101,6 +110,8 @@ class AirPlayController:
     def recover(self):
         self.needs_mute = True
         self.mute()
+        if self.baseline.exists():
+            self.baseline.recover()
         if self.restore_pending is not None:
             path = self.server.CHANNEL_PROFILE
             candidate = None
@@ -142,7 +153,7 @@ class AirPlayController:
         with self.server.LOCK:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError('AirPlay preparation timed out')
-            if self.needs_mute:
+            if self.needs_mute or (self.baseline.exists() and not self.active and self.pending is None):
                 self.recover()
             if event == 'stop':
                 if self.active or self.pending is not None:
@@ -156,7 +167,7 @@ class AirPlayController:
                 self.suppressed = False
             if self.stop_at is not None and self.active:
                 # A stop/start pair is a new cast even within the debounce window.
-                self.invalidate(manual=False)
+                self.end()
             if self.active or self.pending is not None:
                 self.stop_at = None
                 return
@@ -172,23 +183,32 @@ class AirPlayController:
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
                 with self.server.DSP() as dsp:
+                    path = dsp.call('GetConfigFilePath')
+                    if path != str(self.server.CHANNEL_PROFILE):
+                        self.baseline.acquire()
                     self.server.approved(dsp)
-                    if dsp.call('GetConfigFilePath') != str(self.server.CHANNEL_PROFILE):
-                        raise RuntimeError('AirPlay requires the Output DSP controls preset')
+                    loaded = json.loads(dsp.call('GetConfigJson'))
+                    if path != str(self.server.CHANNEL_PROFILE) and not self.server.TUNING.active(path):
+                        raise RuntimeError('AirPlay requires an approved baseline or Output DSP controls preset')
                 if not loopback_available() or not receiver_running():
                     raise RuntimeError('AirPlay receiver or dedicated loopback is unavailable')
                 check_deadline()
                 self.server.mpd('pause 1')
                 check_deadline()
-                transition = self.server.select_source('airplay', defer_ready=True)
-                if transition is not None:
-                    self.previous, self.expected = transition
+                if path == str(self.server.CHANNEL_PROFILE):
+                    transition = self.server.select_source('airplay', defer_ready=True)
+                    if transition is not None:
+                        self.previous, self.expected = transition
+                else:
+                    self.expected = self.baseline.begin(path, loaded)
                 check_deadline()
                 self.pending = time.monotonic() if supplied_now is None else now
             except Exception as error:
                 message = str(error) if isinstance(error, RuntimeError) else 'AirPlay preparation failed'
                 self.fail(message)
                 raise
+            finally:
+                self.baseline.release_if_idle()
 
     def tick(self, now=None):
         now = time.monotonic() if now is None else now
@@ -203,14 +223,20 @@ class AirPlayController:
                 if self.cancelled is not None and self.cancelled.is_set():
                     self.fail('AirPlay preparation timed out; output remains muted')
                     return
-                if self.acknowledged is not None and not self.acknowledged.is_set():
-                    return
                 if self.server.TUNING.status().get('audio_owned'):
                     self.fail('Auto Tune took audio ownership', rollback=False)
+                    return
+                if self.acknowledged is not None and not self.acknowledged.is_set():
                     return
                 if not receiver_running():
                     self.fail('AirPlay receiver stopped')
                     return
+                if self.active and self.baseline.exists():
+                    with self.server.DSP() as dsp:
+                        loaded = json.loads(dsp.call('GetConfigJson'))
+                        if not self.baseline.ready(dsp, loaded, self.expected):
+                            self.fail('AirPlay baseline route changed')
+                            return
                 live = pcm_running()
                 if self.stop_at is not None and now >= self.stop_at:
                     self.stop_at = None
@@ -221,10 +247,13 @@ class AirPlayController:
                     with self.server.DSP() as dsp:
                         loaded = json.loads(dsp.call('GetConfigJson'))
                         ready = (source_metadata(loaded)['id'] == 'airplay'
-                                 and dsp.call('GetConfigFilePath') == str(self.server.CHANNEL_PROFILE)
+                                 and dsp.call('GetConfigFilePath') == str(
+                                     self.baseline.candidate if self.baseline.exists() else self.server.CHANNEL_PROFILE)
                                  and dsp.call('GetState') == 'Running'
                                  and loaded['devices']['capture']['device'] == 'hw:Loopback,1,1'
                                  and loaded['devices'].get('capture_samplerate') == 44100)
+                        if self.baseline.exists():
+                            ready = ready and self.baseline.ready(dsp, loaded, self.expected)
                         if self.expected is not None:
                             ready = ready and matches(loaded, self.expected)
                         if live and ready:
@@ -239,7 +268,9 @@ class AirPlayController:
                                 return
                             dsp.call('SetMute', False)
                             self.active = True
-                            self.pending = self.previous = self.expected = None
+                            self.pending = self.previous = None
+                            if not self.baseline.exists():
+                                self.expected = None
                             return
                     if now - self.pending >= 10:
                         self.fail('AirPlay capture did not become ready; previous source restored')
