@@ -24,9 +24,11 @@ from audio_sources import discover_sources, source_config, source_metadata, mete
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
+from network_access import NetworkAccess
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
+NETWORK = NetworkAccess()
 ROOT = Path(__file__).parent
 STATE = Path(os.environ.get('STATE_DIRECTORY', '/var/lib/octet-remote'))
 VISUALIZER = VisualizerState(STATE / 'visualizer.json')
@@ -280,7 +282,7 @@ def play_playlist(data):
         raise ValueError('Invalid playlist position')
     if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
         raise RuntimeError('The playlist changed. Reopen it before selecting a track.')
-    commands = ['addid ' + quote(f'http://{BIND}:{PORT}/stream/{track_id(row["id"])}') for row in rows]
+    commands = ['addid ' + quote(f'http://{NETWORK.stream_host(BIND)}:{PORT}/stream/{track_id(row["id"])}') for row in rows]
     with LOCK, DSP() as dsp:
         approved(dsp)
         require_tidal(dsp)
@@ -843,7 +845,7 @@ def _action(name, data):
                 approved(dsp)
                 if name == 'play':
                     require_tidal(dsp)
-                result = mpd('addid ' + quote(f'http://{BIND}:{PORT}/stream/{identifier}'))
+                result = mpd('addid ' + quote(f'http://{NETWORK.stream_host(BIND)}:{PORT}/stream/{identifier}'))
                 songid = dict(result[0])['Id']
                 if name == 'play':
                     dsp.call('SetMute', False)
@@ -896,6 +898,11 @@ def visualizer_frame(dsp):
                 for value in [values[channel]]] if isinstance(values, list) else []
 
     rms, peak = channels('capture_rms'), channels('capture_peak')
+    if running and (not rms or not peak):
+        # A short history window can be empty even while the latest capture
+        # chunk has live audio. Keep its paired RMS/peak values together.
+        levels = dsp.call('GetSignalLevels')
+        rms, peak = channels('capture_rms'), channels('capture_peak')
     return dict(available=True, active=running and bool(rms) and bool(peak),
                 rms=rms if running else [], peak=peak if running else [])
 
@@ -906,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, value, status=200, content_type='application/json'):
+    def send(self, value, status=200, content_type='application/json', headers=None):
         body = json.dumps(value, allow_nan=False).encode() if content_type == 'application/json' else value
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -914,12 +921,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' https://resources.tidal.com; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: https://resources.tidal.com; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         self.wfile.write(body)
 
     def valid_host(self):
-        return self.headers.get('Host', '').lower() in {f'{BIND}:{PORT}', f'octet:{PORT}', f'octet.tailf55458.ts.net:{PORT}'}
+        if not NETWORK.allowed_peer(self.client_address[0], BIND):
+            return False
+        host = self.headers.get('Host', '').lower()
+        return host in NETWORK.hosts(PORT, BIND) or (
+            self.https_proxy() and host in {'octet.tailf55458.ts.net', 'octet.tailf55458.ts.net:443'})
+
+    def https_proxy(self):
+        # Tailscale Serve overwrites these headers. Only trust the local proxy,
+        # never forwarded headers supplied directly by another tailnet device.
+        return (NETWORK.local_peer(self.client_address[0], BIND)
+                and self.headers.get('X-Forwarded-Proto') == 'https'
+                and self.headers.get('X-Forwarded-Host', '').lower() in {
+                    'octet.tailf55458.ts.net', 'octet.tailf55458.ts.net:443'})
+
+    def request_origin(self):
+        if self.https_proxy():
+            return 'https://' + self.headers['X-Forwarded-Host']
+        return 'http://' + self.headers.get('Host', '')
 
     def serve_media(self, name, head_only=False):
         """Bounded local media delivery with byte ranges for seeking/looping."""
@@ -975,7 +1001,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         name = urlparse(self.path).path.removeprefix('/visualizer-media/')
-        if self.path.startswith('/visualizer-media/') and name in ('sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3'):
+        if self.path.startswith('/visualizer-media/') and name in ('sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'sky-playback.mp4', 'water-playback.mp4', 'stars-playback.mp4', 'lunar-playback.mp4', 'edm.mp3', 'classical.mp3'):
             return self.serve_media(name, head_only=True)
         self.send_error(404)
 
@@ -1072,13 +1098,20 @@ class Handler(BaseHTTPRequestHandler):
                         view = None
                     VISUALIZER.heartbeat(query.get('revision', [''])[0], view)
                 return self.send(VISUALIZER.read())
+            if parsed.path == '/api/visualizer/frame':
+                after = int(parse_qs(parsed.query).get('after', ['0'])[0])
+                frame = VISUALIZER.preview_frame(after)
+                if frame is None:
+                    return self.send({'error': 'HDMI frame unavailable'}, 503)
+                frame_id, data = frame
+                return self.send(data or b'', 200 if data else 204, 'image/jpeg', {'X-Octet-Frame': frame_id})
             if parsed.path in ('/', '/dsp', '/visualizer', '/app.js', '/dsp.js', '/visualizer.js', '/visualizer-themes.js', '/visualizer-solar.js', '/visualizer-audio.js', '/style.css', '/visualizer.css'):
                 name = {'/': 'index.html', '/dsp': 'dsp.html', '/visualizer': 'visualizer.html', '/app.js': 'app.js', '/dsp.js': 'dsp.js', '/visualizer.js': 'visualizer.js', '/visualizer-themes.js': 'visualizer-themes.js', '/visualizer-solar.js': 'visualizer-solar.js', '/visualizer-audio.js': 'visualizer-audio.js', '/style.css': 'style.css', '/visualizer.css': 'visualizer.css'}[parsed.path]
                 kind = ('text/html' if name.endswith('.html') else 'text/javascript' if name.endswith('.js') else 'text/css') + '; charset=utf-8'
                 return self.send((ROOT / name).read_bytes(), content_type=kind)
             if parsed.path in ('/visualizer-media/sky.jpg', '/visualizer-media/water.jpg', '/visualizer-media/stars.jpg', '/visualizer-media/solar.jpg', '/visualizer-media/sun.jpg', '/visualizer-media/lunar.jpg'):
                 return self.send((ROOT / parsed.path.lstrip('/')).read_bytes(), content_type='image/jpeg')
-            if parsed.path in ('/visualizer-media/sky.mp4', '/visualizer-media/water.mp4', '/visualizer-media/stars.mp4', '/visualizer-media/solar.mp4', '/visualizer-media/sun.mp4', '/visualizer-media/lunar.mp4', '/visualizer-media/edm.mp3', '/visualizer-media/classical.mp3'):
+            if parsed.path in ('/visualizer-media/sky.mp4', '/visualizer-media/water.mp4', '/visualizer-media/stars.mp4', '/visualizer-media/solar.mp4', '/visualizer-media/sun.mp4', '/visualizer-media/lunar.mp4', '/visualizer-media/sky-playback.mp4', '/visualizer-media/water-playback.mp4', '/visualizer-media/stars-playback.mp4', '/visualizer-media/lunar-playback.mp4', '/visualizer-media/edm.mp3', '/visualizer-media/classical.mp3'):
                 return self.serve_media(parsed.path.rsplit('/', 1)[1])
             if parsed.path == '/api/visualizer':
                 return self.stream_visualizer()
@@ -1126,8 +1159,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         origin = self.headers.get('Origin')
-        if not self.valid_host() or (origin and origin != 'http://' + self.headers.get('Host', '')):
+        if not self.valid_host() or (origin and origin != self.request_origin()):
             return self.send({'error': 'Request blocked'}, 403)
+        if urlparse(self.path).path == '/api/control/visualizer-frame':
+            try:
+                # Only the Pi's own kiosk may supply the HDMI image. A remote
+                # browser opening /visualizer/display must not replace it.
+                if (not NETWORK.local_peer(self.client_address[0], BIND)
+                        or self.headers.get('X-Forwarded-For')
+                        or self.headers.get('X-Forwarded-Proto')):
+                    return self.send({'error': 'Local display required'}, 403)
+                if self.headers.get('Content-Type') != 'image/jpeg':
+                    return self.send({'error': 'Expected JPEG'}, 415)
+                length = int(self.headers.get('Content-Length', 0))
+                if not 4 <= length <= 524288:
+                    raise ValueError('Invalid frame size')
+                revision = parse_qs(urlparse(self.path).query).get('revision', [''])[0]
+                accepted = VISUALIZER.publish_frame(revision, self.rfile.read(length))
+                return self.send({'accepted': accepted}, 200 if accepted else 409)
+            except ValueError as error:
+                return self.send({'error': str(error)}, 400)
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.send({'error': 'Expected JSON'}, 415)
         try:

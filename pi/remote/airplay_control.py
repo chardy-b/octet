@@ -1,5 +1,6 @@
 """Local Shairport lifecycle IPC. No client identity or metadata is accepted."""
 import json
+import grp
 import logging
 import os
 from pathlib import Path
@@ -258,13 +259,20 @@ class AirPlayController:
 
 
 def serve(controller):
-    """Directory group grants access; SO_PEERCRED restricts mutations to Shairport UID."""
+    """Group grants socket access; SO_PEERCRED restricts mutations to Shairport UID."""
     uid = pwd.getpwnam('shairport-sync').pw_uid
+    gid = grp.getgrnam('octet-airplay').gr_gid
     path = Path(SOCKET)
     path.unlink(missing_ok=True)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(SOCKET)
-    os.chmod(SOCKET, 0o660)
+    try:
+        listener.bind(SOCKET)
+        os.chown(SOCKET, -1, gid)
+        os.chmod(SOCKET, 0o660)
+    except BaseException:
+        listener.close()
+        path.unlink(missing_ok=True)
+        raise
     listener.listen(4)
     listener.settimeout(.25)
 

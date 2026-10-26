@@ -1,4 +1,7 @@
 import json
+import io
+from email.message import Message
+from unittest.mock import MagicMock
 from pathlib import Path
 import tempfile
 import threading
@@ -37,6 +40,57 @@ class SharedVisualizer(unittest.TestCase):
             self.assertEqual(state.read()['display']['view'], view)
             state.heartbeat(result['revision'], {**view, 'width': -1})
             self.assertEqual(state.read()['display']['view'], view)
+
+    def test_preview_revision_size_freshness_and_unchanged_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = VisualizerState(Path(directory) / 'visualizer.json')
+            self.assertIsNone(state.preview_frame())
+            self.assertTrue(state.read()['previewRequested'])
+            jpeg = b'\xff\xd8frame\xff\xd9'
+            self.assertFalse(state.publish_frame('old', jpeg))
+            for bad in (b'bad', b'not a jpeg', b'\xff\xd8' + b'x' * 524288 + b'\xff\xd9'):
+                with self.assertRaises(ValueError):
+                    state.publish_frame(state.revision, bad)
+            self.assertTrue(state.publish_frame(state.revision, jpeg))
+            self.assertEqual(state.preview_frame(), (1, jpeg))
+            self.assertEqual(state.preview_frame(1), (1, None))
+            state.frame_seen -= 9
+            self.assertIsNone(state.preview_frame())
+            state.update({'theme': 'off'})
+            self.assertIsNone(state.frame_data)
+            self.assertFalse(state.read()['display']['online'])
+
+    def test_preview_upload_local_only_and_get_frame_statuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = VisualizerState(Path(directory) / 'visualizer.json')
+            jpeg = b'\xff\xd8frame\xff\xd9'
+            handler = object.__new__(server.Handler)
+            handler.headers = Message()
+            handler.headers['Host'] = '127.0.0.1:8767'
+            handler.headers['Content-Type'] = 'image/jpeg'
+            handler.headers['Content-Length'] = str(len(jpeg))
+            handler.send = MagicMock()
+            with patch.object(server, 'VISUALIZER', state), patch.object(server, 'BIND', '127.0.0.1'), \
+                 patch.object(server, 'PORT', 8767), patch.object(server.NETWORK, 'snapshot', return_value=(frozenset(), ())):
+                handler.path = '/api/control/visualizer-frame?revision=' + state.revision
+                for peer, forwarded, expected in [('100.80.1.2', False, 403), ('127.0.0.1', True, 403), ('127.0.0.1', False, 200)]:
+                    handler.client_address = (peer, 123)
+                    if forwarded:
+                        handler.headers['X-Forwarded-For'] = '100.80.1.2'
+                    elif 'X-Forwarded-For' in handler.headers:
+                        del handler.headers['X-Forwarded-For']
+                    handler.rfile = io.BytesIO(jpeg)
+                    handler.do_POST()
+                    self.assertEqual(handler.send.call_args.args[1], expected)
+                handler.path = '/api/visualizer/frame'
+                handler.do_GET()
+                self.assertEqual(handler.send.call_args.args, (jpeg, 200, 'image/jpeg', {'X-Octet-Frame': 1}))
+                handler.path += '?after=1'
+                handler.do_GET()
+                self.assertEqual(handler.send.call_args.args[1], 204)
+                state.frame_seen -= 9
+                handler.do_GET()
+                self.assertEqual(handler.send.call_args.args[1], 503)
 
     def test_controller_to_projection_http_flow(self):
         with tempfile.TemporaryDirectory() as directory:

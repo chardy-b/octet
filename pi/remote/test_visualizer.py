@@ -26,6 +26,15 @@ class Visualizer(unittest.TestCase):
         self.assertEqual([call.args for call in dsp.call.call_args_list],
                          [('GetSignalLevelsSince', 0.1), ('GetState',)])
 
+    def test_empty_history_uses_latest_paired_capture_levels(self):
+        dsp = MagicMock()
+        dsp.call.side_effect = [dict(capture_rms=[], capture_peak=[-1]), 'Running',
+                                dict(capture_rms=[-20, -21], capture_peak=[-4, -5])]
+        frame = server.visualizer_frame(dsp)
+        self.assertEqual(frame['rms'], [-20, -21])
+        self.assertEqual(frame['peak'], [-4, -5])
+        dsp.call.assert_called_with('GetSignalLevels')
+
     def test_paused_inactive_and_stalled_sources_clear_old_levels(self):
         for state in ['Paused', 'Inactive', 'Stalled', 'Starting']:
             frame = server.visualizer_frame(self.dsp(dict(capture_rms=[-10], capture_peak=[-1]), state))

@@ -204,6 +204,39 @@ class IntegrationSafetyTests(AirPlayTests):
                     self.assertEqual(controller.event.called, accepted)
 
 
+class HookSocketTests(unittest.TestCase):
+    def test_socket_is_group_accessible_before_listening(self):
+        import airplay_control
+        with patch('airplay_control.pwd.getpwnam') as user, \
+             patch('airplay_control.grp.getgrnam') as group, \
+             patch('airplay_control.socket.socket') as socket_factory, \
+             patch('airplay_control.Path.unlink'), \
+             patch('airplay_control.os.chown') as chown, \
+             patch('airplay_control.os.chmod') as chmod:
+            user.return_value.pw_uid = 150
+            group.return_value.gr_gid = 160
+            socket_factory.return_value.listen.side_effect = RuntimeError('stop after bind')
+            with self.assertRaisesRegex(RuntimeError, 'stop after bind'):
+                airplay_control.serve(MagicMock())
+            group.assert_called_once_with('octet-airplay')
+            chown.assert_called_once_with(airplay_control.SOCKET, -1, 160)
+            chmod.assert_called_once_with(airplay_control.SOCKET, 0o660)
+            socket_factory.return_value.bind.assert_called_once_with(airplay_control.SOCKET)
+
+    def test_failed_group_assignment_never_listens(self):
+        import airplay_control
+        with patch('airplay_control.pwd.getpwnam'), \
+             patch('airplay_control.grp.getgrnam'), \
+             patch('airplay_control.socket.socket') as socket_factory, \
+             patch('airplay_control.Path.unlink') as unlink, \
+             patch('airplay_control.os.chown', side_effect=PermissionError('group')):
+            with self.assertRaises(PermissionError):
+                airplay_control.serve(MagicMock())
+            socket_factory.return_value.listen.assert_not_called()
+            socket_factory.return_value.close.assert_called_once()
+            self.assertEqual(unlink.call_count, 2)
+
+
 class PCMReadinessTests(unittest.TestCase):
     def test_output_only_stalled_capture_and_parameters_fail_closed(self):
         from pathlib import Path

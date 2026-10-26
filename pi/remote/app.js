@@ -65,6 +65,34 @@ if(!libraryCache||!Array.isArray(libraryCache.playlists)||typeof libraryCache.co
 function saveLibraryCache(){persist(LIBRARY_CACHE_KEY,libraryCache);}
 function rememberLibrary(view,id){persist(LIBRARY_VIEW_KEY,{view,id});}
 function fresh(entry){return entry&&Number.isFinite(entry.updatedAt)&&Date.now()-entry.updatedAt>=0&&Date.now()-entry.updatedAt<CACHE_FRESH_MS;}
+let libraryEntry=null;
+const libraryHistory=[];
+function openLibrary(route){
+  if(JSON.stringify(libraryEntry?.route)!==JSON.stringify(route)){
+    if(libraryEntry){
+      libraryEntry.scroll=window.scrollY;libraryEntry.search=libraryEntry.route.view==='search'?libraryEntry.route.query:$('search').value;
+      libraryHistory.push(libraryEntry);
+      if(libraryHistory.length>50)libraryHistory.shift();
+    }else if(route.view==='playlist'){
+      // A playlist restored after a reload still has a way back to its library.
+      libraryHistory.push({route:{view:'playlists'},scroll:0,search:''});
+    }
+    libraryEntry={route,scroll:window.scrollY,search:$('search').value};
+  }
+  if(route.view==='search')$('search').value=route.query;
+  libraryView(route.view);
+  $('library-back').disabled=!libraryHistory.length;
+}
+async function libraryBack(){
+  const entry=libraryHistory.pop();if(!entry)return;
+  libraryEntry=entry;$('search').value=entry.search;
+  const route=entry.route;
+  if(route.view==='playlist')await loadPlaylist(route.id,false,entry.data);
+  else if(route.view==='playlists')await loadPlaylists(true,false,entry.data);
+  else if(route.view==='album')await loadAlbum(route.id,route.title,entry.data);
+  else await loadTracks(route.view==='search'?route.query:null,entry.data);
+  if(libraryEntry===entry)window.scrollTo({top:entry.scroll,behavior:'instant'});
+}
 const time=seconds=>{const n=Math.max(0,Math.floor(Number(seconds)||0));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0')};
 function notice(message='',error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error)}
 async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||'Could not complete that action');return result}
@@ -72,8 +100,8 @@ function renderPlayer(next){state=next;renderLevelControls(next);$('dsp-profile-
 async function control(name,data={}){try{render(await api('/api/control/'+name,data));notice()}catch(e){notice(e.message,true)}}
 function renderQueue(rows){$('queue-count').textContent=rows.length;const queue=$('queue');queue.replaceChildren();if(!rows.length){const p=document.createElement('p');p.className='empty';p.textContent='Your queue is clear.';queue.append(p);return}for(const row of rows){const div=document.createElement('div');div.className='queue-track'+(row.position===state.song_position?' current':'');const number=document.createElement('span');number.className='number';number.textContent=row.position===state.song_position&&state.playback==='play'?'♫':row.position+1;const button=document.createElement('button');button.className='starts-playback';button.disabled=liveInput();button.textContent=row.title;button.title=row.title+' · '+row.artist;button.onclick=()=>control('position',{position:row.position});div.append(number,button);queue.append(div)}}
 function renderTracks(rows,playlistIdentifier=null){const root=$('tracks');root.replaceChildren();if(!rows.length){const p=document.createElement('p');p.className='empty';p.textContent=playlistIdentifier?'This playlist has no available tracks.':'No tracks here yet. Search for something you love.';root.append(p);return}for(const [index,row] of rows.entries()){const div=document.createElement('div');div.className='track';const art=row.cover?document.createElement('img'):document.createElement('div');art.className='small-art';if(row.cover){art.src=row.cover;art.alt='';art.loading='lazy'}const info=document.createElement('div');info.className='track-info';const title=document.createElement('button');title.className='track-title starts-playback';title.disabled=liveInput();title.textContent=row.title;title.title='Play '+row.title;title.onclick=()=>playlistIdentifier?playPlaylist(playlistIdentifier,index,row.id):control('play',{id:row.id});const detail=document.createElement('p');detail.textContent=row.artist+' · '+row.album;info.append(title,detail);const duration=document.createElement('span');duration.className='track-time';duration.textContent=time(row.duration);const add=document.createElement('button');add.className='add';add.textContent='+';add.setAttribute('aria-label','Add '+row.title+' to queue');add.onclick=()=>control('enqueue',{id:row.id});div.append(art,info,duration,add);root.append(div)}}
-async function loadTracks(query=null){const serial=++requestSerial;albumTracks=[];$('play-album').hidden=true;notice(query?'Searching Tidal…':'Loading favorites…');libraryView(query===null?'favorites':'search');try{const data=await api(query===null?'/api/favorites':'/api/search?q='+encodeURIComponent(query));if(serial!==requestSerial)return;renderTracks(data.tracks);const albums=data.albums||[];const fragment=document.createDocumentFragment();for(const album of albums){const div=document.createElement('div');div.className='track';const icon=document.createElement('div');icon.className='small-art';icon.textContent='◉';icon.style.display='grid';icon.style.placeItems='center';const info=document.createElement('div');info.className='track-info';const title=document.createElement('button');title.className='track-title';title.textContent=album.title;title.onclick=()=>loadAlbum(album.id,album.title);const detail=document.createElement('p');detail.textContent=album.artist+' · Album · '+album.tracks+' tracks';info.append(title,detail);const open=document.createElement('button');open.className='add';open.textContent='›';open.setAttribute('aria-label','Open album '+album.title);open.onclick=()=>loadAlbum(album.id,album.title);div.append(icon,info,open);fragment.append(div)}if(albums.length&&!data.tracks.length)$('tracks').replaceChildren(fragment);else $('tracks').prepend(fragment);$('result-label').textContent=query===null?data.tracks.length+' tracks':(data.tracks.length+albums.length)+' results';notice()}catch(e){if(serial!==requestSerial)return;renderTracks([]);notice(e.message,true)}}
-async function loadAlbum(id,title){const serial=++requestSerial;libraryView('album');albumTracks=[];$('play-album').hidden=true;notice('Loading '+title+'…');try{const data=await api('/api/album?id='+encodeURIComponent(id));if(serial!==requestSerial)return;albumTracks=data.tracks;renderTracks(albumTracks);$('play-album').hidden=!albumTracks.length;$('result-label').textContent=albumTracks.length+' tracks';notice(title)}catch(e){notice(e.message,true)}}
+async function loadTracks(query=null,saved=null){const serial=++requestSerial;openLibrary(query===null?{view:'favorites'}:{view:'search',query});albumTracks=[];$('play-album').hidden=true;notice(query?'Searching Tidal…':'Loading favorites…');try{const data=saved||await api(query===null?'/api/favorites':'/api/search?q='+encodeURIComponent(query));if(serial!==requestSerial)return;libraryEntry.data=data;renderTracks(data.tracks);const albums=data.albums||[];const fragment=document.createDocumentFragment();for(const album of albums){const div=document.createElement('div');div.className='track';const icon=document.createElement('div');icon.className='small-art';icon.textContent='◉';icon.style.display='grid';icon.style.placeItems='center';const info=document.createElement('div');info.className='track-info';const title=document.createElement('button');title.className='track-title';title.textContent=album.title;title.onclick=()=>loadAlbum(album.id,album.title);const detail=document.createElement('p');detail.textContent=album.artist+' · Album · '+album.tracks+' tracks';info.append(title,detail);const open=document.createElement('button');open.className='add';open.textContent='›';open.setAttribute('aria-label','Open album '+album.title);open.onclick=()=>loadAlbum(album.id,album.title);div.append(icon,info,open);fragment.append(div)}if(albums.length&&!data.tracks.length)$('tracks').replaceChildren(fragment);else $('tracks').prepend(fragment);$('result-label').textContent=query===null?data.tracks.length+' tracks':(data.tracks.length+albums.length)+' results';notice()}catch(e){if(serial!==requestSerial)return;renderTracks([]);notice(e.message,true)}}
+async function loadAlbum(id,title,saved=null){const serial=++requestSerial;openLibrary({view:'album',id,title});albumTracks=[];$('play-album').hidden=true;notice('Loading '+title+'…');try{const data=saved||await api('/api/album?id='+encodeURIComponent(id));if(serial!==requestSerial)return;libraryEntry.data=data;albumTracks=data.tracks;renderTracks(albumTracks);$('play-album').hidden=!albumTracks.length;$('result-label').textContent=albumTracks.length+' tracks';notice(title)}catch(e){if(serial===requestSerial)notice(e.message,true)}}
 function libraryView(view){
   if(view==='favorites'||view==='playlists')rememberLibrary(view);
   $('refresh-library').hidden=view!=='playlists'&&view!=='playlist';
@@ -103,11 +131,11 @@ function renderPlaylists(){
   }
   $('result-label').textContent=playlistRows.length+' playlists';$('more-playlists').hidden=!playlistHasMore;$('more-playlists').disabled=playlistsBusy;
 }
-async function loadPlaylists(reset=true,force=false){
+async function loadPlaylists(reset=true,force=false,saved=null){
   if(playlistsBusy&&!reset)return;
-  const serial=++requestSerial;playlistLoadSerial=serial;libraryView('playlists');playlistsBusy=true;
-  playlistRows=libraryCache.playlists.slice();playlistHasMore=false;renderPlaylists();
-  if(!force&&fresh(libraryCache)){playlistsBusy=false;notice();return;}
+  const serial=++requestSerial;playlistLoadSerial=serial;openLibrary({view:'playlists'});playlistsBusy=true;
+  playlistRows=(saved||libraryCache.playlists).slice();playlistHasMore=false;renderPlaylists();
+  if(saved||(!force&&fresh(libraryCache))){libraryEntry.data=playlistRows;playlistsBusy=false;notice();return;}
   $('more-playlists').disabled=true;notice(playlistRows.length?'Showing saved playlists · checking for updates…':'Loading Tidal playlists…');
   try{
     const rows=[],known=new Set();let offset=0;
@@ -120,21 +148,23 @@ async function loadPlaylists(reset=true,force=false){
     }
     libraryCache.playlists=rows;libraryCache.updatedAt=Date.now();saveLibraryCache();
     if(serial!==requestSerial)return;
-    playlistRows=rows;playlistHasMore=false;renderPlaylists();notice();
+    libraryEntry.data=rows;playlistRows=rows;playlistHasMore=false;renderPlaylists();notice();
   }catch(error){if(serial===requestSerial)notice((playlistRows.length?'Showing saved playlists. ':'')+error.message,true);}
   finally{if(serial===playlistLoadSerial)playlistsBusy=false;if(serial===requestSerial)$('more-playlists').disabled=false;}
 }
 function renderPlaylist(data,id){
+  libraryEntry.data=data;
   activePlaylist=data;$('playlist-title').textContent=data.playlist.title;
   $('playlist-meta').textContent=data.tracks.length+' playable tracks'+(data.unavailable?' · '+data.unavailable+' unavailable omitted':'')+' · continues in playlist order';
   $('play-playlist').dataset.empty=String(!data.tracks.length);$('play-playlist').disabled=playlistPlayBusy||!data.tracks.length||liveInput();
   $('result-label').textContent=data.tracks.length+' tracks';renderTracks(data.tracks,id);
 }
-async function loadPlaylist(id,force=false){
-  const serial=++requestSerial;libraryView('playlist');activePlaylist=null;
+async function loadPlaylist(id,force=false,saved=null){
+  const serial=++requestSerial;openLibrary({view:'playlist',id});activePlaylist=null;
   rememberLibrary('playlist',id);
   const cached=libraryCache.contents[id];
   $('playlist-title').textContent='Loading playlist…';$('playlist-meta').textContent='';$('play-playlist').disabled=true;$('play-playlist').dataset.empty='true';$('tracks').replaceChildren();notice('Loading the complete playlist…');
+  if(saved){renderPlaylist(saved,id);notice();return;}
   if(cached&&cached.data?.playlist?.id===id&&Array.isArray(cached.data.tracks)){renderPlaylist(cached.data,id);notice('Showing saved playlist · checking for updates…');if(!force&&fresh(cached)){notice();return;}}
   try{
     const data=await api('/api/playlist?id='+encodeURIComponent(id)+'&refresh=1');if(serial!==requestSerial)return;
@@ -154,7 +184,7 @@ async function playPlaylist(id,position=0,track=null){
 $('playlists').onclick=()=>loadPlaylists();
 $('refresh-library').onclick=()=>activePlaylist?loadPlaylist(activePlaylist.playlist.id,true):loadPlaylists(true,true);
 $('more-playlists').onclick=()=>loadPlaylists(false);
-$('playlist-back').onclick=()=>{if(playlistRows.length){++requestSerial;libraryView('playlists');renderPlaylists();notice();}else loadPlaylists();};
+$('library-back').onclick=libraryBack;
 $('play-playlist').onclick=()=>{if(activePlaylist)playPlaylist(activePlaylist.playlist.id);};
 
 $('play-album').onclick=async()=>{const tracks=albumTracks.slice();if(!tracks.length)return;$('play-album').disabled=true;try{await api('/api/control/clear',{});for(const track of tracks)await api('/api/control/enqueue',{id:track.id});render(await api('/api/control/position',{position:0}));notice('Album queued in order.')}catch(e){notice(e.message,true)}finally{$('play-album').disabled=liveInput()}};
