@@ -1,0 +1,29 @@
+# Octet automatic AirPlay playback (WIL-248)
+
+## Goal and boundary
+
+An iPhone or Mac on the Pi's local network selects **Octet** as an AirPlay speaker and hears its audio through the existing eight-output CamillaDSP speaker chain without opening the Octet remote. Use Shairport Sync in classic AirPlay mode first. Do not expose a raw DAC8x sink, enable AirPlay video, promise Tailscale mDNS discovery, or add AirPlay 2/NQPTP in this slice. Preserve the current Tidal queue and avoid automatic Tidal resume.
+
+## Selected architecture
+
+Shairport Sync advertises Octet through Avahi and writes stereo PCM into the unused ALSA loopback **subdevice 1** (`hw:Loopback,0,1` playback). CamillaDSP reads the paired capture endpoint (`hw:Loopback,1,1`) after a source switch. MPD retains subdevice 0. The already configured `snd-aloop` module has `pcm_substreams=2`; deployment must inspect the real Pi mapping and fail rather than reuse MPD's subdevice or write directly to the DAC. Keep the Shairport receiver enabled but idle until a client plays.
+
+Package-provided classic Shairport Sync can lack FFmpeg and thus support only 44.1 kHz output. Fix its output to **44,100 Hz, S32_LE, two channels** and configure the CamillaDSP AirPlay capture's asynchronous resampler and `capture_samplerate` to 44,100 Hz while the downstream speaker pipeline remains 48,000 Hz. Verify this combination against the actual Pi binary and CamillaDSP config checker before deployment; do not silently fall back to `plughw` or resample twice. No Shairport hardware mixer touches master DSP volume; source-side AirPlay volume is software attenuation within Shairport.
+
+Alternative considered: let Shairport take the DAC directly. Rejected: it bypasses filters and protections and contends with CamillaDSP. Alternative: send AirPlay through MPD or a shared mixed loopback. Rejected: it risks simultaneous Tidal and AirPlay audio and obscures source ownership.
+
+## Source control and lifecycle
+
+Add `airplay` to the existing source model and remote status/UI. Source metadata identifies the dedicated capture endpoint distinctly from Tidal, including after service restart. Refactor only as needed to accommodate an AirPlay capture rate different from the DSP rate; preserve USB input selection, existing mixer/filter settings, source-specific clock restoration, and exact output map. Existing manual source switching remains explicit and muted by default.
+
+Configure Shairport Sync's `sessioncontrol.run_this_before_play_begins` and `run_this_after_play_ends` hooks to call a narrow local Octet helper; `wait_for_completion = "yes"` so source preparation precedes playback. Prefer an authenticated local-only channel (Unix socket or equivalent with strict service-user permissions), not an unauthenticated network endpoint or broad `sudo` grant. Serialize hook transitions with manual controls and Auto Tune under the existing control lock. Idempotently handle duplicate events and rapid stop/start; a stale stop must not mute a newer session. If Shairport's hook semantics cannot reliably identify generations, use bounded active-state debounce plus a live receiver-state check and document the limitation.
+
+On start: check Auto Tune ownership, selected approved DSP preset, loopback availability and receiver state. Mute the master; pause MPD while retaining queue/position; produce/check candidate DSP config; atomically activate and confirm running AirPlay capture. Set master to **−18 dB** on automatic AirPlay activation (never higher than −18 dB in this transition), then unmute only after verified readiness and while the current cast still owns the source. The iPhone controls Shairport Sync's software attenuation independently; at 100% AirPlay volume, the CamillaDSP master remains at −18 dB unless deliberately changed in the Octet remote. Do not change channel/output protection or their mute states. If Auto Tune is active or another prerequisite fails, remain muted, do not alter an unsupported preset, and surface a clear failure in logs/status. Source switching must never strip protective filters or activate previously muted output pairs.
+
+On end: mute, leave the AirPlay source selected for deliberate next action, and do not resume MPD. An explicit user source change overrides old hook events. Replaying from a new cast may reactivate automatically. At boot, restart or service crash, the persisted DSP starts muted; stale persisted `airplay` source alone never implies auto-unmute. Error recovery restores the previous config if validation/reload fails, keeps master muted, and preserves the MPD queue. A concurrent tuning start wins ownership and must prevent a subsequent AirPlay unmute.
+
+## Deployment and verification
+
+Ship a reviewed Shairport config fragment, service integration, local hook/helper, and an installer or upgrade path that backs up prior config and service state. Check binary capabilities and the real ALSA subdevice before enabling; preserve existing MPD/DSP services and their settings. Document rollback, Avahi/LAN discovery, firewall requirements, output level and limitations. No passwords or AirPlay client metadata in logs. The remote displays AirPlay selection/status without implying a cast is active when merely selected.
+
+Cloud tests cover source round trips (Tidal → AirPlay → USB → Tidal), fixed rate/resampler and protected filters, success/failure and rollback, no Auto Tune collision, duplicate/stale hooks, manual override, boot/restart mute, and installer idempotency. Exact-head CI must pass. On the physical Pi, confirm Shairport appears from an iPhone/Mac on the same LAN, an actual cast reaches DSP meters and both channels, Tidal pauses without losing queue, gain stays bounded and output pairs retain protective limits. If Pi or client access is unavailable, report this physical acceptance gate explicitly rather than claiming end-to-end playback.
