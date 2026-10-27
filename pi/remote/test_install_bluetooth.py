@@ -3,16 +3,38 @@
 The fake systemctl models unit enable/active state so tests can prove the
 installer and rollback only read it, never change it.
 """
+import ast
 import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import install
 import install_bluetooth
+
+SOURCE = Path(install_bluetooth.__file__).resolve().parent
+
+
+def local_imports(name):
+    """Modules from this directory that name.py imports at any depth."""
+    found, pending = set(), [name]
+    while pending:
+        tree = ast.parse((SOURCE / f'{pending.pop()}.py').read_text())
+        for node in ast.walk(tree):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+            for module in names:
+                if (SOURCE / f'{module}.py').is_file() and module not in found:
+                    found.add(module)
+                    pending.append(module)
+    return found
 
 
 class InstallerTests(unittest.TestCase):
@@ -248,6 +270,50 @@ class InstallerTests(unittest.TestCase):
         install_bluetooth.main(['--rollback'])  # retry with the retained backup
         self.assertFalse(self.dropin.exists())
         self.assert_only_reads_unit_state()
+
+
+class DeployedPackagingTests(unittest.TestCase):
+    """A /opt/octet-remote built only from install.py's file list must be self-contained."""
+
+    def deploy(self, skip=()):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        target = Path(tmp.name) / 'octet-remote'
+        target.mkdir()
+        for name in install.REMOTE_FILES:
+            if name not in skip:
+                shutil.copy2(SOURCE / name, target / name)
+        return target
+
+    def import_from(self, target):
+        # -I (Python 3.4+, unlike 3.11's -P): no PYTHONPATH, user site or script/cwd path,
+        # so only the deployed directory inserted below (plus stdlib and system
+        # site-packages for yaml) can satisfy imports.
+        code = ('import sys; sys.path.insert(0, sys.argv[1]); import install_bluetooth, install_airplay; '
+                'print(install_bluetooth.__file__); print(install_airplay.__file__)')
+        return subprocess.run([sys.executable, '-I', '-c', code, str(target)],
+                              cwd=target, capture_output=True, text=True, env={})
+
+    def test_installer_packages_every_local_import_of_install_bluetooth(self):
+        needed = local_imports('install_bluetooth')
+        self.assertIn('install_airplay', needed)
+        self.assertIn('install_airplay.py', install.REMOTE_FILES)
+        missing = sorted(f'{name}.py' for name in needed if f'{name}.py' not in install.REMOTE_FILES)
+        self.assertEqual(missing, [])
+
+    def test_deployed_directory_imports_install_bluetooth_from_itself(self):
+        target = self.deploy()
+        result = self.import_from(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), [str(target / 'install_bluetooth.py'),
+                                                 str(target / 'install_airplay.py')])
+
+    def test_missing_helper_fails_closed_with_clear_message(self):
+        target = self.deploy(skip=('install_airplay.py',))
+        result = self.import_from(target)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires install_airplay.py alongside it in ' + str(target.resolve()), result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == '__main__':

@@ -23,7 +23,14 @@ import stat
 import sys
 
 from bluetooth_preflight import preflight
-from install_airplay import atomic_write, restore_file, run, save_file
+try:
+    from install_airplay import atomic_write, restore_file, run, save_file
+except ModuleNotFoundError as error:
+    if error.name != 'install_airplay':
+        raise
+    # Fail before any change; staged or deployed, the helper must sit beside this file.
+    raise SystemExit('install_bluetooth.py requires install_airplay.py alongside it in '
+                     f'{Path(__file__).resolve().parent}; redeploy with install.py') from error
 
 POLICY = Path('/etc/octet/bluetooth.json')
 DROPIN = Path('/etc/systemd/system/octet-remote.service.d/bluetooth.conf')
