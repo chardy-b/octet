@@ -7,16 +7,16 @@ import bluetooth_contract as bt
 class ContractTests(unittest.TestCase):
     def test_cli_version_and_exact_options(self):
         help_text = '--profile-a2dp --pcm=NAME --volume=TYPE [auto|mixer|none|software] --single-audio'
-        bt.check_cli('4.3.1\n', help_text, player=True)
-        bt.check_cli('4.3.1', '--profile=NAME a2dp-sink', player=False)
-        for version in ('', '4.3.10', '4.3.1-dev', '4.2.0', '5.0.0', '4.3.1\n5.0.0'):
+        bt.check_cli('v4.3.1\n', help_text, player=True)
+        bt.check_cli('v4.3.1\n', '--profile=NAME a2dp-sink', player=False)
+        for version in ('', '4.3.1', '4.3.1\n', 'v4.3.1', ' v4.3.1\n', 'v4.3.1\n\n', 'v4.3.1\r\n', '4.3.10', '4.3.1-dev', '4.2.0', '5.0.0', '4.3.1\n5.0.0'):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 bt.check_cli(version, help_text, player=True)
         for token in ('--profile-a2dp', '--pcm=NAME', '--volume=TYPE', '--single-audio', 'software'):
             with self.subTest(token=token), self.assertRaises(ValueError):
-                bt.check_cli('4.3.1', help_text.replace(token, token + '-wrong'), player=True)
+                bt.check_cli('v4.3.1\n', help_text.replace(token, token + '-wrong'), player=True)
         with self.assertRaises(ValueError):
-            bt.check_cli('4.3.1', '--profile=NAME a2dp-source', player=False)
+            bt.check_cli('v4.3.1\n', '--profile=NAME a2dp-source', player=False)
 
     def test_explicit_allowlisted_phone_and_no_route_fallback(self):
         phone = 'AA:BB:CC:DD:EE:01'

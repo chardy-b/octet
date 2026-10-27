@@ -11,8 +11,8 @@ from bluetooth_preflight import CAPTURE, PLAYBACK
 
 def check_cli(version, help_text, *, player):
     """Accept only the reviewed 4.3.1 interface; help is not runtime readiness."""
-    if version.strip() != '4.3.1':
-        raise ValueError('Only BlueALSA 4.3.1 is reviewed')
+    if version != 'v4.3.1\n':
+        raise ValueError('BlueALSA version stdout must be exactly v4.3.1 followed by one newline')
     required = ('--profile-a2dp', '--pcm=NAME', '--volume=TYPE', '--single-audio') if player else ('--profile=NAME', 'a2dp-sink')
     for token in required:
         if not re.search(r'(?<![\w-])' + re.escape(token) + r'(?![\w=-])', help_text):

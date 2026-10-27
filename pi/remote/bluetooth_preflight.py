@@ -64,14 +64,14 @@ def preflight(proc=Path('/proc/asound')):
             blockers.append(f'Missing executable: {name}')
             continue
         try:
-            result = subprocess.run([executable, '--version'], capture_output=True, text=True, timeout=2)
-            if result.returncode != 0:
+            result = subprocess.run([executable, '--version'], capture_output=True, timeout=2)
+            if result.returncode != 0 or result.stderr != b'':
                 blockers.append(f'Binary version check failed: {name}')
                 continue
-            help_result = subprocess.run([executable, '--help'], capture_output=True, text=True, timeout=2)
-            if help_result.returncode:
+            help_result = subprocess.run([executable, '--help'], capture_output=True, timeout=2)
+            if help_result.returncode or help_result.stderr != b'':
                 raise ValueError('CLI help check failed')
-            check_cli(result.stdout, help_result.stdout, player=executable == player)
+            check_cli(result.stdout.decode('utf-8'), help_result.stdout.decode('utf-8'), player=executable == player)
         except (OSError, subprocess.TimeoutExpired, ValueError) as error:
             blockers.append(f'Binary capability check failed: {name}: {error}')
     try:

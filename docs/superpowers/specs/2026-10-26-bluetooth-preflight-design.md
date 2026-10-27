@@ -24,8 +24,11 @@ No PCM is opened, so passing does not prove format negotiation. No fallback to
 subdevice 0/1, `default`, `plughw` or a physical DAC exists.
 
 BlueALSA daemon (`bluealsad`, or the older `bluealsa` name) and `bluealsa-aplay`
-must exist and report exactly `4.3.1`; both `--version` and `--help` must succeed
-within two seconds per call. Help must contain the reviewed daemon sink profile
+must exist. Each `--version` stdout must be exactly `v4.3.1\n` (one LF,
+no spaces or extra lines); stderr must be empty and return code zero. Both
+`--version` and `--help` must succeed within two seconds per call; help is on
+stdout with empty stderr. Raw bytes are decoded without newline normalization.
+The daemon uses `--profile=a2dp-sink`; the player uses `--profile-a2dp`. Help must contain the reviewed daemon sink profile
 and player A2DP, explicit PCM, software volume and single-audio options.
 These checks do not establish a running D-Bus service, enabled A2DP sink support,
 BlueZ adapter readiness, codec capabilities or actual runtime behavior.

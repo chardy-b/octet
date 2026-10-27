@@ -31,9 +31,9 @@ class BluetoothPreflightTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.card = fixture(self.root)
         self.which = patch.object(bt.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name).start()
-        self.run = patch.object(bt.subprocess, 'run', side_effect=lambda args, **kwargs: Mock(returncode=0, stdout=(
-            '4.3.1\n' if args[-1] == '--version' else
-            '--profile=NAME a2dp-sink --profile-a2dp --pcm=NAME --volume=TYPE software --single-audio'))).start()
+        self.run = patch.object(bt.subprocess, 'run', side_effect=lambda args, **kwargs: Mock(returncode=0, stderr=b'', stdout=(
+            b'v4.3.1\n' if args[-1] == '--version' else
+            b'--profile=NAME a2dp-sink --profile-a2dp --pcm=NAME --volume=TYPE software --single-audio'))).start()
         self.addCleanup(patch.stopall)
 
     def test_success_is_only_prerequisites_and_never_advertises(self):
@@ -47,7 +47,7 @@ class BluetoothPreflightTests(unittest.TestCase):
         self.assertEqual(before, {p: p.read_bytes() for p in self.card.rglob('*') if p.is_file()})
         for call in self.run.call_args_list:
             self.assertIn(call.args[0][1:], (['--version'], ['--help']))
-            self.assertEqual(call.kwargs, dict(capture_output=True, text=True, timeout=2))
+            self.assertEqual(call.kwargs, dict(capture_output=True, timeout=2))
 
     def test_either_missing_third_endpoint_blocks_even_with_other_substreams(self):
         for endpoint in ('pcm0p', 'pcm1c'):
@@ -57,6 +57,24 @@ class BluetoothPreflightTests(unittest.TestCase):
                 info.unlink()
                 self.assertFalse(bt.preflight(self.root)['prerequisites_ok'])
                 info.write_bytes(saved)
+
+    def test_real_cli_output_missing_sub2_has_only_one_blocker(self):
+        self.which.side_effect = lambda name: None if name == 'bluealsad' else '/usr/bin/' + name
+        (self.card / 'pcm0p/sub2/info').unlink()
+        result = bt.preflight(self.root)
+        self.assertEqual(len(result['blockers']), 1)
+        self.assertIn('Dedicated snd_aloop', result['blockers'][0])
+
+    def test_stderr_on_either_probe_is_rejected(self):
+        original = self.run.side_effect
+        for probe in ('--version', '--help'):
+            def response(args, **kwargs):
+                result = original(args, **kwargs)
+                if args[-1] == probe:
+                    result.stderr = b'warning'
+                return result
+            self.run.side_effect = response
+            self.assertEqual(len(bt.preflight(self.root)['blockers']), 2)
 
     def test_exact_identity_and_idle_status_required(self):
         cases = [('id', 'DAC'), ('../modules', '10 snd_usb_audio'),
@@ -162,12 +180,12 @@ class BluetoothPreflightTests(unittest.TestCase):
     def test_unsupported_version_or_help_never_passes_prerequisites(self):
         for version, help_text, help_code in (
                 ('4.3.10', '--profile=NAME a2dp-sink', 0),
-                ('4.3.1', '--profile=A2DP --pcm=NAME', 0),
-                ('4.3.1', '--profile=NAME a2dp-sink', 1)):
+                ('v4.3.1\n', '--profile=A2DP --pcm=NAME', 0),
+                ('v4.3.1\n', '--profile=NAME a2dp-sink', 1)):
             with self.subTest(version=version, help_code=help_code):
                 self.run.side_effect = lambda args, **kwargs: Mock(
-                    returncode=0 if args[-1] == '--version' else help_code,
-                    stdout=version if args[-1] == '--version' else help_text)
+                    stderr=b'', returncode=0 if args[-1] == '--version' else help_code,
+                    stdout=version.encode() if args[-1] == '--version' else help_text.encode())
                 result = bt.preflight(self.root)
                 self.assertFalse(result['prerequisites_ok'])
                 self.assertFalse(result['available'])
