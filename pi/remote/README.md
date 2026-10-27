@@ -656,98 +656,33 @@ enabled and never starts at boot. Unit enable/active state is recorded before an
 re-read after; any change is reported, never altered. It never restarts
 octet-remote, enables, starts, stops or masks any unit, enables discoverability or
 changes audio. `--rollback` restores the backed-up files and likewise leaves unit
-state alone; it refuses while octet-bluealsa is running. Attended use, after a
-deliberate octet-remote restart:
+state alone; it refuses while octet-bluealsa is running. This describes a
+disabled installation only, **not** an authorization to activate the receiver.
 
-**Pi desktop Bluetooth ownership gate (not automated by the installer):** On
-the first attended connection, a WirePlumber log recorded failed links during
-BlueALSA transport churn; a live ALSA snapshot found PipeWire owning Loopback
-playback sub0 (reserved for MPD). A separate CamillaDSP log then recorded ALSA
-capture errno 77; `/api/status` returned 503 while the DSP was Inactive. These
-observations correlate; the precise kernel-level cause is **not proven**. The
-trial stopped *before* starting the Bluetooth bridge or unmuting. Excluding
-WirePlumber's BlueZ audio monitor is a mitigation **trial**, not a root-cause fix.
-
-The reviewed WirePlumber 0.5 fragment `pi/install/wireplumber-bluealsa.conf`
-disables only `monitor.bluez` in the `main` profile; it leaves PipeWire itself,
-its ALSA monitor, BlueZ MIDI, and the desktop video path unchanged. Check
-`wireplumber --version` first. Inspect `/etc/wireplumber/wireplumber.conf.d`,
-`/home/octet/.config/wireplumber/wireplumber.conf.d`, and the package's
-`/usr/share/wireplumber/wireplumber.conf.d` for later/higher-precedence
-overrides. Record the *running* `octet` user's WirePlumber PID and active state
-via `runuser -u octet -- env XDG_RUNTIME_DIR=/run/user/1000
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show
-wireplumber.service -p ActiveState -p MainPID` (this is a user service, **not**
-`systemctl restart wireplumber` as root). Require the destination
-`/etc/wireplumber/wireplumber.conf.d/90-octet-bluealsa.conf` to be **absent**;
-refuse rather than overwrite or back up any pre-existing file, even a symlink.
-Record that absence, create only missing root-owned 0755 directories, and
-publish the exact reviewed fragment root-owned 0644 using a complete temporary
-file and no-replace publication. Verify its hash and metadata by reading back.
-
-During the approved muted maintenance window, restart **only** the `octet` user
-unit with `runuser -u octet -- env XDG_RUNTIME_DIR=/run/user/1000
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user restart
-wireplumber.service`. Require a new active PID and preserve the separate
-`pipewire.service` and `filter-chain.service`. In `wpctl status`, the existing
-`alsa_output.platform-snd_aloop.0.analog-stereo` and
-`alsa_input.platform-snd_aloop.0.analog-stereo` nodes must remain present.
-Check `/api/status` for the same Tidal source, queue, Running approved DSP
-baseline, `muted=true` and volume at or below −18 dB. With the phone connected
-in a **separate bounded trial**, require no PipeWire BlueZ audio node or
-WirePlumber Bluetooth link attempt (`wpctl status`, `pw-cli list-objects Node`,
-user journal), and no PipeWire-owned `/dev/snd/pcmC10D0p` (Loopback sub0;
-`fuser -v` plus exact `/proc/asound/Loopback/pcm0p/sub0/status`). Abort if any
-later user fragment overrides the exclusion or any requirement fails. The
-absence of a BlueZ node *before* connecting the phone proves nothing.
-
-**Rollback on any failed check:** keep Bluetooth policy disabled, phone
-disconnected/untrusted, and `octet-bluealsa` inactive; never unmute. Verify the
-destination is the exact installed, root-owned fragment (no symlink, expected
-hash), remove **only** that file, and verify its absence. Restart the same
-`octet` user `wireplumber.service` with the command above; require a new active
-PID, unchanged PipeWire/filter-chain services and surviving ALSA nodes. Read
-back the muted Running DSP baseline and MPD queue. If either restart or DSP
-recovery fails, leave Bluetooth disabled and output muted, report the failure,
-and stop rather than retrying blindly. Since preflight refuses any existing
-destination, there is no pre-existing fragment to restore. After rollback,
-verify the fragment is absent and the remaining config paths are unchanged;
-re-enabling the original Bluetooth monitor does not require a phone connection.
-This gate is not proof of safe playback; step 1 remains attended and manual.
+**BLOCKED — Pi desktop audio ownership and graph recovery:** On the first
+attended phone connection, BlueALSA transport churn coincided with WirePlumber
+link failures. PipeWire was observed opening Loopback playback sub0 (reserved
+for MPD); CamillaDSP then logged ALSA capture errno 77 and became Inactive.
+No Bluetooth bridge was started or unmuted. This is correlated evidence, not
+a proven kernel-level cause. A reviewed WirePlumber 0.5 fragment disabling
+`monitor.bluez` was tried in a muted window, but restarting WirePlumber removed
+its Loopback sink/source and exposed only Dummy Output. The exact fragment was
+removed and WirePlumber restarted; its Loopback/DAC nodes **did not return**.
+Direct MPD/CamillaDSP Tidal playback remains functional, but the desktop
+PipeWire graph is not restored. The fragment must not be redeployed as a fix.
+Keep the Bluetooth policy disabled, the phone untrusted/disconnected, and the
+receiver inactive. Diagnose and restore the desktop graph in a separately
+approved muted maintenance window before proposing a new ownership design.
+No pairing, trust, receiver start, or playback procedure is authorized until
+this blocker is resolved and a new attended speaker check is approved.
 
 The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
 mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
 `0600` file is refused everywhere, because octet-remote (`upmpdcli`) could not read
 it and `start` would be impossible after a successful pairing.
 
-1. With the packaged `bluealsa.service` inactive, `sudo systemctl start octet-bluealsa`.
-   Without a registered sink, the phone sees no audio device.
-2. Pair while the policy is still the installed **disabled, empty** default, because
-   the phone's MAC is not known yet. In `sudo bluetoothctl` run `agent on` and
-   `default-agent` (BlueZ rejects pairing with no agent; none is automated or
-   auto-accepting). Then `sudo python3 bluetooth_admin.py discoverable 120` opens a
-   window that bluetoothd itself closes (hci0 must already be powered). The window
-   grants no playback. Check the passkey matches on both devices and confirm it in
-   bluetoothctl, then note the phone's MAC there. Run `bluetooth_admin.py close`,
-   then `agent off` and `quit`.
-3. Enable the phone by editing the policy **in place** (keeps owner, group and mode):
-   `echo '{"version": 1, "enabled": true, "addresses": ["AA:BB:CC:DD:EE:FF"]}' | sudo tee /etc/octet/bluetooth.json >/dev/null`.
-   Then `sudo python3 bluetooth_admin.py trust AA:BB:CC:DD:EE:FF`. It requires an
-   enabled policy, an allowlisted and already-paired MAC, and the service file
-   contract (a refusal prints the `chown`/`chmod` fix).
-4. `sudo python3 bluetooth_admin.py start AA:BB:CC:DD:EE:FF`, then play on the phone
-   within 120 s. Octet mutes, pauses MPD (queue kept), routes the bridge only to
-   `hw:Loopback,0,2`, loads a checked approved-baseline candidate capturing
-   `hw:Loopback,1,2`, and unmutes once at no more than −18 dB after both endpoints
-   progress. `stop`, any web control, Auto Tune, drift, stalls, disconnect or the
-   30-minute lifetime stop it muted; nothing resumes MPD or AirPlay automatically.
-   Stopping mutes first, then terminates and reaps the bridge, and only then
-   restores the DSP. If the bridge cannot be reaped, Octet stays muted on the
-   Bluetooth route and refuses web controls until it exits or an attended restart.
-   **Unresolved safety gate:** confirm that CamillaGUI and any other CamillaDSP
-   websocket clients are not running before every session. The unmute is exclusive
-   only against Octet's own and Auto Tune's writers. A non-cooperative client can
-   still change level or mute around the unmute; this is detected, not prevented.
-
-Bluetooth requires an approved Auto Tune baseline to be loaded (not the Output DSP
-controls preset). AirPlay and Bluetooth refuse to start while the other owns audio.
+The unvalidated controller design preserves the MPD queue, uses only the dedicated
+Loopback sub2 pair and an approved Auto Tune baseline, and fails muted on source
+or ownership drift. It does not make a non-cooperative CamillaDSP websocket
+writer safe. The desktop graph and DSP-writer exclusion remain prerequisites
+for any future physical acceptance; passing software tests does not waive them.
