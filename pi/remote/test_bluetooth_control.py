@@ -407,3 +407,139 @@ class RecoveryTests(unittest.TestCase):
             self.assertTrue(self.control.route.journal.exists())
             self.control.route.check_lock()
             self.state = saved
+
+
+class PrepareTests(unittest.TestCase):
+    controller = RecoveryTests.controller
+    call = RecoveryTests.call
+    tearDown = RecoveryTests.tearDown
+
+    def setUp(self):
+        RecoveryTests.setUp(self)
+        self.server.INPUT_LEVELS = Mock()
+        self.check = patch('bluetooth_route.subprocess.run', return_value=SimpleNamespace(returncode=0))
+        self.run_check = self.check.start()
+        self.addCleanup(self.check.stop)
+
+    def load(self):
+        return self.control.route.prepare(44100, 'S16_LE')
+
+    def test_checked_exact_candidate_and_crash_recovery(self):
+        expected = self.load()
+        self.run_check.assert_called_once_with(
+            ['/opt/camilladsp/camilladsp', '--check', str(self.control.route.candidate)],
+            capture_output=True, timeout=10, shell=False)
+        self.assertEqual(expected['filters'], self.config['filters'])
+        self.assertEqual(expected['pipeline'], self.config['pipeline'])
+        self.assertEqual(expected['devices']['capture']['device'], 'hw:Loopback,1,2')
+        self.assertEqual(self.state['config'], expected)
+        self.assertTrue(self.state['mute'])
+        self.control.route.release()
+        recovered = self.controller()
+        self.addCleanup(recovered.route.release)
+        recovered.startup()
+        self.assertEqual(self.state['config'], self.config)
+        self.assertFalse(recovered.route.exists())
+
+    def test_check_failure_or_missing_binary_never_switches(self):
+        for result in (SimpleNamespace(returncode=1), FileNotFoundError('Camilla missing')):
+            self.run_check.side_effect = result if isinstance(result, Exception) else None
+            self.run_check.return_value = result
+            with self.assertRaises((RuntimeError, FileNotFoundError)):
+                self.load()
+            self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+            self.assertTrue(self.control.route.journal.exists())
+            self.control.route.check_lock()
+            self.control.stop()
+            self.calls.clear()
+
+    def test_check_races_retain_evidence_without_path_switch(self):
+        for race in ('candidate', 'approval', 'airplay', 'autotune', 'dsp'):
+            with self.subTest(race=race):
+                self.setUp()
+                airplay_journal = self.root / 'airplay-recovery.json'
+                airplay_journal.write_bytes(b'preserve AirPlay evidence')
+                def check(*args, **kwargs):
+                    if race == 'candidate':
+                        self.control.route.candidate.write_bytes(b'changed')
+                    elif race == 'approval':
+                        self.server.TUNING.active = lambda p: None
+                    elif race == 'airplay':
+                        self.server.AIRPLAY_CONTROL.pending = object()
+                    elif race == 'autotune':
+                        self.server.TUNING.status = lambda: {'audio_owned': True}
+                    else:
+                        self.state['config'] = {}
+                    return SimpleNamespace(returncode=0)
+                self.run_check.side_effect = check
+                with self.assertRaises(RuntimeError):
+                    self.load()
+                self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+                self.assertEqual(airplay_journal.read_bytes(), b'preserve AirPlay evidence')
+                self.assertTrue(self.control.route.journal.exists())
+                self.control.route.check_lock()
+
+    def test_journal_sync_failure_prevents_check_and_switch(self):
+        with patch('bluetooth_route.sync_directory', side_effect=OSError('durability')):
+            with self.assertRaisesRegex(OSError, 'durability'):
+                self.load()
+        self.run_check.assert_not_called()
+        self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+
+    def test_reload_failure_and_wrong_loaded_config_retain_evidence(self):
+        self.bad_reload = True
+        with patch('bluetooth_route.time.sleep'), self.assertRaisesRegex(RuntimeError, 'not verified'):
+            self.load()
+        self.assertTrue(self.state['mute'])
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+
+    def test_unsupported_pcm_and_filter_count_never_switch(self):
+        for rate, fmt in ((96000, 'S16_LE'), (True, 'S32_LE'), (48000, 'FLOAT_LE')):
+            with self.assertRaises(ValueError):
+                self.control.route.prepare(rate, fmt)
+        self.config['filters'].pop(next(iter(self.config['filters'])))
+        self.data = yaml.safe_dump(self.config).encode()
+        self.path.write_bytes(self.data)
+        self.state['config'] = copy.deepcopy(self.config)
+        with self.assertRaisesRegex(RuntimeError, '129-filter'):
+            self.load()
+        self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+
+    def test_reload_exception_and_mute_drift_fail_muted(self):
+        original_call = self.dsp.call.side_effect
+        def call(name, *args):
+            result = original_call(name, *args)
+            if name == 'Reload':
+                self.state['mute'] = False
+                raise RuntimeError('reload interrupted')
+            return result
+        self.dsp.call.side_effect = call
+        with self.assertRaisesRegex(RuntimeError, 'reload interrupted'):
+            self.load()
+        self.assertTrue(self.state['mute'])
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+
+    def test_airplay_real_journal_blocks_prepare_untouched(self):
+        from airplay_baseline import BaselineRoute
+        airplay = BaselineRoute(self.server)
+        airplay.root = self.root
+        self.server.AIRPLAY_CONTROL.baseline = airplay
+        airplay.journal.write_bytes(b'AirPlay recovery evidence')
+        with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
+            self.load()
+        self.assertEqual(airplay.journal.read_bytes(), b'AirPlay recovery evidence')
+        self.run_check.assert_not_called()
+        self.assertFalse(self.control.route.exists())
+
+    def test_existing_bluetooth_generation_never_overwritten(self):
+        self.control.route.begin(str(self.path), self.config)
+        record = self.control.route.journal.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'pending'):
+            self.load()
+        self.assertEqual(self.control.route.journal.read_bytes(), record)
+        self.run_check.assert_not_called()
+        self.control.route.check_lock()

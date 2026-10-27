@@ -1,9 +1,11 @@
 """Standalone WIL-249 bridge supervision; deliberately not wired to activation.
 
 run() blocks and owns its child through cleanup. The caller must already have
-established the muted route and supply a fail-closed callback (mute/recovery),
-which runs before child shutdown on EVERY exit. Nothing here unmutes, loads DSP,
-changes services or enables BluetoothControl.start. Readiness is observation only.
+established mute and supply a fail-closed callback (mute/recovery),
+which runs before child shutdown on EVERY exit. The supervisor never unmutes,
+changes services or enables BluetoothControl.start. The optional prepare callback
+loads a muted route on the first valid playback observation, before capture is
+required. Without it the caller must have prepared the route already.
 Bus/proc reads are sequential observations, not an atomic identity/audio lease.
 """
 from dataclasses import dataclass
@@ -136,12 +138,15 @@ class BridgeSupervisor:
     receives playback authorization. The callback must itself be bounded; Python
     cannot impose a safe timeout on arbitrary in-process recovery code.
     """
-    def __init__(self, fail_closed, *, policy=local_policy, identity=verify_identity,
+    def __init__(self, fail_closed, *, prepare=None, policy=local_policy, identity=verify_identity,
                  owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen,
                  clock=time.monotonic, interval=0.1, startup_timeout=120.0,
                  stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0):
         if not callable(fail_closed):
             raise ValueError('Fail-closed callback required')
+        if prepare is not None and not callable(prepare):
+            raise ValueError('Prepare callback must be callable')
+        self.prepare = prepare
         for value in (interval, startup_timeout, stall_timeout, lifetime, stop_timeout):
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError('Deadlines must be finite and positive')
@@ -225,6 +230,7 @@ class BridgeSupervisor:
             self._child = self.spawn(argv, executable='/usr/bin/bluealsa-aplay',
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, shell=False, close_fds=True)
+            prepared = None
             previous = None
             progress = None
             while not stop_event.is_set():
@@ -237,6 +243,29 @@ class BridgeSupervisor:
                     raise RuntimeError('Bridge lifetime deadline')
                 if not self.ready and now - start >= self.startup_timeout:
                     raise RuntimeError('Bridge startup deadline')
+                playback, capture = pair
+                if playback is not None:
+                    if playback.owner != self._child.pid:
+                        raise RuntimeError('Playback is not owned by bridge')
+                    if (playback.rate not in (44100, 48000)
+                            or playback.sample_format not in ('S16_LE', 'S32_LE')
+                            or playback.channels != 2):
+                        raise RuntimeError('Unsupported native PCM format')
+                    if prepared is None:
+                        prepared = playback.format
+                        if self.prepare is not None:
+                            self.prepare(playback.rate, playback.sample_format)
+                            # Discard observations made before the route reload.
+                            verify()
+                            if self._child.poll() is not None:
+                                raise RuntimeError('Bridge process exited during preparation')
+                            if self.clock() - start >= min(self.startup_timeout, self.lifetime):
+                                raise RuntimeError('Bridge startup deadline during preparation')
+                            continue
+                    elif playback.format != prepared:
+                        raise RuntimeError('PCM negotiation changed after preparation')
+                elif prepared is not None:
+                    raise RuntimeError('PCM endpoint closed')
                 if any(pcm is None for pcm in pair):
                     if previous is not None:
                         raise RuntimeError('PCM endpoint closed')

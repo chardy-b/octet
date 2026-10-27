@@ -1,4 +1,4 @@
-"""Bluetooth recovery foundation; deliberately no candidate activation API.
+"""Muted Bluetooth candidate preparation and durable recovery.
 
 Caller holds server.LOCK. The inherited flock is retained until recovery finishes,
 including failures; never transfer its ownership through a socket or unlink it.
@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 import time
@@ -160,6 +161,63 @@ class BluetoothRoute(BaselineRoute):
                 self.record = None
                 self.release()
             raise
+
+    def prepare(self, rate, format):
+        """Load a checked sub2 candidate while muted; retain evidence until recovery."""
+        with self.server.LOCK:
+            self.mute()
+            self.acquire()
+            try:
+                self.ownership()
+                with self.server.DSP() as dsp:
+                    path = dsp.call('GetConfigFilePath')
+                    loaded = json.loads(dsp.call('GetConfigJson'))
+                expected = routed(loaded, rate=rate, sample_format=format, channels=2)
+                self.begin(path, loaded)
+                data = yaml.safe_dump(expected, sort_keys=False).encode()
+                persist(self.candidate, data, 0o640)
+                check = subprocess.run(
+                    ['/opt/camilladsp/camilladsp', '--check', str(self.candidate)],
+                    capture_output=True, timeout=10, shell=False)
+                if check.returncode:
+                    raise RuntimeError('DSP rejected the Bluetooth baseline route')
+                self.verify()
+                if read_bounded(self.candidate, MAX_CONFIG) != data:
+                    raise RuntimeError('Bluetooth candidate changed during check')
+                self.server.INPUT_LEVELS.release()
+                self.verify()
+                with self.server.DSP() as dsp:
+                    if read_bounded(self.candidate, MAX_CONFIG) != data:
+                        raise RuntimeError('Bluetooth candidate changed before path switch')
+                    dsp.call('SetConfigFilePath', str(self.candidate))
+                    try:
+                        self.ownership()
+                        self.original()
+                        self.mute()
+                        if read_bounded(self.candidate, MAX_CONFIG) != data:
+                            raise RuntimeError('Bluetooth candidate changed before reload')
+                        dsp.call('Reload')
+                    finally:
+                        self.mute()
+                    for _ in range(20):
+                        self.ownership()
+                        self.original()
+                        if read_bounded(self.candidate, MAX_CONFIG) != data:
+                            raise RuntimeError('Bluetooth candidate changed after reload')
+                        if dsp.call('GetMute') is not True:
+                            raise RuntimeError('Bluetooth physical mute lost')
+                        if (dsp.call('GetConfigFilePath') == str(self.candidate)
+                                and json.loads(dsp.call('GetConfigJson')) == expected
+                                and dsp.call('GetState') == 'Running'):
+                            return expected
+                        time.sleep(.1)
+                raise RuntimeError('Bluetooth candidate load not verified; recovery retained')
+            except BaseException:
+                # Even external mute drift or an interrupted reload must fail muted.
+                self.mute()
+                raise
+            finally:
+                self.release_if_idle()
 
     def verify(self):
         self.ownership()

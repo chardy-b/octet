@@ -163,6 +163,55 @@ class SupervisorTests(unittest.TestCase):
     def run_bridge(self):
         self.supervisor.run(MAC, self.event)
 
+    def test_prepare_on_playback_before_capture_then_both_must_progress(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared)
+        self.observe = lambda: self.normal() if prepared.called else (self.normal()[0], None)
+        self.run_bridge()
+        prepared.assert_called_once_with(48000, 'S16_LE')
+        self.assertEqual(self.ready_seen, [False, True, True, True])
+
+    def test_changed_playback_after_prepare_rejected_before_ready(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared)
+        def observe():
+            if not prepared.called:
+                return self.normal()[0], None
+            return tuple(PCM(44100, p.sample_format, 2, p.owner, p.hw_ptr, p.appl_ptr)
+                         for p in self.normal())
+        self.observe = observe
+        with self.assertRaisesRegex(RuntimeError, 'negotiation changed'):
+            self.run_bridge()
+        prepared.assert_called_once()
+        self.assertFalse(self.supervisor.ready)
+
+    def test_prepare_failure_stops_muted_before_child(self):
+        self.supervisor = self.make(prepare=Mock(side_effect=RuntimeError('prepare failed')))
+        self.observe = lambda: (self.normal()[0], None)
+        with self.assertRaisesRegex(RuntimeError, 'prepare failed'):
+            self.run_bridge()
+        self.close.assert_called_once()
+        self.child.terminate.assert_called_once()
+        self.assertFalse(self.supervisor.ready)
+
+    def test_capture_never_opens_after_prepare_times_out(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared)
+        self.event.is_set = lambda: False
+        self.observe = lambda: (self.normal()[0], None)
+        with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+            self.run_bridge()
+        prepared.assert_called_once()
+        self.assertFalse(any(self.ready_seen))
+
+    def test_prepare_time_counts_against_deadline(self):
+        def prepare(rate, fmt):
+            self.now += 2
+        self.supervisor = self.make(prepare=prepare)
+        with self.assertRaisesRegex(RuntimeError, 'deadline during preparation'):
+            self.run_bridge()
+        self.assertFalse(self.supervisor.ready)
+
     def test_exact_argv_owned_process_and_repeated_checks(self):
         self.run_bridge()
         self.assertEqual(self.spawn.call_args.args[0], ['bluealsa-aplay', '--profile-a2dp',
