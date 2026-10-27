@@ -76,6 +76,24 @@ class BluetoothPreflightTests(unittest.TestCase):
             self.run.side_effect = response
             self.assertEqual(len(bt.preflight(self.root)['blockers']), 2)
 
+    def test_malformed_subprocess_utf8_fails_closed(self):
+        original = self.run.side_effect
+        for binary in ('bluealsad', 'bluealsa-aplay'):
+            for probe in ('--version', '--help'):
+                with self.subTest(binary=binary, probe=probe):
+                    def response(args, **kwargs):
+                        result = original(args, **kwargs)
+                        if Path(args[0]).name == binary and args[-1] == probe:
+                            result.stdout += b'\xff'
+                        return result
+                    self.run.side_effect = response
+                    result = bt.preflight(self.root)
+                    self.assertFalse(result['prerequisites_ok'])
+                    self.assertFalse(result['available'])
+                    self.assertFalse(result['advertise'])
+                    self.assertEqual(len(result['blockers']), 1)
+                    self.assertIn('invalid UTF-8 output', result['blockers'][0])
+
     def test_exact_identity_and_idle_status_required(self):
         cases = [('id', 'DAC'), ('../modules', '10 snd_usb_audio'),
                  ('../modules', '10 snd_aloop\n10 snd_aloop')]

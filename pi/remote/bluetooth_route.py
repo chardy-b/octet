@@ -36,7 +36,7 @@ class BluetoothRoute(BaselineRoute):
 
     def ownership(self):
         super().ownership()
-        airplay = self.server.AIRPLAY
+        airplay = self.server.AIRPLAY_CONTROL
         if airplay.active or airplay.pending is not None or airplay.baseline.exists():
             raise RuntimeError('AirPlay owns audio; Bluetooth recovery retained')
 

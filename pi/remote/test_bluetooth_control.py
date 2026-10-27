@@ -18,7 +18,7 @@ import test_bluetooth_contract
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir='/workspace')
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / 'baselines').mkdir()
@@ -39,7 +39,7 @@ class RecoveryTests(unittest.TestCase):
         self.server = SimpleNamespace(LOCK=threading.RLock(), DSP=lambda: self.dsp,
             TUNING=SimpleNamespace(root=self.root, active=lambda p: {'sha256': digest(self.data)},
                                    status=lambda: {'audio_owned': False}),
-            AIRPLAY=SimpleNamespace(active=False, pending=None, baseline=SimpleNamespace(exists=lambda: False)))
+            AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, baseline=SimpleNamespace(exists=lambda: False)))
         self.stop_bridge = Mock()
         self.control = self.controller()
         self.addCleanup(self.control.route.release)
@@ -185,10 +185,10 @@ class RecoveryTests(unittest.TestCase):
                     path.write_bytes(saved)
 
     def test_airplay_autotune_and_unapproved_baselines_refused(self):
-        self.server.AIRPLAY.active = True
+        self.server.AIRPLAY_CONTROL.active = True
         with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
             self.prepare()
-        self.server.AIRPLAY.active = False
+        self.server.AIRPLAY_CONTROL.active = False
         self.server.TUNING.status = lambda: {'audio_owned': True}
         with self.assertRaisesRegex(RuntimeError, 'Auto Tune'):
             self.prepare()
@@ -196,6 +196,35 @@ class RecoveryTests(unittest.TestCase):
         self.server.TUNING.active = lambda p: None
         with self.assertRaisesRegex(RuntimeError, 'approved'):
             self.prepare()
+
+    def test_real_server_airplay_interface_guards_bluetooth_ownership(self):
+        import server
+        from airplay_control import AirPlayController
+
+        # Importing server does not run main or start any audio service.
+        self.assertIsInstance(server.AIRPLAY_CONTROL, AirPlayController)
+        self.assertIs(server.AIRPLAY_CONTROL.server, server)
+        control = BluetoothControl(server, self.stop_bridge)
+        control.route.root = self.root
+        self.addCleanup(control.route.release)
+        with patch.object(server, 'TUNING', self.server.TUNING), \
+             patch.object(server, 'DSP') as dsp, \
+             patch.object(server.AIRPLAY_CONTROL, 'active', False), \
+             patch.object(server.AIRPLAY_CONTROL, 'pending', None), \
+             patch.object(server.AIRPLAY_CONTROL.baseline, 'root', self.root):
+            with server.LOCK:
+                control.route.acquire()
+                control.route.ownership()
+                for field, value in (('active', True), ('pending', object())):
+                    with self.subTest(field=field), \
+                         patch.object(server.AIRPLAY_CONTROL, field, value):
+                        with self.assertRaisesRegex(RuntimeError, 'AirPlay owns audio'):
+                            control.route.ownership()
+                server.AIRPLAY_CONTROL.baseline.journal.write_text('{}')
+                with self.assertRaisesRegex(RuntimeError, 'AirPlay owns audio'):
+                    control.route.ownership()
+            dsp.assert_not_called()
+        self.stop_bridge.assert_not_called()
 
     def test_journal_write_failure_never_changes_path(self):
         from bluetooth_route import persist

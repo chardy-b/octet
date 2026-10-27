@@ -72,6 +72,8 @@ def preflight(proc=Path('/proc/asound')):
             if help_result.returncode or help_result.stderr != b'':
                 raise ValueError('CLI help check failed')
             check_cli(result.stdout.decode('utf-8'), help_result.stdout.decode('utf-8'), player=executable == player)
+        except UnicodeDecodeError:
+            blockers.append(f'Binary capability check failed: {name}: invalid UTF-8 output')
         except (OSError, subprocess.TimeoutExpired, ValueError) as error:
             blockers.append(f'Binary capability check failed: {name}: {error}')
     try:
