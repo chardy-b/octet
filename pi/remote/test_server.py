@@ -58,6 +58,70 @@ class PlaybackGuards(unittest.TestCase):
                          {'token_type': 'Bearer', 'is_pkce': False})
         self.assertEqual(server.decode_credentials({'token_type': 'Bearer'}), {'token_type': 'Bearer'})
 
+    def test_now_playing_and_artwork_routes_use_live_bridge(self):
+        handler = object.__new__(server.Handler)
+        handler.valid_host = lambda: True
+        handler.send = MagicMock()
+        key = 'a' * 64
+        with patch.object(server, 'fetch_song', return_value={'title': 'Song'}), \
+             patch.object(server, 'fetch_artwork', return_value=(b'\xff\xd8\xffx', 'image/jpeg')) as artwork:
+            handler.path = '/api/now-playing'
+            handler.do_GET()
+            self.assertEqual(handler.send.call_args.args, ({'song': {'title': 'Song'}},))
+            handler.path = '/api/now-playing/artwork/' + key
+            handler.do_GET()
+            artwork.assert_called_once_with(key)
+            self.assertEqual(handler.send.call_args.args, (b'\xff\xd8\xffx',))
+            self.assertEqual(handler.send.call_args.kwargs, {'content_type': 'image/jpeg'})
+            for error in (OSError('offline'), ValueError('hash')):
+                artwork.side_effect = error
+                handler.do_GET()
+                self.assertEqual(handler.send.call_args.args, ({'error': 'Artwork unavailable'}, 404))
+
+    def test_now_playing_without_song_reports_null(self):
+        handler = object.__new__(server.Handler)
+        handler.valid_host = lambda: True
+        handler.send = MagicMock()
+        handler.path = '/api/now-playing'
+        with patch.object(server, 'fetch_song', return_value=None):
+            handler.do_GET()
+        self.assertEqual(handler.send.call_args.args, ({'song': None},))
+
+    def test_invalid_artwork_keys_never_reach_the_bridge(self):
+        handler = object.__new__(server.Handler)
+        handler.valid_host = lambda: True
+        handler.send = MagicMock()
+        with patch.object(server, 'fetch_artwork') as artwork, patch.object(server, 'tidal') as tidal:
+            for key in ('a' * 63, 'a' * 65, 'A' * 64, 'g' * 64, '../' + 'a' * 61, 'a' * 64 + '/x', ''):
+                with self.subTest(key=key):
+                    handler.path = '/api/now-playing/artwork/' + key
+                    handler.do_GET()
+                    self.assertEqual(handler.send.call_args.args, ({'error': 'Not found'}, 404))
+            artwork.assert_not_called()
+            tidal.assert_not_called()
+
+    def test_artwork_response_uses_bridge_image_type_with_safety_headers(self):
+        handler = object.__new__(server.Handler)
+        handler.valid_host = lambda: True
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.wfile = MagicMock()
+        handler.path = '/api/now-playing/artwork/' + 'b' * 64
+        png = b'\x89PNG\r\n\x1a\nbody'
+        with patch.object(server, 'fetch_artwork', return_value=(png, 'image/png')):
+            handler.do_GET()
+        headers = dict(call.args for call in handler.send_header.call_args_list)
+        handler.send_response.assert_called_once_with(200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['Content-Length'], str(len(png)))
+        self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+        handler.wfile.write.assert_called_once_with(png)
+
+    def test_installer_packages_now_playing_bridge(self):
+        installer = (Path(server.__file__).parent / 'install.py').read_text()
+        self.assertIn("'now_playing_bridge.py'", installer)
+
 
 class InitializationSafety(unittest.TestCase):
     def setUp(self):

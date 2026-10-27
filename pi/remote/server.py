@@ -23,6 +23,7 @@ from visualizer_state import VisualizerState
 from audio_sources import discover_sources, source_config, source_metadata, meter_channels
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
+from now_playing_bridge import fetch_song, fetch_artwork
 from airplay_control import AirPlayController, serve as serve_airplay
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
 from network_access import NetworkAccess
@@ -1133,6 +1134,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_visualizer()
             if parsed.path == '/api/status':
                 return self.send(current_status())
+            if parsed.path == '/api/now-playing':
+                return self.send({'song': fetch_song()})
+            artwork = re.fullmatch(r'/api/now-playing/artwork/([a-f0-9]{64})', parsed.path)
+            if artwork:
+                try:
+                    body, kind = fetch_artwork(artwork.group(1))
+                except (OSError, ValueError):
+                    return self.send({'error': 'Artwork unavailable'}, 404)
+                return self.send(body, content_type=kind)
             if parsed.path == '/api/input-levels':
                 return self.send(INPUT_LEVELS.snapshot())
             if parsed.path == '/api/dsp':

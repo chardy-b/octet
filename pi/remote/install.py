@@ -30,7 +30,7 @@ def main():
             shutil.copy2(path, backup / path.name)
     target = Path('/opt/octet-remote')
     target.mkdir(mode=0o755, exist_ok=True)
-    for name in ['server.py', 'network_access.py', 'airplay_control.py', 'airplay_baseline.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py', 'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py', 'bluetooth_admin.py', 'install_bluetooth.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+    for name in ['server.py', 'network_access.py', 'airplay_control.py', 'airplay_baseline.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py', 'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py', 'bluetooth_admin.py', 'install_bluetooth.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'now_playing_bridge.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
                  'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)
