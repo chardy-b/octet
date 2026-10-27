@@ -24,14 +24,17 @@ No PCM is opened, so passing does not prove format negotiation. No fallback to
 subdevice 0/1, `default`, `plughw` or a physical DAC exists.
 
 BlueALSA daemon (`bluealsad`, or the older `bluealsa` name) and `bluealsa-aplay`
-must exist and answer `--version` successfully within two seconds per executable.
+must exist and report exactly `4.3.1`; both `--version` and `--help` must succeed
+within two seconds per call. Help must contain the reviewed daemon sink profile
+and player A2DP, explicit PCM, software volume and single-audio options.
 These checks do not establish a running D-Bus service, enabled A2DP sink support,
-BlueZ adapter readiness, codec capabilities or compatible command-line options.
+BlueZ adapter readiness, codec capabilities or actual runtime behavior.
 Those remain explicit pending gates before any advertisement. Version checks do
 not launch the daemon. No packages, services, module parameters or presets change.
 
-The checked-in setup still specifies `pcm_substreams=2`; it deliberately remains
-unchanged. A later authorized maintenance operation must provision at least three
+The existing setup still specifies `pcm_substreams=2`; it remains unchanged.
+An opt-in file at `pi/etc/bluetooth-staged/snd-aloop.conf` specifies three, but no
+installer consumes it. See the 2026-10-27 implementation status before use. A later authorized maintenance operation must provision at least three
 substreams and verify actual `/proc/asound` endpoints. Editing a modprobe file
 alone does not create the third substream. Do not unload an in-use snd_aloop module;
 coordinate a muted maintenance restart/reboot and recheck MPD and AirPlay afterward.
@@ -47,7 +50,8 @@ conversion must terminate only at `hw:Loopback,0,2`. Do not assume an undocument
 player format flag or silently redirect a failed loopback open to the DAC.
 
 Require exact negotiated parameters at playback 0,2 and capture 1,2. CamillaDSP
-must capture `hw:Loopback,1,2` at 44100/S32_LE/stereo with asynchronous resampling
+must capture `hw:Loopback,1,2` at the exact observed post-bridge stereo rate and
+format with asynchronous resampling
 into the approved 48000 Hz speaker pipeline. Preserve playback device, filters,
 crossover, EQ, gains, polarity, output mutes and all baseline protection stages.
 Validate the candidate with the real CamillaDSP binary. Do not expose Bluetooth

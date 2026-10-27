@@ -53,6 +53,8 @@ def check_loopback(proc=Path('/proc/asound')):
 
 
 def preflight(proc=Path('/proc/asound')):
+    from bluetooth_contract import check_cli
+
     blockers = []
     # BlueALSA renamed its daemon; accept either explicit binary, never an audio fallback.
     daemon = shutil.which('bluealsad') or shutil.which('bluealsa')
@@ -62,18 +64,23 @@ def preflight(proc=Path('/proc/asound')):
             blockers.append(f'Missing executable: {name}')
             continue
         try:
-            result = subprocess.run([executable, '--version'], capture_output=True, timeout=2)
+            result = subprocess.run([executable, '--version'], capture_output=True, text=True, timeout=2)
             if result.returncode != 0:
                 blockers.append(f'Binary version check failed: {name}')
-        except (OSError, subprocess.TimeoutExpired):
-            blockers.append(f'Binary version check unavailable or timed out: {name}')
+                continue
+            help_result = subprocess.run([executable, '--help'], capture_output=True, text=True, timeout=2)
+            if help_result.returncode:
+                raise ValueError('CLI help check failed')
+            check_cli(result.stdout, help_result.stdout, player=executable == player)
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            blockers.append(f'Binary capability check failed: {name}: {error}')
     try:
         check_loopback(proc)
     except (OSError, ValueError, RuntimeError) as error:
         blockers.append(f'Dedicated snd_aloop playback 0,2 and capture 1,2 required: {error}')
     return dict(prerequisites_ok=not blockers, available=False, advertise=False,
                 playback=PLAYBACK, capture=CAPTURE, blockers=blockers,
-                pending=['Protected 44100/S32_LE/stereo route and live format verification',
+                pending=['Approved baseline, Camilla --check and actual post-bridge stereo PCM verification',
                          'BlueZ/BlueALSA A2DP sink capability and runtime verification',
                          'Pairing policy and fail-closed ownership/lifecycle controller'])
 
