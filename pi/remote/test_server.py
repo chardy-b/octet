@@ -122,6 +122,11 @@ class PlaybackGuards(unittest.TestCase):
         installer = (Path(server.__file__).parent / 'install.py').read_text()
         self.assertIn("'now_playing_bridge.py'", installer)
 
+    def test_remote_footer_links_wifi_now_playing(self):
+        page = (Path(server.__file__).parent / 'index.html').read_text()
+        footer = page[page.index('<footer>'):page.index('</footer>')]
+        self.assertIn('<a href="http://octet.local:8768/">Now playing · Wi-Fi</a>', footer)
+
 
 class InitializationSafety(unittest.TestCase):
     def setUp(self):
