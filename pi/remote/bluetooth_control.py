@@ -1,8 +1,6 @@
 """Fail-closed recovery/watchdog foundation. Playback intentionally disabled.
 
-Not registered in server.py or a service. Future integration must call startup
-before accepting requests and tick under the same process control lock. No BlueZ,
-bridge spawn, LAN endpoint, pairing, volume change or unmute is implemented.
+Not registered in server.py or a service. No bridge, pairing, volume or unmute.
 """
 from bluetooth_route import BluetoothRoute
 
@@ -11,39 +9,50 @@ class BluetoothControl:
     def __init__(self, server, stop_bridge):
         self.server = server
         self.route = BluetoothRoute(server)
-        # Future supervisor must stop only its own bridge, never kill by name.
+        # Stop only a supervisor-owned bridge, never kill by name.
         self.stop_bridge = stop_bridge
         self.error = None
+        self.errors = {}
         self.mute_verified = False
 
     def fail(self, reason):
-        self.error = reason
-        self.mute_verified = False
-        try:
-            self.route.mute()
-            self.mute_verified = True
-        finally:
-            self.stop_bridge()
-        if self.route.exists():
+        # Also serialize direct fail() calls. Emergency mute precedes disk/lock IO.
+        with self.server.LOCK:
+            self.error = reason
+            self.errors = {}
+            self.mute_verified = False
             try:
-                self.route.recover()
-            except Exception:
+                self.route.mute()
+                self.mute_verified = True
+            except Exception as error:
+                self.errors['mute'] = error
+            try:
+                self.stop_bridge()
+            except Exception as error:
+                self.errors['stop'] = error
+            try:
+                if self.route.exists():
+                    # A failed stop must not skip restore, but leaves evidence and
+                    # the flock held: bridge shutdown has not been established.
+                    self.route.recover(cleanup=not self.errors)
+            except Exception as error:
+                self.errors['recovery'] = error
                 self.mute_verified = False
-                raise
+            if self.errors:
+                self.error = reason + '; ' + '; '.join(
+                    f'{stage}: {error}' for stage, error in self.errors.items())
+                raise RuntimeError(self.error) from next(iter(self.errors.values()))
 
     def startup(self):
-        with self.server.LOCK:
-            self.fail('Playback disabled; startup recovery required')
+        self.fail('Playback disabled; startup recovery required')
 
     def start(self, generation=None):
         with self.server.LOCK:
-            self.fail('Bluetooth playback is disabled in this slice')
+            self.fail('Bluetooth playback is disabled: runtime activation gates incomplete')
             raise RuntimeError(self.error)
 
     def stop(self, generation=None):
-        with self.server.LOCK:
-            # Even stale stop events fail closed; they never revive a session.
-            self.fail('Bluetooth stopped or stale generation')
+        self.fail('Bluetooth stopped or stale generation')
 
     def tick(self, generation=None):
         with self.server.LOCK:

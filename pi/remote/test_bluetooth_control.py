@@ -20,7 +20,7 @@ class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         (self.root / 'baselines').mkdir()
         (self.root / 'audio.lock').touch()
         self.config = test_bluetooth_contract.ContractTests().baseline()
@@ -236,3 +236,174 @@ class RecoveryTests(unittest.TestCase):
             self.prepare()
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
         self.assertFalse(self.control.route.exists())
+
+    def test_stop_failure_still_restores_and_retains_evidence(self):
+        self.prepare()
+        self.state.update(path=str(self.control.route.candidate), config={})
+        self.stop_bridge.side_effect = RuntimeError('owned bridge stop failed')
+        with self.assertRaisesRegex(RuntimeError, 'stop failed'):
+            self.control.stop()
+        self.assertEqual(self.state['config'], self.config)
+        self.assertEqual(set(self.control.errors), {'stop'})
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+        self.stop_bridge.side_effect = None
+        self.control.stop()
+        self.assertFalse(self.control.route.exists())
+
+    def test_all_failure_stages_captured_and_recovery_attempted(self):
+        self.prepare()
+        self.unreachable = True
+        self.stop_bridge.side_effect = RuntimeError('stop failed')
+        with patch.object(self.control.route, 'recover', wraps=self.control.route.recover) as recover:
+            with self.assertRaisesRegex(RuntimeError, 'mute:.*stop:.*recovery:'):
+                self.control.fail('injected')
+            recover.assert_called_once_with(cleanup=False)
+        self.assertEqual(set(self.control.errors), {'mute', 'stop', 'recovery'})
+        self.assertFalse(self.control.mute_verified)
+        self.assertTrue(self.control.route.exists())
+        self.control.route.check_lock()
+
+    def test_invalid_journal_formats(self):
+        self.prepare()
+        original = self.control.route.journal.read_bytes()
+        for field, value in [('sha256', None), ('sha256', 'g' * 64),
+                             ('sha256', 'A' * 64), ('generation', 'z' * 32),
+                             ('generation', '0' * 31 + '\n'), ('version', True)]:
+            with self.subTest(field=field, value=value):
+                record = json.loads(original)
+                record[field] = value
+                self.control.route.journal.write_text(json.dumps(record))
+                with self.assertRaisesRegex(RuntimeError, 'Invalid Bluetooth'):
+                    self.control.stop()
+                self.assertTrue(self.control.route.journal.exists())
+        self.control.route.journal.write_bytes(original)
+        self.control.stop()
+
+    def test_replaced_journal_even_identical_record_is_retained(self):
+        self.prepare()
+        journal = self.control.route.journal
+        saved = journal.read_bytes()
+        journal.rename(self.root / 'previous.json')
+        journal.write_bytes(saved)
+        with self.assertRaisesRegex(RuntimeError, 'inode changed'):
+            self.control.stop()
+        self.assertEqual(journal.read_bytes(), saved)
+        self.control.route.check_lock()
+
+    def test_symlink_journal_never_followed_or_removed(self):
+        self.prepare()
+        journal = self.control.route.journal
+        target = self.root / 'other.json'
+        journal.rename(target)
+        journal.symlink_to(target)
+        with self.assertRaises(RuntimeError):
+            self.control.stop()
+        self.assertTrue(journal.is_symlink())
+        self.assertTrue(target.exists())
+
+    def test_cleanup_directory_sync_failure_retains_lock_and_evidence(self):
+        self.prepare()
+        with patch('bluetooth_route.sync_directory', side_effect=OSError('fsync failed')):
+            with self.assertRaisesRegex(RuntimeError, 'fsync failed'):
+                self.control.stop()
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+
+    def test_journal_publish_never_overwrites_existing_file(self):
+        from bluetooth_route import persist
+        journal = self.control.route.journal
+        journal.write_bytes(b'other recovery evidence')
+        with self.assertRaises(FileExistsError):
+            persist(journal, b'new record', 0o600)
+        self.assertEqual(journal.read_bytes(), b'other recovery evidence')
+
+    def test_changed_baseline_during_reload_is_not_overwritten(self):
+        self.prepare()
+        old_call = self.dsp.call.side_effect
+        def change(name, *args):
+            result = old_call(name, *args)
+            if name == 'Reload':
+                self.path.write_bytes(b'new baseline')
+            return result
+        self.dsp.call.side_effect = change
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            self.control.stop()
+        self.assertEqual(self.path.read_bytes(), b'new baseline')
+        self.assertTrue(self.control.route.journal.exists())
+
+    def test_symlink_tmpdir_fixture_in_fresh_process(self):
+        alias = self.root / 'temp-link'
+        alias.symlink_to(self.root, target_is_directory=True)
+        env = dict(os.environ, TMPDIR=str(alias), TEMP=str(alias), TMP=str(alias))
+        result = subprocess.run([sys.executable, '-m', 'unittest',
+            'test_bluetooth_control.RecoveryTests.test_crash_recovery_restores_original_path_content_muted'],
+            cwd=Path(__file__).resolve().parent, env=env, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_unlink_failure_retains_journal_and_lock(self):
+        self.prepare()
+        with patch.object(Path, 'unlink', side_effect=OSError('unlink failed')):
+            with self.assertRaisesRegex(RuntimeError, 'unlink failed'):
+                self.control.stop()
+        self.assertTrue(self.control.route.journal.exists())
+        self.control.route.check_lock()
+
+    def test_journal_swap_at_cleanup_boundary_is_retained(self):
+        self.prepare()
+        original = self.control.route.original
+        def swap():
+            result = original()
+            journal = self.control.route.journal
+            journal.rename(self.root / 'old-journal')
+            journal.write_bytes(b'other owner')
+            return result
+        with patch.object(self.control.route, 'original', side_effect=swap):
+            with self.assertRaisesRegex(RuntimeError, 'inode changed'):
+                self.control.route.cleanup_journal()
+        self.assertEqual(self.control.route.journal.read_bytes(), b'other owner')
+        self.control.route.check_lock()
+
+    def test_cleanup_sync_failure_can_be_retried(self):
+        self.prepare()
+        with patch('bluetooth_route.sync_directory', side_effect=[OSError('fsync failed'), None]):
+            with self.assertRaisesRegex(RuntimeError, 'fsync failed'):
+                self.control.stop()
+        self.control.stop()
+        self.assertFalse(self.control.route.exists())
+
+    def test_cleanup_lock_held_through_directory_sync(self):
+        self.prepare()
+        from bluetooth_route import sync_directory
+        def check(root):
+            self.control.route.check_lock()
+            self.assertFalse(self.control.route.journal.exists())
+            sync_directory(root)
+        with patch('bluetooth_route.sync_directory', side_effect=check):
+            self.control.stop()
+        self.assertIsNone(self.control.route._lock_fd)
+
+    def test_duplicate_and_nonobject_journal_rejected_after_restart(self):
+        self.prepare()
+        for raw in [b'[]', b'null', b'{"version":1,"version":1}', b'x' * 8193]:
+            self.control.route.journal.write_bytes(raw)
+            recovered = self.controller()
+            self.control.route.release()
+            try:
+                with self.assertRaises(RuntimeError):
+                    recovered.startup()
+                self.assertTrue(recovered.route.journal.exists())
+                recovered.route.check_lock()
+            finally:
+                recovered.route.release()
+
+    def test_cleanup_refuses_unknown_or_unmuted_dsp(self):
+        self.prepare()
+        for change in [dict(mute=False), dict(config={}), dict(running='Starting')]:
+            saved = copy.deepcopy(self.state)
+            self.state.update(change)
+            with self.assertRaisesRegex(RuntimeError, 'drifted'):
+                self.control.route.cleanup_journal()
+            self.assertTrue(self.control.route.journal.exists())
+            self.control.route.check_lock()
+            self.state = saved
