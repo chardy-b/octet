@@ -659,22 +659,50 @@ changes audio. `--rollback` restores the backed-up files and likewise leaves uni
 state alone; it refuses while octet-bluealsa is running. This describes a
 disabled installation only, **not** an authorization to activate the receiver.
 
-**BLOCKED — Pi desktop audio ownership and graph recovery:** On the first
-attended phone connection, BlueALSA transport churn coincided with WirePlumber
-link failures. PipeWire was observed opening Loopback playback sub0 (reserved
-for MPD); CamillaDSP then logged ALSA capture errno 77 and became Inactive.
-No Bluetooth bridge was started or unmuted. This is correlated evidence, not
-a proven kernel-level cause. A reviewed WirePlumber 0.5 fragment disabling
-`monitor.bluez` was tried in a muted window, but restarting WirePlumber removed
-its Loopback sink/source and exposed only Dummy Output. The exact fragment was
-removed and WirePlumber restarted; its Loopback/DAC nodes **did not return**.
-Direct MPD/CamillaDSP Tidal playback remains functional, but the desktop
-PipeWire graph is not restored. The fragment must not be redeployed as a fix.
-Keep the Bluetooth policy disabled, the phone untrusted/disconnected, and the
-receiver inactive. Diagnose and restore the desktop graph in a separately
-approved muted maintenance window before proposing a new ownership design.
-No pairing, trust, receiver start, or playback procedure is authorized until
-this blocker is resolved and a new attended speaker check is approved.
+**BLOCKED — Bluetooth playback, pending attended physical acceptance:** On the
+first phone connection, BlueALSA transport churn coincided with WirePlumber
+link failures. PipeWire opened Loopback playback sub0 (reserved for MPD);
+CamillaDSP then logged ALSA capture errno 77 and became Inactive. No Bluetooth
+bridge was started or unmuted. This correlation is **not** proof of the capture
+failure's cause.
+
+An initial muted trial of `pi/install/wireplumber-bluealsa.conf` lost PipeWire's
+Loopback and DAC nodes when WirePlumber restarted while MPD and CamillaDSP held
+their ALSA devices. Removing the exact fragment and restarting WirePlumber
+**did not** restore those nodes. A subsequent controlled recovery paused MPD,
+stopped the muted CamillaDSP, verified all three reserved PCM endpoints had no
+owners, and restarted the `octet` user WirePlumber with the fragment absent.
+Loopback sink/source and DAC nodes returned; CamillaDSP restarted Running and
+muted on the approved baseline with the Tidal queue intact. This supports an
+ownership-sensitive WirePlumber enumeration boundary, not proof that the
+Bluetooth collision has been fixed.
+
+The same owner-free sequence was then used for a **revised configuration trial**:
+the exact hash-checked fragment disabling only WirePlumber's `monitor.bluez` was
+published with no pre-existing destination (no-replace); `octet` WirePlumber restarted
+with MPD paused and CamillaDSP stopped. Loopback sink/source and DAC nodes
+remained present, and CamillaDSP restarted Running/muted with the baseline
+semantically identical to its approved YAML. Manual `octet-bluealsa.service`
+registered its A2DP sink while policy remained disabled, without losing the
+PipeWire graph, then was stopped. The fragment remains installed; Bluetooth
+policy is disabled/empty and the phone untrusted/disconnected. **No phone audio
+or physical speaker output was tested in this trial.**
+
+Any future WirePlumber restart or fragment rollback must be a separately
+approved muted maintenance operation: preserve the queue and baseline, pause
+MPD until Loopback playback sub0 is released, stop muted CamillaDSP until its
+Loopback capture and DAC playback are released, then restart the *octet user*
+WirePlumber. Verify the named Loopback and DAC PipeWire nodes **before** starting
+CamillaDSP with startup mute; read back DSP Running/muted and the original queue.
+On failure, keep Bluetooth disabled, stop BlueALSA, remove only the exact trial
+fragment **only after** verifying it is a root-owned regular 0644 file with the
+reviewed SHA-256 `07bea466e0ed9f1b582a32faf57f7ee638cc6adf987b4a17bbc0464c77af1c71`.
+If its identity or hash differs, refuse deletion and investigate; there is no
+pre-existing fragment to restore because publication refused any destination.
+Repeat the owner-free WirePlumber restart and graph checks; never retry blindly
+or unmute to test. No pairing, trust, receiver start, or playback
+is authorized until a new attended speaker check is approved. Passing a
+no-phone service/graph trial is not end-to-end Bluetooth acceptance.
 
 The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
 mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
