@@ -32,19 +32,31 @@ class PCM:
         return self.rate, self.sample_format, self.channels
 
 
-def _fields(raw):
+def _fields(raw, *, status=False):
     if len(raw) > 8192:
         raise ValueError('Oversized PCM observation')
     result = {}
+    separator_seen = False
+    after_separator = False
     for line in raw.splitlines():
         if not line.strip():
+            continue
+        if status and line == '-----':
+            if separator_seen or not result or next(reversed(result)) != 'avail_max':
+                raise ValueError('Invalid PCM status separator')
+            separator_seen = after_separator = True
             continue
         if ':' not in line:
             raise ValueError('Malformed PCM observation')
         key, value = (part.strip() for part in line.split(':', 1))
+        if after_separator and key != 'hw_ptr':
+            raise ValueError('Invalid PCM status separator')
+        after_separator = False
         if not key or not value or key in result:
             raise ValueError('Invalid or duplicate PCM field')
         result[key] = value
+    if after_separator:
+        raise ValueError('Incomplete PCM status separator')
     return result
 
 
@@ -58,7 +70,7 @@ def parse_pcm(hw_params, status):
     """Return None only for a fully closed endpoint during bounded startup."""
     if hw_params.strip() == status.strip() == 'closed':
         return None
-    hw, state = _fields(hw_params), _fields(status)
+    hw, state = _fields(hw_params), _fields(status, status=True)
     rate = re.fullmatch(r'(44100|48000)(?: \((44100|48000)/1\))?', hw['rate'])
     if (not rate or (rate[2] and rate[1] != rate[2])
             or hw['format'] not in ('S16_LE', 'S32_LE') or hw['channels'] != '2'):
@@ -117,6 +129,8 @@ def bus_owner(name):
 class BridgeSupervisor:
     """Single-use, bounded blocking monitor. stop_event requests graceful shutdown.
 
+    Phone startup may wait up to 120 seconds on the already-muted route. This
+    window never grants playback authorization or extends the lifetime deadline.
     Injection points are for offline tests/trusted embedding, never request data.
     ready and negotiated are invalidated before any exit callback. No callback
     receives playback authorization. The callback must itself be bounded; Python
@@ -124,13 +138,15 @@ class BridgeSupervisor:
     """
     def __init__(self, fail_closed, *, policy=local_policy, identity=verify_identity,
                  owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen,
-                 clock=time.monotonic, interval=0.1, startup_timeout=5.0,
+                 clock=time.monotonic, interval=0.1, startup_timeout=120.0,
                  stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0):
         if not callable(fail_closed):
             raise ValueError('Fail-closed callback required')
         for value in (interval, startup_timeout, stall_timeout, lifetime, stop_timeout):
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError('Deadlines must be finite and positive')
+        if startup_timeout > 120.0:
+            raise ValueError('Phone startup window cannot exceed 120 seconds')
         self.fail_closed = fail_closed
         self.policy, self.identity, self.owner = policy, identity, owner
         self.observe, self.spawn, self.clock = observe, spawn, clock

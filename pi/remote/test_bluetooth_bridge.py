@@ -11,6 +11,19 @@ from bluetooth_bridge import BridgeSupervisor, PCM, bus_owner, parse_pcm, read_e
 
 MAC = '12:34:56:78:9A:BC'
 
+# Real Pi ALSA status layout, including the separator before mmap pointers.
+PI_STATUS = '''state: RUNNING
+owner_pid : 41121
+trigger_time: 1793059200.123456789
+tstamp: 1793059201.123456789
+delay: 1024
+avail: 1024
+avail_max: 4096
+-----
+hw_ptr: 26738688
+appl_ptr: 26737664
+'''
+
 
 def hw(rate=48000, fmt='S16_LE', channels=2):
     return f'access: RW_INTERLEAVED\nformat: {fmt}\nchannels: {channels}\nrate: {rate} ({rate}/1)\n'
@@ -21,6 +34,33 @@ def status(pointer=10, owner=123, state='RUNNING'):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_real_pi_status_with_and_without_separator(self):
+        for state in (PI_STATUS, PI_STATUS.replace('-----\n', '')):
+            self.assertEqual(parse_pcm(hw(), state),
+                             PCM(48000, 'S16_LE', 2, 41121, 26738688, 26737664))
+
+    def test_separator_exception_does_not_hide_malformed_fields(self):
+        for replacement in ('----', '------', ' -----', '----- ',
+                            '----- extra', '-----\n-----', 'garbage'):
+            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
+                parse_pcm(hw(), PI_STATUS.replace('-----', replacement))
+        for state in (
+                '-----\n' + PI_STATUS.replace('-----\n', ''),
+                PI_STATUS.replace('-----\n', '') + '-----\n',
+                PI_STATUS.split('hw_ptr:')[0],
+                PI_STATUS.replace('hw_ptr: 26738688', 'broken'),
+                PI_STATUS.replace('hw_ptr:', 'wrong:'),
+                PI_STATUS.replace('delay: 1024', 'delay 1024'),
+                PI_STATUS.replace('delay: 1024', ': 1024'),
+                PI_STATUS.replace('delay: 1024', 'delay:'),
+                PI_STATUS + 'owner_pid: 41121\n',
+                PI_STATUS.replace('appl_ptr: 26737664', 'appl_ptr: 2x'),
+                PI_STATUS.replace('owner_pid : 41121', 'owner_pid : -1')):
+            with self.subTest(state=state), self.assertRaises((ValueError, KeyError)):
+                parse_pcm(hw(), state)
+        with self.assertRaises(ValueError):
+            parse_pcm(hw() + 'avail_max: 4096\n-----\nhw_ptr: 10\n', PI_STATUS)
+
     def test_supported_native_formats(self):
         for rate in (44100, 48000):
             for fmt in ('S16_LE', 'S32_LE'):
@@ -70,9 +110,15 @@ class ParsingTests(unittest.TestCase):
                 sub.mkdir(parents=True)
                 (sub / 'info').write_text(f'card: 2\ndevice: {device}\nsubdevice: 2\nstream: {direction}\n')
                 (sub / 'hw_params').write_text(hw())
-                (sub / 'status').write_text(status())
+                (sub / 'status').write_text(PI_STATUS)
             with patch('bluetooth_bridge.Path', return_value=root):
                 self.assertEqual(len(read_endpoints()), 2)
+                info = card / 'pcm0p/sub2/info'
+                original_info = info.read_text()
+                info.write_text(original_info + 'avail_max: 4096\n-----\nhw_ptr: 10\n')
+                with self.assertRaises(ValueError):
+                    read_endpoints()
+                info.write_text(original_info)
                 path = card / 'pcm1c/sub2/hw_params'
                 path.unlink()
                 path.symlink_to(card / 'pcm0p/sub2/hw_params')
@@ -98,10 +144,12 @@ class SupervisorTests(unittest.TestCase):
         self.supervisor = self.make()
 
     def make(self, **kwargs):
+        deadlines = dict(interval=0.1, startup_timeout=1,
+                         stall_timeout=0.25, lifetime=2, stop_timeout=0.2)
+        deadlines.update(kwargs)
         return BridgeSupervisor(self.close, policy=self.policy, identity=self.identity,
             owner=self.owner, observe=lambda: self.observe(), spawn=self.spawn,
-            clock=lambda: self.now, interval=0.1, startup_timeout=1,
-            stall_timeout=0.25, lifetime=2, stop_timeout=0.2, **kwargs)
+            clock=lambda: self.now, **deadlines)
 
     def normal(self):
         return (PCM(48000, 'S16_LE', 2, 123, self.ticks * 10, self.ticks * 10),
@@ -207,6 +255,34 @@ class SupervisorTests(unittest.TestCase):
         self.event.is_set = lambda: False
         with self.assertRaisesRegex(RuntimeError, 'lifetime deadline'):
             self.run_bridge()
+
+    def test_phone_can_start_late_but_must_progress_before_120_seconds(self):
+        self.assertEqual(BridgeSupervisor(self.close).startup_timeout, 120)
+        self.supervisor = self.make(startup_timeout=120, lifetime=300,
+                                    interval=0.5, stall_timeout=2)
+        self.event.is_set = lambda: self.now >= 120
+        self.observe = lambda: (None, None) if self.now < 119 else self.normal()
+        self.run_bridge()
+        self.assertFalse(any(self.ready_seen[:-1]))
+        self.assertTrue(self.ready_seen[-1])
+        self.close.assert_called_once()
+        self.child.terminate.assert_called_once()
+        self.assertFalse(self.supervisor.ready)
+
+    def test_phone_start_window_is_bounded_even_with_first_pcm_at_deadline(self):
+        for first_pcm in (120, 121):
+            self.setUp()
+            self.supervisor = self.make(startup_timeout=120, lifetime=300, interval=1)
+            self.event.is_set = lambda: False
+            self.observe = lambda: (None, None) if self.now < first_pcm else self.normal()
+            with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+                self.run_bridge()
+            self.assertEqual(self.now, 120)
+            self.assertFalse(any(self.ready_seen))
+            self.close.assert_called_once()
+            self.child.terminate.assert_called_once()
+        with self.assertRaisesRegex(ValueError, '120 seconds'):
+            self.make(startup_timeout=120.001)
 
     def test_late_observation_is_not_fresh_progress(self):
         normal = self.observe
