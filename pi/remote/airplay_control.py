@@ -161,6 +161,11 @@ class AirPlayController:
                 return
             if event != 'start':
                 raise ValueError('Invalid AirPlay event')
+            bluetooth = getattr(self.server, 'BLUETOOTH_CONTROL', None)
+            if bluetooth is not None and bluetooth.owns_audio():
+                # First owner wins: refuse before muting so Bluetooth is undisturbed.
+                self.error = 'Bluetooth owns audio; AirPlay start refused'
+                raise RuntimeError(self.error)
             if self.suppressed:
                 if pcm_running():
                     return

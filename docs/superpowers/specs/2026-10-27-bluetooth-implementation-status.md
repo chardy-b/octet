@@ -1,5 +1,10 @@
 # WIL-249 second implementation slice — 2026-10-27
 
+> **Correction (2026-10-27):** the Pi's loopback sub2 has since been provisioned and
+> tested (operator-reported). Statements below that sub2 is missing or that its
+> maintenance restart is pending are historical. See
+> `2026-10-27-bluetooth-manual-receiver.md`.
+
 **Playback remains disabled.** This is local Docker-sandboxed Codex work entirely
 under `/workspace`. No Pi connection, host edit, install, reboot, push, service
 activation or physical audio occurred. The supplied `.git` points outside the

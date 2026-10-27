@@ -1,5 +1,10 @@
 # WIL-249 third slice: recovery and read-only identity gate
 
+> **Correction (2026-10-27):** the Pi's loopback sub2 has since been provisioned and
+> tested (operator-reported). Statements below that sub2 is missing or that its
+> maintenance restart is pending are historical. See
+> `2026-10-27-bluetooth-manual-receiver.md`.
+
 **Playback remains disabled. This is not a working manual Bluetooth receiver.**
 `BluetoothControl.start()` rejects every request, even with an enabled local policy.
 No installer, service, HTTP endpoint, socket, worker, pairing/connect/trust mutation,
@@ -55,6 +60,12 @@ non-0600 permissions, oversized/changed files, duplicate keys and invalid MACs.
 The exact schema is version 1, boolean enabled true, and addresses containing
 1–16 unique canonical explicit MACs. No policy file was installed or written.
 An enabled policy is a prerequisite, never sufficient playback authorization.
+
+> **Superseded (file contract).** The 0600 rule above is historical. There is now
+> one contract for every reader: root:octet-bluetooth mode 0640 in root-owned,
+> non-writable, world-searchable ancestors. A root-only 0600 file is refused. See
+> "Policy file contract and pairing window" in
+> [the manual receiver notes](2026-10-27-bluetooth-manual-receiver.md).
 
 `verify_identity()` performs bounded, shell-free `/usr/bin/busctl` reads of
 `org.bluez.Device1` on `/org/bluez/hci0/dev_<explicit MAC>`. Address, Adapter,

@@ -333,6 +333,43 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '120 seconds'):
             self.make(startup_timeout=120.001)
 
+    def test_absolute_operation_deadline_bounds_startup_window(self):
+        # The controller's whole start operation (mute, MPD pause, spawn, prepare,
+        # readiness and unmute) shares one absolute deadline with the supervisor.
+        self.supervisor = self.make(startup_timeout=1, deadline=0.35)
+        self.event.is_set = lambda: False
+        self.observe = lambda: (None, None)
+        with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+            self.run_bridge()
+        self.assertLess(self.now, 0.5)
+        self.close.assert_called_once()
+
+    def test_expired_operation_deadline_never_spawns(self):
+        self.now = 5.0
+        self.supervisor = self.make(deadline=5.0)
+        with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+            self.run_bridge()
+        self.spawn.assert_not_called()
+        self.close.assert_called_once()
+        for value in (float('nan'), float('inf'), True, '5'):
+            with self.assertRaises((ValueError, TypeError)):
+                self.make(deadline=value)
+
+    def test_progress_age_reports_fresh_progress_only_while_ready(self):
+        ages = []
+        def wait(seconds):
+            ages.append((self.supervisor.ready, self.supervisor.progress_age()))
+            self.ticks += 1
+            self.now += seconds
+        self.event.wait = wait
+        self.assertEqual(self.supervisor.progress_age(), float('inf'))
+        self.run_bridge()
+        self.assertEqual(ages[0], (False, float('inf')))
+        for ready, age in ages[1:]:
+            self.assertTrue(ready)
+            self.assertEqual(age, 0)
+        self.assertEqual(self.supervisor.progress_age(), float('inf'))
+
     def test_late_observation_is_not_fresh_progress(self):
         normal = self.observe
         def delayed():
@@ -404,16 +441,56 @@ class SupervisorTests(unittest.TestCase):
         try:
             self.supervisor._child = owned
             started = time.monotonic()
-            self.supervisor._stop()
+            self.supervisor.stop_child()
             self.assertLess(time.monotonic() - started, 2)
             self.assertIsNotNone(owned.poll())
             self.assertIsNone(other.poll())
-            self.supervisor._stop()
+            self.assertTrue(self.supervisor.stopped)
+            self.supervisor.stop_child()
         finally:
             for child in (owned, other):
                 if child.poll() is None:
                     child.kill()
                 child.wait(timeout=2)
+
+    def test_callback_can_confirm_termination_before_restoring(self):
+        order = []
+        self.child.terminate.side_effect = lambda: order.append('terminate')
+        self.child.wait.side_effect = lambda timeout: order.append('reaped')
+        def fail_closed(reason):
+            order.append('mute')
+            self.supervisor.stop_child()
+            self.assertTrue(self.supervisor.stopped)
+            order.append('restore')
+        self.close.side_effect = fail_closed
+        self.run_bridge()
+        self.assertEqual(order, ['mute', 'terminate', 'reaped', 'restore'])
+        self.child.terminate.assert_called_once()  # the supervisor's own stop is a no-op
+
+    def test_failed_reap_keeps_child_and_retry_never_blocks(self):
+        self.child.wait.side_effect = subprocess.TimeoutExpired('child', 0.2)
+        with self.assertRaisesRegex(RuntimeError, 'owned bridge stop'):
+            self.run_bridge()
+        self.child.kill.assert_called_once()
+        self.assertFalse(self.supervisor.stopped)
+        self.assertEqual(self.supervisor.pid, 123)
+        waits = self.child.wait.call_count
+        with self.assertRaisesRegex(RuntimeError, 'not exited after SIGKILL'):
+            self.supervisor.stop_child()
+        self.assertEqual(self.child.wait.call_count, waits)  # poll only, no blocking wait
+        self.child.poll.return_value = -9
+        self.supervisor.stop_child()
+        self.assertTrue(self.supervisor.stopped)
+        self.assertIsNone(self.supervisor.pid)
+
+    def test_stop_before_spawn_from_another_thread_forbids_spawn(self):
+        def verify_then_stop(address, allowed):
+            self.supervisor.stop_child()  # e.g. fail() racing the launch
+            return address
+        self.supervisor.identity = verify_then_stop
+        self.run_bridge()  # stop_event not yet set; the bounded fake event ends it
+        self.spawn.assert_not_called()
+        self.assertTrue(self.supervisor.stopped)
 
     def test_cancel_before_spawn_and_invalid_deadlines(self):
         self.event.is_set = lambda: True

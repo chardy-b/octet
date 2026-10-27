@@ -24,6 +24,7 @@ from audio_sources import discover_sources, source_config, source_metadata, mete
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
+from bluetooth_control import BluetoothControl, serve as serve_bluetooth
 from network_access import NetworkAccess
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
@@ -761,6 +762,9 @@ def current_status():
 
 
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
+# Disabled unless the root-owned local policy is enabled; started only over the
+# root-only local socket, never over HTTP.
+BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__])
 
 
 def action(name, data):
@@ -779,6 +783,10 @@ def _action(name, data):
             AIRPLAY_CONTROL.recover()
         if AIRPLAY_CONTROL.baseline.exists():
             AIRPLAY_CONTROL.invalidate()
+    if BLUETOOTH_CONTROL.owns_audio():
+        # Every manual or Auto Tune request overrides Bluetooth, which stops muted.
+        # A failed restore raises here, so no mutation proceeds on its route.
+        BLUETOOTH_CONTROL.stop('Manual control override')
     if name.startswith('auto-'):
         with LOCK:
             AIRPLAY_CONTROL.invalidate()
@@ -1227,6 +1235,11 @@ def initialize_dsp():
             AIRPLAY_CONTROL.needs_mute = True
             AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
         finally:
+            try:
+                # Independent of AirPlay; failure retains its journal and error.
+                BLUETOOTH_CONTROL.startup()
+            except Exception:
+                logging.warning('Bluetooth startup recovery failed; output remains muted')
             # Recovery can reload the DSP or fail partway through. Always use a
             # fresh connection to mute again, and refuse startup without proof.
             try:
@@ -1249,6 +1262,9 @@ def main():
     initialize_dsp()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
+    if Path('/run/octet-bluetooth').exists():
+        # RuntimeDirectory exists only with the guarded Bluetooth installer drop-in.
+        threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 

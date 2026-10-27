@@ -39,7 +39,8 @@ class RecoveryTests(unittest.TestCase):
         self.server = SimpleNamespace(LOCK=threading.RLock(), DSP=lambda: self.dsp,
             TUNING=SimpleNamespace(root=self.root, active=lambda p: {'sha256': digest(self.data)},
                                    status=lambda: {'audio_owned': False}),
-            AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, baseline=SimpleNamespace(exists=lambda: False)))
+            AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, restore_pending=None,
+                                            needs_mute=False, baseline=SimpleNamespace(exists=lambda: False)))
         self.stop_bridge = Mock()
         self.control = self.controller()
         self.addCleanup(self.control.route.release)
@@ -136,22 +137,32 @@ class RecoveryTests(unittest.TestCase):
         generation = self.prepare()
         self.state['config']['filters']['0']['gain'] = 999
         self.state['mute'] = False
-        self.control.tick(generation)
+        self.control.tick()
         self.assertTrue(self.state['mute'])
         self.assertEqual(self.state['config'], self.config)
         self.assertFalse(self.control.route.exists())
 
-    def test_stale_tick_and_stop_recover_start_always_disabled(self):
-        for event in ('tick', 'stop', 'start'):
+    def test_orphan_tick_and_stop_recover_start_refuses_pending_or_disabled(self):
+        for event in ('tick', 'stop'):
             with self.subTest(event=event):
                 self.prepare()
-                if event == 'start':
-                    with self.assertRaisesRegex(RuntimeError, 'disabled'):
-                        self.control.start('old')
-                else:
-                    getattr(self.control, event)('old')
+                getattr(self.control, event)()
                 self.assertFalse(self.control.route.exists())
                 self.assertTrue(self.state['mute'])
+        self.prepare()
+        self.calls.clear()
+        with self.assertRaisesRegex(RuntimeError, 'recovery already pending'):
+            self.control.start('12:34:56:78:9A:BC')
+        self.assertEqual(self.calls, [])
+        self.control.stop()
+        self.calls.clear()
+        # The default is the root-owned /etc/octet/bluetooth.json service policy.
+        from bluetooth_identity import service_policy
+        self.assertIs(self.control.policy, service_policy)
+        self.control.policy = lambda: service_policy(self.root / 'missing.json')
+        with self.assertRaisesRegex(RuntimeError, 'disabled'):
+            self.control.start('12:34:56:78:9A:BC')
+        self.assertEqual(self.calls, [])
 
     def test_failed_restore_retains_journal_and_lock(self):
         self.prepare()
@@ -215,7 +226,10 @@ class RecoveryTests(unittest.TestCase):
             with server.LOCK:
                 control.route.acquire()
                 control.route.ownership()
-                for field, value in (('active', True), ('pending', object())):
+                # CHANNEL_PROFILE casts own audio without any baseline journal.
+                for field, value in (('active', True), ('pending', object()),
+                                     ('restore_pending', b'previous channel profile'),
+                                     ('needs_mute', True)):
                     with self.subTest(field=field), \
                          patch.object(server.AIRPLAY_CONTROL, field, value):
                         with self.assertRaisesRegex(RuntimeError, 'AirPlay owns audio'):
@@ -237,32 +251,49 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
         self.assertFalse(self.control.route.exists())
 
-    def test_stop_failure_still_restores_and_retains_evidence(self):
+    def test_stop_failure_defers_restore_and_retains_mute_and_evidence(self):
         self.prepare()
-        self.state.update(path=str(self.control.route.candidate), config={})
+        candidate = str(self.control.route.candidate)
+        self.state.update(path=candidate, config={})
         self.stop_bridge.side_effect = RuntimeError('owned bridge stop failed')
-        with self.assertRaisesRegex(RuntimeError, 'stop failed'):
+        self.calls.clear()
+        with self.assertRaisesRegex(RuntimeError, 'stop failed.*restore deferred'):
             self.control.stop()
-        self.assertEqual(self.state['config'], self.config)
-        self.assertEqual(set(self.control.errors), {'stop'})
+        # Unconfirmed termination: muted, never restored or reloaded.
+        self.assertEqual(self.calls, [('SetMute', True), ('GetMute',)])
+        self.assertEqual((self.state['path'], self.state['config']), (candidate, {}))
+        self.assertTrue(self.state['mute'])
+        self.assertTrue(self.control.mute_verified)
+        self.assertEqual(set(self.control.errors), {'stop', 'recovery'})
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
         self.stop_bridge.side_effect = None
         self.control.stop()
+        self.assertEqual(self.state['config'], self.config)
         self.assertFalse(self.control.route.exists())
 
-    def test_all_failure_stages_captured_and_recovery_attempted(self):
+    def test_all_failure_stages_captured_and_restore_never_attempted_after_stop_failure(self):
         self.prepare()
         self.unreachable = True
         self.stop_bridge.side_effect = RuntimeError('stop failed')
         with patch.object(self.control.route, 'recover', wraps=self.control.route.recover) as recover:
-            with self.assertRaisesRegex(RuntimeError, 'mute:.*stop:.*recovery:'):
+            with self.assertRaisesRegex(RuntimeError, 'mute:.*stop:.*recovery:.*deferred'):
                 self.control.fail('injected')
-            recover.assert_called_once_with(cleanup=False)
+            recover.assert_not_called()
         self.assertEqual(set(self.control.errors), {'mute', 'stop', 'recovery'})
         self.assertFalse(self.control.mute_verified)
         self.assertTrue(self.control.route.exists())
         self.control.route.check_lock()
+
+    def test_mute_failure_alone_still_attempts_restore_without_cleanup(self):
+        self.prepare()
+        self.unreachable = True
+        with patch.object(self.control.route, 'recover', wraps=self.control.route.recover) as recover:
+            with self.assertRaisesRegex(RuntimeError, 'mute:.*recovery:'):
+                self.control.fail('injected')
+            recover.assert_called_once_with(cleanup=False)
+        self.assertEqual(set(self.control.errors), {'mute', 'recovery'})
+        self.assertTrue(self.control.route.exists())
 
     def test_invalid_journal_formats(self):
         self.prepare()

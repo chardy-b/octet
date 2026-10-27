@@ -55,7 +55,10 @@ class BluetoothRoute(BaselineRoute):
     def ownership(self):
         super().ownership()
         airplay = self.server.AIRPLAY_CONTROL
-        if airplay.active or airplay.pending is not None or airplay.baseline.exists():
+        # CHANNEL_PROFILE casts have no journal: an unfinished rollback or mute
+        # retry is AirPlay-owned DSP state just as much as an active cast.
+        if (airplay.active or airplay.pending is not None or airplay.baseline.exists()
+                or airplay.restore_pending is not None or airplay.needs_mute):
             raise RuntimeError('AirPlay owns audio; Bluetooth recovery retained')
 
     def read_record(self):

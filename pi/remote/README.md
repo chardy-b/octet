@@ -625,13 +625,67 @@ position retention, −18 dB startup at maximum phone volume, output pair mute
 retention, source round trips, tuning exclusion, stop/start and service failure.
 Do not claim end-to-end playback from mocked tests alone.
 
-## Bluetooth A2DP preflight (WIL-249)
+## Bluetooth A2DP manual receiver (WIL-249)
+
+**Not yet hardware-validated. Disabled by default.** No phone has played through
+this path on the Pi. The Pi's loopback sub2 has been provisioned and tested
+(operator-reported; not re-observed from the software sessions). See the
+[manual receiver notes](../../docs/superpowers/specs/2026-10-27-bluetooth-manual-receiver.md)
+for exactly what is and is not verified.
 
 `python3 pi/remote/bluetooth_preflight.py` performs a read-only prerequisite check
 and prints JSON (exit 0 for prerequisites present, 1 for blockers). It requires
 working BlueALSA daemon/player binaries and idle, exact snd_aloop subdevice-2
 playback/capture endpoints. MPD keeps subdevice 0 and AirPlay keeps subdevice 1.
-The existing two-substream setup intentionally fails this check. The command does
-not install, start, pair, play audio or advertise; even success leaves Bluetooth
-unavailable pending the protected route and lifecycle implementation. See the
-[design and acceptance notes](../../docs/superpowers/specs/2026-10-26-bluetooth-preflight-design.md).
+A two-substream `snd-aloop` intentionally fails this check. The Pi now has the
+third substream, but `install/setup.sh` still writes `pcm_substreams=2`; do not
+re-run it on the Pi until that is reconciled.
+
+`sudo python3 install_bluetooth.py` is a dry run; `--apply` refuses on any preflight
+blocker. It installs only a **disabled** `/etc/octet/bluetooth.json`
+(root:octet-bluetooth 0640, never overwritten), an octet-remote drop-in for the
+root-only `/run/octet-bluetooth/control.sock`, and `octet-bluealsa.service`. That
+unit is an A2DP-sink-only daemon with no `[Install]` section, so it cannot be
+enabled and never starts at boot. Unit enable/active state is recorded before and
+re-read after; any change is reported, never altered. It never restarts
+octet-remote, enables, starts, stops or masks any unit, enables discoverability or
+changes audio. `--rollback` restores the backed-up files and likewise leaves unit
+state alone; it refuses while octet-bluealsa is running. Attended use, after a
+deliberate octet-remote restart:
+
+The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
+mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
+`0600` file is refused everywhere, because octet-remote (`upmpdcli`) could not read
+it and `start` would be impossible after a successful pairing.
+
+1. With the packaged `bluealsa.service` inactive, `sudo systemctl start octet-bluealsa`.
+   Without a registered sink, the phone sees no audio device.
+2. Pair while the policy is still the installed **disabled, empty** default, because
+   the phone's MAC is not known yet. In `sudo bluetoothctl` run `agent on` and
+   `default-agent` (BlueZ rejects pairing with no agent; none is automated or
+   auto-accepting). Then `sudo python3 bluetooth_admin.py discoverable 120` opens a
+   window that bluetoothd itself closes (hci0 must already be powered). The window
+   grants no playback. Check the passkey matches on both devices and confirm it in
+   bluetoothctl, then note the phone's MAC there. Run `bluetooth_admin.py close`,
+   then `agent off` and `quit`.
+3. Enable the phone by editing the policy **in place** (keeps owner, group and mode):
+   `echo '{"version": 1, "enabled": true, "addresses": ["AA:BB:CC:DD:EE:FF"]}' | sudo tee /etc/octet/bluetooth.json >/dev/null`.
+   Then `sudo python3 bluetooth_admin.py trust AA:BB:CC:DD:EE:FF`. It requires an
+   enabled policy, an allowlisted and already-paired MAC, and the service file
+   contract (a refusal prints the `chown`/`chmod` fix).
+4. `sudo python3 bluetooth_admin.py start AA:BB:CC:DD:EE:FF`, then play on the phone
+   within 120 s. Octet mutes, pauses MPD (queue kept), routes the bridge only to
+   `hw:Loopback,0,2`, loads a checked approved-baseline candidate capturing
+   `hw:Loopback,1,2`, and unmutes once at no more than −18 dB after both endpoints
+   progress. `stop`, any web control, Auto Tune, drift, stalls, disconnect or the
+   30-minute lifetime stop it muted; nothing resumes MPD or AirPlay automatically.
+   Stopping mutes first, then terminates and reaps the bridge, and only then
+   restores the DSP. If the bridge cannot be reaped, Octet stays muted on the
+   Bluetooth route and refuses web controls until it exits or an attended restart.
+   **Unresolved safety gate:** confirm that CamillaGUI and any other CamillaDSP
+   websocket clients are not running before every session. The unmute is exclusive
+   only against Octet's own and Auto Tune's writers. A non-cooperative client can
+   still change level or mute around the unmute; this is detected, not prevented.
+
+Bluetooth requires an approved Auto Tune baseline to be loaded (not the Output DSP
+controls preset). AirPlay and Bluetooth refuse to start while the other owns audio.

@@ -1,9 +1,15 @@
-"""Standalone WIL-249 bridge supervision; deliberately not wired to activation.
+"""WIL-249 bridge supervision, driven by BluetoothControl for one manual session.
 
 run() blocks and owns its child through cleanup. The caller must already have
-established mute and supply a fail-closed callback (mute/recovery),
-which runs before child shutdown on EVERY exit. The supervisor never unmutes,
-changes services or enables BluetoothControl.start. The optional prepare callback
+established mute and supply a fail-closed callback, which runs on EVERY exit
+before the supervisor's own child shutdown. That callback is the emergency mute:
+it must not restore or reload the DSP unless stop_child() has first confirmed
+the owned child terminated and was reaped (BluetoothControl.fail does exactly
+mute -> stop_child() -> restore). stop_child() is idempotent, may be called from
+any thread including the callback, and forbids any later spawn. A failed reap
+keeps the Popen so the caller can retry. The supervisor never unmutes or
+changes services; BluetoothControl alone performs the guarded unmute after
+ready, matching negotiation and fresh progress_age(). The optional prepare callback
 loads a muted route on the first valid playback observation, before capture is
 required. Without it the caller must have prepared the route already.
 Bus/proc reads are sequential observations, not an atomic identity/audio lease.
@@ -141,7 +147,7 @@ class BridgeSupervisor:
     def __init__(self, fail_closed, *, prepare=None, policy=local_policy, identity=verify_identity,
                  owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen,
                  clock=time.monotonic, interval=0.1, startup_timeout=120.0,
-                 stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0):
+                 stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0, deadline=None):
         if not callable(fail_closed):
             raise ValueError('Fail-closed callback required')
         if prepare is not None and not callable(prepare):
@@ -152,6 +158,11 @@ class BridgeSupervisor:
                 raise ValueError('Deadlines must be finite and positive')
         if startup_timeout > 120.0:
             raise ValueError('Phone startup window cannot exceed 120 seconds')
+        if deadline is not None and (type(deadline) not in (int, float)
+                                     or not math.isfinite(deadline)):
+            raise ValueError('Operation deadline must be a finite clock value')
+        # Absolute clock value shared with the caller's whole start operation.
+        self.deadline = deadline
         self.fail_closed = fail_closed
         self.policy, self.identity, self.owner = policy, identity, owner
         self.observe, self.spawn, self.clock = observe, spawn, clock
@@ -159,36 +170,66 @@ class BridgeSupervisor:
         self.stall_timeout, self.lifetime, self.stop_timeout = stall_timeout, lifetime, stop_timeout
         self.ready = False
         self.negotiated = None
+        self._progress = None
         self._child = None
+        # Serializes spawn against stop_child(); _closed forbids any later spawn.
+        self._child_lock = threading.Lock()
+        self._closed = False
+        self._killed = False
         self._lock = threading.Lock()
         self._used = False
 
+    def progress_age(self):
+        """Seconds since the stalest of the four pointers last advanced; inf unless ready."""
+        progress = self._progress
+        if not self.ready or progress is None:
+            return math.inf
+        return self.clock() - min(progress)
+
     @property
     def pid(self):
-        return self._child.pid if self._child is not None else None
-
-    def _stop(self):
         child = self._child
-        if child is None:
-            return
-        # Popen retains ownership/reaps the child. Never signal a stored raw PID,
-        # a process group, another instance, or a name-matched system process.
-        if child.poll() is None:
-            try:
-                child.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                child.wait(timeout=self.stop_timeout)
-            except subprocess.TimeoutExpired:
+        return child.pid if child is not None else None
+
+    @property
+    def stopped(self):
+        """True only once no child can run: closed and any spawned child reaped."""
+        return self._closed and self._child is None
+
+    def stop_child(self):
+        """Terminate and reap only our own Popen child; raises if not confirmed.
+
+        Popen retains ownership/reaps the child. Never signal a stored raw PID,
+        a process group, another instance, or a name-matched system process.
+        On failure the Popen is kept, so a later call retries the same child.
+        """
+        with self._child_lock:
+            self._closed = True
+            child = self._child
+            if child is None:
+                return
+            if self._killed:
+                # Retry after SIGKILL: never block the caller (which may hold
+                # server.LOCK) on a child that already failed to exit in time.
+                if child.poll() is None:
+                    raise RuntimeError('Owned bridge child has not exited after SIGKILL')
+            elif child.poll() is None:
                 try:
-                    child.kill()
+                    child.terminate()
                 except ProcessLookupError:
                     pass
+                try:
+                    child.wait(timeout=self.stop_timeout)
+                except subprocess.TimeoutExpired:
+                    self._killed = True
+                    try:
+                        child.kill()
+                    except ProcessLookupError:
+                        pass
+                    child.wait(timeout=self.stop_timeout)
+            else:
                 child.wait(timeout=self.stop_timeout)
-        else:
-            child.wait(timeout=self.stop_timeout)
-        self._child = None
+            self._child = None
 
     def run(self, address, stop_event):
         if not self._lock.acquire(blocking=False):
@@ -206,6 +247,12 @@ class BridgeSupervisor:
         reason = 'Bridge stopped'
         try:
             start = self.clock()
+            startup_deadline = start + self.startup_timeout
+            if self.deadline is not None:
+                startup_deadline = min(startup_deadline, self.deadline)
+            startup_deadline = min(startup_deadline, start + self.lifetime)
+            if start >= startup_deadline:
+                raise RuntimeError('Bridge startup deadline')
             argv = bridge_arguments(address, self.policy())
             address = argv[-1]
             owners = tuple(self.owner(name) for name in ('org.bluez', 'org.bluealsa'))
@@ -223,29 +270,32 @@ class BridgeSupervisor:
                     raise RuntimeError('Bluetooth bus owner changed during identity check')
 
             verify()
-            if self.clock() - start >= min(self.startup_timeout, self.lifetime):
+            if self.clock() >= startup_deadline:
                 raise RuntimeError('Bridge startup deadline')
-            if stop_event.is_set():
-                return
-            self._child = self.spawn(argv, executable='/usr/bin/bluealsa-aplay',
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, shell=False, close_fds=True)
+            with self._child_lock:
+                # A concurrent stop_child() must never be followed by a spawn.
+                if stop_event.is_set() or self._closed:
+                    return
+                child = self._child = self.spawn(
+                    argv, executable='/usr/bin/bluealsa-aplay', stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    shell=False, close_fds=True)
             prepared = None
             previous = None
             progress = None
             while not stop_event.is_set():
                 verify()
-                if self._child.poll() is not None:
+                if child.poll() is not None:
                     raise RuntimeError('Bridge process exited')
                 pair = self.observe()
                 now = self.clock()
                 if now - start >= self.lifetime:
                     raise RuntimeError('Bridge lifetime deadline')
-                if not self.ready and now - start >= self.startup_timeout:
+                if not self.ready and now >= startup_deadline:
                     raise RuntimeError('Bridge startup deadline')
                 playback, capture = pair
                 if playback is not None:
-                    if playback.owner != self._child.pid:
+                    if playback.owner != child.pid:
                         raise RuntimeError('Playback is not owned by bridge')
                     if (playback.rate not in (44100, 48000)
                             or playback.sample_format not in ('S16_LE', 'S32_LE')
@@ -257,9 +307,9 @@ class BridgeSupervisor:
                             self.prepare(playback.rate, playback.sample_format)
                             # Discard observations made before the route reload.
                             verify()
-                            if self._child.poll() is not None:
+                            if child.poll() is not None:
                                 raise RuntimeError('Bridge process exited during preparation')
-                            if self.clock() - start >= min(self.startup_timeout, self.lifetime):
+                            if self.clock() >= startup_deadline:
                                 raise RuntimeError('Bridge startup deadline during preparation')
                             continue
                     elif playback.format != prepared:
@@ -271,7 +321,7 @@ class BridgeSupervisor:
                         raise RuntimeError('PCM endpoint closed')
                 else:
                     playback, capture = pair
-                    if playback.owner != self._child.pid:
+                    if playback.owner != child.pid:
                         raise RuntimeError('Playback is not owned by bridge')
                     if playback.format != capture.format:
                         raise RuntimeError('PCM endpoint format mismatch')
@@ -291,6 +341,7 @@ class BridgeSupervisor:
                                 raise RuntimeError('PCM pointer stalled or observation late')
                             if new > old:
                                 progress[i] = now
+                        self._progress = tuple(progress)
                         if all(t > start_progress for t in progress):
                             self.ready = True
                             self.negotiated = playback.format
@@ -302,14 +353,15 @@ class BridgeSupervisor:
             error = exc
             reason = str(exc)
         finally:
-            self.ready, self.negotiated = False, None
+            self.ready, self.negotiated, self._progress = False, None, None
             failures = []
             try:
+                # Emergency mute first; the callback may itself call stop_child().
                 self.fail_closed(reason)
             except BaseException as exc:
                 failures.append(('fail-closed callback', exc))
             try:
-                self._stop()
+                self.stop_child()
             except BaseException as exc:
                 failures.append(('owned bridge stop', exc))
             if failures:
