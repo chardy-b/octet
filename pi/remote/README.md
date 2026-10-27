@@ -659,6 +659,62 @@ changes audio. `--rollback` restores the backed-up files and likewise leaves uni
 state alone; it refuses while octet-bluealsa is running. Attended use, after a
 deliberate octet-remote restart:
 
+**Pi desktop Bluetooth ownership gate (not automated by the installer):** On
+the first attended connection, a WirePlumber log recorded failed links during
+BlueALSA transport churn; a live ALSA snapshot found PipeWire owning Loopback
+playback sub0 (reserved for MPD). A separate CamillaDSP log then recorded ALSA
+capture errno 77; `/api/status` returned 503 while the DSP was Inactive. These
+observations correlate; the precise kernel-level cause is **not proven**. The
+trial stopped *before* starting the Bluetooth bridge or unmuting. Excluding
+WirePlumber's BlueZ audio monitor is a mitigation **trial**, not a root-cause fix.
+
+The reviewed WirePlumber 0.5 fragment `pi/install/wireplumber-bluealsa.conf`
+disables only `monitor.bluez` in the `main` profile; it leaves PipeWire itself,
+its ALSA monitor, BlueZ MIDI, and the desktop video path unchanged. Check
+`wireplumber --version` first. Inspect `/etc/wireplumber/wireplumber.conf.d`,
+`/home/octet/.config/wireplumber/wireplumber.conf.d`, and the package's
+`/usr/share/wireplumber/wireplumber.conf.d` for later/higher-precedence
+overrides. Record the *running* `octet` user's WirePlumber PID and active state
+via `runuser -u octet -- env XDG_RUNTIME_DIR=/run/user/1000
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show
+wireplumber.service -p ActiveState -p MainPID` (this is a user service, **not**
+`systemctl restart wireplumber` as root). Require the destination
+`/etc/wireplumber/wireplumber.conf.d/90-octet-bluealsa.conf` to be **absent**;
+refuse rather than overwrite or back up any pre-existing file, even a symlink.
+Record that absence, create only missing root-owned 0755 directories, and
+publish the exact reviewed fragment root-owned 0644 using a complete temporary
+file and no-replace publication. Verify its hash and metadata by reading back.
+
+During the approved muted maintenance window, restart **only** the `octet` user
+unit with `runuser -u octet -- env XDG_RUNTIME_DIR=/run/user/1000
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user restart
+wireplumber.service`. Require a new active PID and preserve the separate
+`pipewire.service` and `filter-chain.service`. In `wpctl status`, the existing
+`alsa_output.platform-snd_aloop.0.analog-stereo` and
+`alsa_input.platform-snd_aloop.0.analog-stereo` nodes must remain present.
+Check `/api/status` for the same Tidal source, queue, Running approved DSP
+baseline, `muted=true` and volume at or below −18 dB. With the phone connected
+in a **separate bounded trial**, require no PipeWire BlueZ audio node or
+WirePlumber Bluetooth link attempt (`wpctl status`, `pw-cli list-objects Node`,
+user journal), and no PipeWire-owned `/dev/snd/pcmC10D0p` (Loopback sub0;
+`fuser -v` plus exact `/proc/asound/Loopback/pcm0p/sub0/status`). Abort if any
+later user fragment overrides the exclusion or any requirement fails. The
+absence of a BlueZ node *before* connecting the phone proves nothing.
+
+**Rollback on any failed check:** keep Bluetooth policy disabled, phone
+disconnected/untrusted, and `octet-bluealsa` inactive; never unmute. Verify the
+destination is the exact installed, root-owned fragment (no symlink, expected
+hash), remove **only** that file, and verify its absence. Restart the same
+`octet` user `wireplumber.service` with the command above; require a new active
+PID, unchanged PipeWire/filter-chain services and surviving ALSA nodes. Read
+back the muted Running DSP baseline and MPD queue. If either restart or DSP
+recovery fails, leave Bluetooth disabled and output muted, report the failure,
+and stop rather than retrying blindly. Since preflight refuses any existing
+destination, there is no pre-existing fragment to restore. After rollback,
+verify the fragment is absent and the remaining config paths are unchanged;
+re-enabling the original Bluetooth monitor does not require a phone connection.
+This gate is not proof of safe playback; step 1 remains attended and manual.
+
 The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
 mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
 `0600` file is refused everywhere, because octet-remote (`upmpdcli`) could not read
