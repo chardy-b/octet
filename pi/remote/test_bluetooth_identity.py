@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from bluetooth_identity import (local_policy, observe_identity, pairing_policy, service_policy,
-                                verify_identity)
+from bluetooth_identity import (admission_policy, local_policy, observe_identity, pairing_policy,
+                                service_policy, verify_identity)
 
 MAC = '12:34:56:78:9A:BC'
 
@@ -260,3 +260,100 @@ class PolicyTests(unittest.TestCase):
         self.path.symlink_to(target)
         with self.assertRaisesRegex(RuntimeError, 'canonical'):
             local_policy(self.path)
+
+
+class AdmissionPolicyTests(PolicyTests):
+    """Typed admission_policy; inherits the protected-file contract tests above."""
+
+    def write(self, **policy):
+        self.path.write_text(json.dumps(policy))
+
+    def test_v1_is_exactly_restricted_and_never_open(self):
+        for enabled, addresses in ((False, []), (True, [MAC]), (True, [])):
+            with self.subTest(enabled=enabled, addresses=addresses):
+                self.write(version=1, enabled=enabled, addresses=addresses)
+                policy = admission_policy(self.path)
+                self.assertEqual((policy.version, policy.mode, policy.enabled, policy.addresses),
+                                 (1, 'restricted', enabled, tuple(addresses)))
+
+    def test_v2_names_restricted_or_open_explicitly(self):
+        for mode in ('restricted', 'open'):
+            for enabled in (False, True):
+                with self.subTest(mode=mode, enabled=enabled):
+                    self.write(version=2, mode=mode, enabled=enabled, addresses=[MAC])
+                    policy = admission_policy(self.path)
+                    self.assertEqual((policy.version, policy.mode, policy.enabled, policy.addresses),
+                                     (2, mode, enabled, (MAC,)))
+
+    def test_v2_open_never_encodes_or_accepts_a_wildcard(self):
+        self.write(version=2, mode='open', enabled=True, addresses=[])
+        self.assertEqual(admission_policy(self.path).addresses, ())
+        for address in ('00:00:00:00:00:00', 'FF:FF:FF:FF:FF:FF', '*', 'any', MAC.lower()):
+            self.write(version=2, mode='open', enabled=True, addresses=[address])
+            with self.assertRaises((RuntimeError, ValueError)):
+                admission_policy(self.path)
+
+    def test_implicit_unknown_or_malformed_mode_fails_closed(self):
+        cases = [dict(version=2, enabled=True, addresses=[MAC]),  # no implicit open/restricted
+                 dict(version=2, mode='Open', enabled=True, addresses=[MAC]),
+                 dict(version=2, mode='OPEN', enabled=True, addresses=[MAC]),
+                 dict(version=2, mode='', enabled=True, addresses=[MAC]),
+                 dict(version=2, mode='any', enabled=True, addresses=[MAC]),
+                 dict(version=2, mode=True, enabled=True, addresses=[MAC]),
+                 dict(version=2, mode=None, enabled=True, addresses=[MAC]),
+                 dict(version=2, mode=['open'], enabled=True, addresses=[MAC]),
+                 dict(version=1, mode='open', enabled=True, addresses=[MAC]),
+                 dict(version=1, mode='restricted', enabled=True, addresses=[MAC]),
+                 dict(version=3, mode='open', enabled=True, addresses=[MAC]),
+                 dict(version=2.0, mode='open', enabled=True, addresses=[MAC]),
+                 dict(version=True, mode='open', enabled=True, addresses=[MAC]),
+                 dict(version=2, mode='open', enabled=1, addresses=[MAC]),
+                 dict(version=2, mode='open', enabled='true', addresses=[MAC]),
+                 dict(version=2, mode='open', enabled=True),
+                 dict(version=2, mode='open', addresses=[MAC]),
+                 dict(version=2, mode='open', enabled=True, addresses=[MAC], extra=1),
+                 dict(version=2, mode='open', enabled=True, addresses=None),
+                 dict(version=2, mode='open', enabled=True, addresses=[MAC, MAC]),
+                 dict(version=2, mode='open', enabled=True, addresses=[MAC] * 17),
+                 dict(version=2, mode='restricted', enabled=True, addresses=[MAC.lower()])]
+        for policy in cases:
+            with self.subTest(policy=policy):
+                self.write(**policy)
+                with self.assertRaises((RuntimeError, ValueError)):
+                    admission_policy(self.path)
+        for raw in ('{"version":2,"mode":"open","mode":"restricted","enabled":true,"addresses":[]}',
+                    ' ' * 4097, 'null', '[]', ''):
+            self.path.write_text(raw)
+            with self.assertRaises((RuntimeError, ValueError)):
+                admission_policy(self.path)
+
+    def test_admission_policy_keeps_file_contract_and_has_no_privilege_requirement(self):
+        self.write(version=2, mode='open', enabled=True, addresses=[])
+        with patch('bluetooth_identity.os.geteuid', return_value=1000):
+            self.assertEqual(admission_policy(self.path).mode, 'open')
+        self.path.chmod(0o600)
+        with self.assertRaisesRegex(RuntimeError, '0640'):
+            admission_policy(self.path)
+        self.path.chmod(0o640)
+        self.file_uid = 1000
+        with self.assertRaisesRegex(RuntimeError, 'root-owned'):
+            admission_policy(self.path)
+
+    def test_manual_readers_treat_v2_restricted_like_v1(self):
+        self.write(version=2, mode='restricted', enabled=True, addresses=[MAC])
+        self.assertEqual(local_policy(self.path), (MAC,))
+        self.assertEqual(service_policy(self.path), (MAC,))
+        self.assertEqual(pairing_policy(self.path), (True, (MAC,)))
+        self.write(version=2, mode='restricted', enabled=False, addresses=[])
+        self.assertEqual(pairing_policy(self.path), (False, ()))
+        for reader in (local_policy, service_policy):
+            with self.assertRaises(RuntimeError):
+                reader(self.path)
+
+    def test_manual_flow_never_authorizes_or_opens_pairing_for_open(self):
+        for enabled, addresses in ((True, [MAC]), (True, []), (False, [])):
+            with self.subTest(enabled=enabled, addresses=addresses):
+                self.write(version=2, mode='open', enabled=enabled, addresses=addresses)
+                for reader in (local_policy, service_policy, pairing_policy):
+                    with self.assertRaisesRegex(RuntimeError, 'open'):
+                        reader(self.path)

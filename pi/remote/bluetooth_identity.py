@@ -11,6 +11,13 @@ operator pair and trust a phone that octet-remote can then never start.
 pairing_policy() accepts the same file with enabled false and/or an empty
 allowlist; it only gates the bounded pairing window and grants no playback.
 No pairing, trust mutation or connect happens here.
+
+admission_policy() is the typed read of the same file. version 1 (enabled,
+addresses) is exactly and permanently 'restricted'. version 2 names the mode
+('restricted' or 'open') explicitly; open is never implied, never a wildcard MAC,
+and is not honored by the manual local/service/pairing readers, which refuse it
+until a reviewed automatic observer exists. That observer must still verify a
+paired+trusted+connected Device1 identity.
 """
 import grp
 import json
@@ -18,11 +25,20 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+from typing import NamedTuple
 
 from bluetooth_contract import bridge_arguments
 
 POLICY = Path('/etc/octet/bluetooth.json')
 GROUP = 'octet-bluetooth'
+MODES = ('restricted', 'open')
+
+
+class AdmissionPolicy(NamedTuple):
+    version: int
+    mode: str
+    enabled: bool
+    addresses: tuple
 
 
 def _service_mode(info):
@@ -41,15 +57,20 @@ def _require_admin():
         raise RuntimeError('Bluetooth requires an explicit local administrator')
 
 
+def admission_policy(path=POLICY):
+    """Typed, fail-closed read of the protected policy file. Grants nothing by itself."""
+    return _load(path)
+
+
 def local_policy(path=POLICY):
     """Root read of the enabled allowlist under the service's exact file contract."""
     _require_admin()
-    return _authorized(*_load(path))
+    return _authorized(*_manual(path))
 
 
 def service_policy(path=POLICY):
     """Unprivileged service read. File ownership, not reader euid, is the authority."""
-    return _authorized(*_load(path))
+    return _authorized(*_manual(path))
 
 
 def pairing_policy(path=POLICY):
@@ -60,7 +81,15 @@ def pairing_policy(path=POLICY):
     and start still require local_policy()/service_policy().
     """
     _require_admin()
-    return _load(path)
+    return _manual(path)
+
+
+def _manual(path):
+    """(enabled, addresses) for the manual flow; open is not authorized here."""
+    policy = _load(path)
+    if policy.mode != 'restricted':
+        raise RuntimeError('Bluetooth open admission is not authorized by the manual policy flow')
+    return policy.enabled, policy.addresses
 
 
 def _authorized(enabled, addresses):
@@ -102,9 +131,18 @@ def _load(path):
             result[key] = value
         return result
     policy = json.loads(raw, object_pairs_hook=unique)
-    if (not isinstance(policy, dict) or set(policy) != {'version', 'enabled', 'addresses'}
-            or type(policy['version']) is not int or policy['version'] != 1
-            or type(policy['enabled']) is not bool):
+    if not isinstance(policy, dict) or type(policy.get('version')) is not int:
+        raise RuntimeError('Bluetooth local policy is disabled or invalid')
+    version = policy['version']
+    if version == 1:
+        keys, mode = {'version', 'enabled', 'addresses'}, 'restricted'
+    elif version == 2:
+        keys, mode = {'version', 'mode', 'enabled', 'addresses'}, policy.get('mode')
+        if type(mode) is not str or mode not in MODES:
+            raise RuntimeError('Bluetooth policy mode must be restricted or open')
+    else:
+        raise RuntimeError('Bluetooth local policy is disabled or invalid')
+    if set(policy) != keys or type(policy['enabled']) is not bool:
         raise RuntimeError('Bluetooth local policy is disabled or invalid')
     addresses = policy['addresses']
     if not isinstance(addresses, list) or len(addresses) > 16:
@@ -114,7 +152,7 @@ def _load(path):
             raise RuntimeError('Bluetooth allowlist must contain canonical MAC addresses')
     if len(set(addresses)) != len(addresses):
         raise RuntimeError('Duplicate Bluetooth address')
-    return policy['enabled'], tuple(addresses)
+    return AdmissionPolicy(version, mode, policy['enabled'], tuple(addresses))
 
 
 def verify_identity(address, allowlist):

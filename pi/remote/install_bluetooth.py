@@ -39,6 +39,8 @@ BACKUP = Path('/var/backups/octet-bluetooth')
 REMOTE = Path('/opt/octet-remote')
 GROUP = 'octet-bluetooth'
 ADMIN_UID = 0
+# Legacy v1 shape, which bluetooth_identity always reads as disabled RESTRICTED. A fresh
+# install never writes an open (v2) policy and never replaces an existing one.
 DEFAULT = json.dumps(dict(version=1, enabled=False, addresses=[])).encode() + b'\n'
 REQUIRED = ('server.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py',
             'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py',
@@ -150,7 +152,7 @@ def plan():
             f'record enable/active state of {", ".join(UNITS)} (read only)',
             f'back up {POLICY}, {DROPIN} and {UNIT} (or their absence) in {BACKUP}',
             f'create system group {GROUP} if missing',
-            f'create {POLICY} as disabled (root:{GROUP} 0640) only if absent',
+            f'create {POLICY} as disabled v1 restricted (root:{GROUP} 0640) only if absent',
             f'write {DROPIN}',
             f'write {UNIT} (A2DP sink only; no [Install], cannot be enabled)',
             'systemctl daemon-reload, then re-read unit state and report any change',
