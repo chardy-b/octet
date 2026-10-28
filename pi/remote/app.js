@@ -46,10 +46,10 @@ function renderSources(next){
   const chosen=sources.find(source=>source.id===select.value);
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
   if(!sourceBusy){
-    $('source-status').textContent=!next.source_switching_available?'Select the Output DSP controls preset to change sources.':!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
-    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':'AirPlay selected · waiting for a cast.');
+    $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Source selection is unavailable right now.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
+    if(next.source==='airplay'&&next.source_switching_available)$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':'AirPlay selected · waiting for a cast.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
-    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error));
+    $('source-status').classList.toggle('error',!next.source_switching_available||!next.ready||Boolean(next.airplay?.error));
   }
 }
 $('source-choice').onchange=()=>{$('source-choice').dataset.dirty='true';renderSources(state);};

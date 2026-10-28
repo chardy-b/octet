@@ -200,7 +200,7 @@ def preflight():
     version = run('shairport-sync', '-V')
     check_capabilities(version.stdout + version.stderr)
     check_loopback()
-    for name in ('server.py', 'audio_sources.py', 'airplay_control.py', 'airplay_baseline.py'):
+    for name in ('server.py', 'audio_sources.py', 'airplay_control.py', 'airplay_baseline.py', 'manual_source_route.py'):
         if not (Path('/opt/octet-remote') / name).exists():
             raise RuntimeError('Upgrade Octet remote files before enabling AirPlay')
     # Validate against the real binary and existing protected preset before enabling.

@@ -308,6 +308,18 @@ class DeployedPackagingTests(unittest.TestCase):
         self.assertEqual(result.stdout.split(), [str(target / 'install_bluetooth.py'),
                                                  str(target / 'install_airplay.py')])
 
+    def test_deployed_directory_imports_the_server_and_its_manual_source_route(self):
+        # server.py imports manual_source_route.py; a deployment without it cannot start.
+        for name in ('manual_source_route',):
+            self.assertIn(name + '.py', install.REMOTE_FILES)
+        target = self.deploy()
+        code = ('import sys; sys.path.insert(0, sys.argv[1]); import server; '
+                'print(server.MANUAL_ROUTE.__class__.__module__); print(server.__file__)')
+        result = subprocess.run([sys.executable, '-I', '-c', code, str(target)],
+                                cwd=target, capture_output=True, text=True, env={})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ['manual_source_route', str(target / 'server.py')])
+
     def test_missing_helper_fails_closed_with_clear_message(self):
         target = self.deploy(skip=('install_airplay.py',))
         result = self.import_from(target)

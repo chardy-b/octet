@@ -517,6 +517,28 @@ class BaselineAirPlayTests(unittest.TestCase):
             self.control.baseline.original()
         self.unchanged()
 
+    def test_real_loaded_null_filter_description_allows_cast_prepare_and_restore(self):
+        # On the Pi, GetConfigJson has description=null for filters whose
+        # SHA-approved YAML omits the inert label. It must not change EQ.
+        label = 'baseline_only_1'
+        self.assertNotIn('description', self.config['filters'][label])
+        self.loaded['filters'][label]['description'] = None
+        original_call = self.dsp.call.side_effect
+        def normalized_call(name, *args):
+            value = original_call(name, *args)
+            if name == 'Reload':
+                self.loaded['filters'][label]['description'] = None
+            return value
+        with patch.object(self.dsp, 'call', side_effect=normalized_call):
+            self.control.event('start', now=0)
+            self.assertTrue(self.control.baseline.exists())
+            self.assertNotIn(('SetMute', False), self.calls)
+            self.control.end()
+            self.assertEqual(self.path, str(self.original))
+            self.assertFalse(self.control.baseline.exists())
+            self.assertEqual(self.original.read_bytes(), self.original_bytes)
+            self.assertNotIn(('SetMute', False), self.calls)
+
     def test_129_filters_exact_pipeline_playback_and_stop_restore(self):
         self.control.event('start', now=0)
         self.assertEqual(len(self.loaded['filters']), 129)

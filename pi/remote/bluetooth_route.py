@@ -18,6 +18,7 @@ import yaml
 from airplay_baseline import (BaselineRoute, MAX_CONFIG, MAX_JOURNAL, digest,
                               persist as replace_file, read_bounded, sync_directory)
 from bluetooth_contract import routed
+from audio_sources import loaded_config_matches_approved
 
 
 def persist(path, data, mode):
@@ -34,6 +35,8 @@ def persist(path, data, mode):
 
 
 class BluetoothRoute(BaselineRoute):
+    foreign_journals = ('airplay-recovery.json', 'manual-source-recovery.json')
+
     @property
     def journal(self):
         return self.root / 'bluetooth-recovery.json'
@@ -142,7 +145,8 @@ class BluetoothRoute(BaselineRoute):
                 raise RuntimeError('Bluetooth requires an approved baseline path')
             data = read_bounded(original, MAX_CONFIG)
             approval = self.server.TUNING.active(path)
-            if not approval or approval['sha256'] != digest(data) or yaml.safe_load(data) != loaded:
+            if (not approval or approval['sha256'] != digest(data)
+                    or not loaded_config_matches_approved(yaml.safe_load(data), loaded)):
                 raise RuntimeError('Bluetooth requires exact approved active baseline')
             # Validate the Tidal topology without claiming observed PCM or --check.
             routed(loaded, rate=48000, sample_format='S32_LE', channels=2)
@@ -210,7 +214,7 @@ class BluetoothRoute(BaselineRoute):
                         if dsp.call('GetMute') is not True:
                             raise RuntimeError('Bluetooth physical mute lost')
                         if (dsp.call('GetConfigFilePath') == str(self.candidate)
-                                and json.loads(dsp.call('GetConfigJson')) == expected
+                                and loaded_config_matches_approved(expected, json.loads(dsp.call('GetConfigJson')))
                                 and dsp.call('GetState') == 'Running'):
                             return expected
                         time.sleep(.1)
@@ -227,7 +231,7 @@ class BluetoothRoute(BaselineRoute):
         path, config = self.original()
         with self.server.DSP() as dsp:
             if (dsp.call('GetConfigFilePath') != str(path)
-                    or json.loads(dsp.call('GetConfigJson')) != config
+                    or not loaded_config_matches_approved(config, json.loads(dsp.call('GetConfigJson')))
                     or dsp.call('GetState') != 'Running'
                     or dsp.call('GetMute') is not True):
                 raise RuntimeError('Bluetooth guarded baseline drifted')
@@ -235,6 +239,7 @@ class BluetoothRoute(BaselineRoute):
     def recover(self, *, cleanup=True):
         # Mute is attempted even if the lock/approval is now unavailable.
         self.mute()
+        self.refuse_foreign()
         self.acquire()
         self.ownership()
         path, config = self.original()
@@ -251,7 +256,7 @@ class BluetoothRoute(BaselineRoute):
                 self.ownership()
                 self.original()
                 if (dsp.call('GetConfigFilePath') == str(path)
-                        and json.loads(dsp.call('GetConfigJson')) == config
+                        and loaded_config_matches_approved(config, json.loads(dsp.call('GetConfigJson')))
                         and dsp.call('GetState') == 'Running'
                         and dsp.call('GetMute') is True):
                     # Retain immutable snapshot; journal is the last recovery marker.

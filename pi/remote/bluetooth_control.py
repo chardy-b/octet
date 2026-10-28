@@ -187,6 +187,9 @@ class BluetoothControl:
 
     def _idle(self):
         """Non-mutating ownership precheck so a refused start never mutes others."""
+        manual = getattr(self.server, 'MANUAL_ROUTE', None)
+        if manual is not None and manual.exists():
+            raise RuntimeError('Manual source route owns audio; select Tidal first; Bluetooth start refused')
         airplay = self.server.AIRPLAY_CONTROL
         if (airplay.active or airplay.pending is not None or airplay.baseline.exists()
                 or airplay.restore_pending is not None or airplay.needs_mute

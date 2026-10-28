@@ -305,5 +305,357 @@ class AudioSources(unittest.TestCase):
         self.assertEqual(frame['peak'], [-70, -70])
 
 
+def baseline_config():
+    """Representative synthetic Auto Tune baseline: 129 filters, distinctive DAC, output mute."""
+    result = config()
+    for i in range(129 - len(result['filters'])):
+        name = f'baseline_only_{i}'
+        result['filters'][name] = dict(type='Gain', parameters=dict(gain=-i / 100))
+        result['pipeline'].append(dict(type='Filter', channels=[i % 8], names=[name]))
+    result['filters']['output_2_polarity']['parameters']['mute'] = True
+    result['devices']['playback']['device'] = 'hw:DistinctiveDAC8x'
+    return result
+
+
+class OutputEquivalence(unittest.TestCase):
+    """The speaker side of an approved profile may never differ from its source route."""
+
+    def test_real_camilladsp_null_filter_description_normalization_is_inert_only(self):
+        # Read-only Pi observation: five live filters without a description in the
+        # approved YAML have `description: null` in GetConfigJson. No other field differs.
+        original = baseline_config()
+        name = 'baseline_only_1'
+        self.assertNotIn('description', original['filters'][name])
+        loaded = copy.deepcopy(original)
+        loaded['filters'][name]['description'] = None
+        self.assertTrue(audio_sources.loaded_config_matches_approved(original, loaded))
+        routed = audio_sources.source_config(original, usb())
+        routed['filters'][name]['description'] = None
+        audio_sources.verify_output_equivalence(original, routed, usb())
+        for changed in ('non-null', 0, False):
+            with self.subTest(changed=changed):
+                altered = copy.deepcopy(loaded)
+                altered['filters'][name]['description'] = changed
+                self.assertFalse(audio_sources.loaded_config_matches_approved(original, altered))
+        altered = copy.deepcopy(loaded)
+        altered['filters'][name]['parameters']['gain'] = 12
+        self.assertFalse(audio_sources.loaded_config_matches_approved(original, altered))
+        with self.assertRaisesRegex(RuntimeError, 'speaker output'):
+            audio_sources.verify_output_equivalence(original, altered)
+
+    def test_baseline_round_trip_proves_output_subtree_for_every_source(self):
+        original = baseline_config()
+        self.assertEqual(len(original['filters']), 129)
+        for source in (usb(), usb((0, 0), 'mono-1'), usb((1, 1), 'mono-2'),
+                       audio_sources.AIRPLAY, audio_sources.TIDAL):
+            with self.subTest(source=source['id']):
+                routed = audio_sources.source_config(original, source)
+                audio_sources.verify_output_equivalence(original, routed, source)
+                audio_sources.verify_output_equivalence(original, routed, None)
+                self.assertEqual(routed['pipeline'][1:] if source['id'] != 'tidal' else routed['pipeline'],
+                                 original['pipeline'])
+                self.assertEqual(audio_sources.source_config(routed, audio_sources.TIDAL), original)
+
+    def test_repeated_switches_from_the_original_never_accumulate_input_stages(self):
+        original = baseline_config()
+        routed = original
+        for source in (usb(), usb((1, 1), 'mono-2'), audio_sources.AIRPLAY, usb((0, 0), 'mono-1')):
+            routed = audio_sources.source_config(routed, source)
+            stages = [s for s in routed['pipeline'] if s.get('name') == audio_sources.SOURCE_MIXER]
+            self.assertEqual(len(stages), 1)
+            audio_sources.verify_output_equivalence(original, routed, source)
+
+    def test_any_speaker_side_drift_is_rejected(self):
+        original = baseline_config()
+        source = usb((0, 0), 'mono-1')
+        def gain(c): c['filters']['baseline_only_3']['parameters']['gain'] = 3
+        def unmute(c): c['filters']['output_2_polarity']['parameters']['mute'] = False
+        def dac(c): c['devices']['playback']['device'] = 'hw:Other'
+        def drop(c): c['pipeline'].pop()
+        def reorder(c): c['pipeline'][1], c['pipeline'][2] = c['pipeline'][2], c['pipeline'][1]
+        def extra_filter(c): c['filters']['extra'] = dict(type='Gain', parameters=dict(gain=0))
+        def extra_mixer(c): c['mixers']['sneaky'] = copy.deepcopy(c['mixers']['exciter_pairs'])
+        def mixer_map(c): c['mixers']['exciter_pairs']['mapping'][0]['sources'][0]['channel'] = 1
+        def limit(c): c['devices']['volume_limit'] = 10.0
+        def chunk(c): c['devices']['chunksize'] = 4096
+        def title(c): c['title'] = 'other'
+        def top_level(c): c['extra'] = True
+        def pipeline_extra(c): c['pipeline'].append(dict(type='Mixer', name='exciter_pairs'))
+        for mutate in (gain, unmute, dac, drop, reorder, extra_filter, extra_mixer, mixer_map, limit,
+                       chunk, title, top_level, pipeline_extra):
+            with self.subTest(mutate=mutate.__name__):
+                candidate = audio_sources.source_config(original, source)
+                mutate(candidate)
+                for checked in (source, None):
+                    with self.assertRaises(RuntimeError):
+                        audio_sources.verify_output_equivalence(original, candidate, checked)
+
+    def test_per_output_polarity_protection_and_routing_drift_is_rejected(self):
+        original = baseline_config()
+        def stage_for(c, name):
+            return next(st for st in c['pipeline'] if name in st.get('names', []) and st['type'] == 'Filter')
+        def invert(c): c['filters']['output_3_polarity']['parameters']['inverted'] = True
+        def mute_live_output(c): c['filters']['output_1_polarity']['parameters']['mute'] = True  # unmuted in the fixture
+        def tweeter_hp(c): c['filters']['tweeter_hp']['parameters']['freq'] = 200
+        def sub_lp(c): c['filters']['sub_lp']['parameters']['freq'] = 5000
+        def tweeter_gain(c): c['filters']['tweeter_attenuation']['parameters']['gain'] = 0
+        def filter_type(c): c['filters']['tweeter_hp']['type'] = 'Gain'
+        def reroute(c): stage_for(c, 'tweeter_hp')['channels'] = [0, 1]
+        def bypass(c): stage_for(c, 'exciter_ex30_1')['bypassed'] = True
+        def stage_names(c): stage_for(c, 'tweeter_hp')['names'] = ['tweeter_lp']
+        def playback_channels(c): c['devices']['playback']['channels'] = 2
+        def playback_format(c): c['devices']['playback']['format'] = 'S16_LE'
+        def rate(c): c['devices']['samplerate'] = 44100
+        def mixer_out(c): c['mixers']['exciter_pairs']['channels']['out'] = 4
+        for source in (usb((0, 0), 'mono-1'), audio_sources.AIRPLAY):
+            for mutate in (invert, mute_live_output, tweeter_hp, sub_lp, tweeter_gain, filter_type, reroute,
+                           bypass, stage_names, playback_channels, playback_format, rate, mixer_out):
+                with self.subTest(source=source['id'], mutate=mutate.__name__):
+                    candidate = audio_sources.source_config(original, source)
+                    mutate(candidate)
+                    for checked in (source, None):
+                        with self.assertRaises(RuntimeError):
+                            audio_sources.verify_output_equivalence(original, candidate, checked)
+
+    def test_source_stage_must_be_single_first_and_truthful(self):
+        original = baseline_config()
+        source = usb((0, 0), 'mono-1')
+        def duplicate(c): c['pipeline'].insert(1, dict(type='Mixer', name=audio_sources.SOURCE_MIXER))
+        def not_first(c): c['pipeline'].append(c['pipeline'].pop(0))
+        def wrong_map(c): c['mixers'][audio_sources.SOURCE_MIXER]['mapping'][0]['sources'][0]['channel'] = 5
+        def wrong_capture(c): c['devices']['capture']['device'] = 'hw:CARD=Other,DEV=0'
+        def false_restore(c):
+            metadata = audio_sources.source_metadata(c)
+            metadata['tidal_capture']['device'] = 'hw:CARD=Other,DEV=0'
+            c['mixers'][audio_sources.SOURCE_MIXER]['description'] = (
+                audio_sources.SOURCE_DESCRIPTION + json.dumps(metadata, separators=(',', ':')))
+        for mutate in (duplicate, not_first, wrong_map, wrong_capture, false_restore):
+            with self.subTest(mutate=mutate.__name__):
+                candidate = audio_sources.source_config(original, source)
+                mutate(candidate)
+                # Without the requested source a remapped input is merely a different valid input.
+                for checked in ((source,) if mutate is wrong_map else (source, None)):
+                    with self.assertRaises(RuntimeError):
+                        audio_sources.verify_output_equivalence(original, candidate, checked)
+
+    def test_loaded_defaults_are_tolerated_only_on_input_side(self):
+        original = baseline_config()
+        source = usb((0, 0), 'mono-1')
+        loaded = audio_sources.source_config(original, source)
+        loaded['devices']['capture']['labels'] = None
+        loaded['mixers'][audio_sources.SOURCE_MIXER]['mapping'][0]['sources'][0]['inverted'] = False
+        audio_sources.verify_output_equivalence(original, loaded, source)
+        loaded['filters']['baseline_only_1']['parameters']['extra_default'] = None
+        with self.assertRaises(RuntimeError):
+            audio_sources.verify_output_equivalence(original, loaded, source)
+
+
+class StrictSourceMetadata(unittest.TestCase):
+    def routed(self):
+        return audio_sources.source_config(baseline_config(), usb((0, 0), 'mono-1'))
+
+    def rewrite(self, config, text):
+        config['mixers'][audio_sources.SOURCE_MIXER]['description'] = audio_sources.SOURCE_DESCRIPTION + text
+
+    def test_malformed_or_ambiguous_metadata_is_rejected_before_any_mutation(self):
+        good = audio_sources.source_metadata(self.routed())
+        def dump(**changes):
+            value = copy.deepcopy(good)
+            for key, item in changes.items():
+                if item is KeyError:
+                    del value[key]
+                else:
+                    value[key] = item
+            return json.dumps(value, separators=(',', ':'))
+        capture = good['tidal_capture']
+        clock = good['tidal_clock']
+        bad = {
+            'not json': '{',
+            'not an object': '[1]',
+            'duplicate id': '{"id":"airplay",' + json.dumps(good, separators=(',', ':'))[1:],
+            'unknown id': dump(id='../../etc'),
+            'unexpected tidal id': dump(id='tidal'),
+            'bad label': dump(label=7),
+            'missing capture': dump(tidal_capture=KeyError),
+            'missing clock': dump(tidal_clock=KeyError),
+            'extra key': dump(extra=1),
+            'capture not tidal loopback': dump(tidal_capture=dict(capture, device='hw:CARD=X,DEV=0')),
+            'capture not stereo': dump(tidal_capture=dict(capture, channels=10)),
+            'clock missing key': dump(tidal_clock={k: v for k, v in clock.items() if k != 'resampler'}),
+            'clock unknown key': dump(tidal_clock=dict(clock, surprise=dict(present=False, value=None))),
+            'clock bad present': dump(tidal_clock=dict(clock, resampler=dict(present='yes', value=None))),
+            'clock extra field': dump(tidal_clock=dict(clock, resampler=dict(present=False, value=None, x=1))),
+        }
+        for label, text in bad.items():
+            with self.subTest(label=label):
+                config = self.routed()
+                self.rewrite(config, text)
+                with self.assertRaises(RuntimeError):
+                    audio_sources.source_metadata(config)
+                with self.assertRaises(RuntimeError):
+                    audio_sources.source_config(config, audio_sources.TIDAL)
+
+    def test_ambiguous_topology_is_rejected(self):
+        def two_stages(c): c['pipeline'].insert(1, dict(type='Mixer', name=audio_sources.SOURCE_MIXER))
+        def no_definition(c): del c['mixers'][audio_sources.SOURCE_MIXER]
+        def stage_gone(c): c['pipeline'].pop(0)
+        def late_stage(c): c['pipeline'].append(c['pipeline'].pop(0))
+        def wrong_shape(c): c['mixers'][audio_sources.SOURCE_MIXER]['channels']['out'] = 8
+        def wrong_gain(c): c['mixers'][audio_sources.SOURCE_MIXER]['mapping'][0]['sources'][0]['gain'] = 20
+        def channel_range(c): c['mixers'][audio_sources.SOURCE_MIXER]['mapping'][0]['sources'][0]['channel'] = 99
+        def prefix(c): c['mixers'][audio_sources.SOURCE_MIXER]['description'] = 'Other: {}'
+        def device(c): c['devices']['capture']['device'] = 'hw:Loopback,1,0'
+        for mutate in (two_stages, no_definition, stage_gone, late_stage, wrong_shape, wrong_gain,
+                       channel_range, prefix, device):
+            with self.subTest(mutate=mutate.__name__):
+                config = self.routed()
+                mutate(config)
+                with self.assertRaises(RuntimeError):
+                    audio_sources.source_metadata(config)
+
+    def test_parsed_defaults_in_the_loaded_mixer_are_tolerated_but_audible_changes_are_not(self):
+        config = self.routed()
+        for row in config['mixers'][audio_sources.SOURCE_MIXER]['mapping']:
+            row['mute'] = None
+            row['sources'][0].update(inverted=False, mute=False, scale=None, gain=0.0)
+        self.assertEqual(audio_sources.source_metadata(config)['id'], 'usb:iD14:mono-1')
+        for change in (dict(mute=True), dict(extra=1)):
+            broken = copy.deepcopy(config)
+            broken['mixers'][audio_sources.SOURCE_MIXER]['mapping'][0].update(change)
+            with self.assertRaises(RuntimeError):
+                audio_sources.source_metadata(broken)
+
+    def test_unmanaged_original_is_not_a_tidal_baseline(self):
+        for mutate in (lambda c: c['devices']['capture'].update(channels=10),
+                       lambda c: c['devices']['capture'].update(device='hw:CARD=Other,DEV=0'),
+                       lambda c: c['devices'].update(samplerate=44100),
+                       lambda c: c['devices']['playback'].update(device='hw:Loopback,0,0'),
+                       lambda c: c['devices']['playback'].update(channels=2)):
+            original = baseline_config()
+            mutate(original)
+            with self.assertRaises(RuntimeError):
+                audio_sources.require_tidal_baseline(original)
+        audio_sources.require_tidal_baseline(baseline_config())
+        with self.assertRaises(RuntimeError):
+            audio_sources.require_tidal_baseline(self.routed())
+
+    def test_source_description_is_validated(self):
+        for label, change in dict(device=dict(device='/dev/null'), channels=dict(channels=0),
+                                  mapping=dict(mapping=[0, 99]), rates=dict(rates=[])).items():
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError):
+                    audio_sources.validate_source(dict(usb(), **change))
+        audio_sources.validate_source(usb())
+        audio_sources.validate_source(audio_sources.AIRPLAY)
+        audio_sources.validate_source(audio_sources.TIDAL)
+
+
+
+# The Pi's ALSA status layout (as in test_bluetooth_bridge.PI_STATUS), parametrised by pointers.
+def pcm_status(hw_ptr=1000, appl_ptr=900, owner=4242, state='RUNNING'):
+    return (f'state: {state}\nowner_pid : {owner}\ntrigger_time: 1793059200.123456789\n'
+            f'tstamp: 1793059201.123456789\ndelay: 1024\navail: 1024\navail_max: 4096\n-----\n'
+            f'hw_ptr: {hw_ptr}\nappl_ptr: {appl_ptr}\n')
+
+
+class USBCaptureReadiness(unittest.TestCase):
+    """Read-only /proc/asound proof that Camilla's selected USB capture runs and advances.
+
+    Fake trees only: no USB interface was attached when this was written, so the real
+    card, thread and comm names are unverified.
+    """
+
+    def build(self, card='iD14', channels=10, rate=48000, fmt='S32_LE', owner=4242, tgid=4200,
+              comm='camilladsp', status=None):
+        root = Path(self._tmp.name)
+        proc, processes = root / 'asound', root / 'proc'
+        sub = proc / 'card3' / 'pcm0c' / 'sub0'
+        sub.mkdir(parents=True)
+        (proc / 'card3' / 'id').write_text(card + '\n')
+        (proc / card).symlink_to(proc / 'card3', target_is_directory=True)
+        (sub / 'hw_params').write_text(f'access: RW_INTERLEAVED\nformat: {fmt}\nchannels: {channels}\n'
+                                        f'rate: {rate} ({rate}/1)\nperiod_size: 1024\n')
+        (sub / 'status').write_text(status or pcm_status(owner=owner))
+        (processes / str(owner)).mkdir(parents=True)
+        (processes / str(owner) / 'status').write_text(f'Name:\tCapture\nTgid:\t{tgid}\nPid:\t{owner}\n')
+        (processes / str(tgid)).mkdir(exist_ok=True)
+        (processes / str(tgid) / 'comm').write_text(comm + '\n')
+        return proc, processes, sub / 'status'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def check(self, tree, source=None, rate=48000, advance=True, **kwargs):
+        proc, processes, status = tree
+        def sleep(_):
+            if advance:
+                status.write_text(pcm_status(hw_ptr=3400, appl_ptr=3300, **kwargs))
+        return audio_sources.usb_capture_ready(source or usb(), rate, proc=proc, processes=processes, sleep=sleep)
+
+    def test_running_advancing_camilla_owned_capture_is_ready(self):
+        self.check(self.build())  # the ALSA owner is a Camilla thread (4242), not its main PID (4200)
+
+    def test_disconnected_or_mismatched_cards_are_refused(self):
+        root = Path(self._tmp.name)
+        with self.assertRaisesRegex(RuntimeError, 'not connected'):
+            audio_sources.usb_capture_ready(usb(), 48000, proc=root / 'asound', processes=root / 'proc')
+        tree = self.build(card='Other')  # a different card answers to the symlink's name
+        (tree[0] / 'iD14').symlink_to(tree[0] / 'card3', target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, 'identity'):
+            self.check(tree)
+        escaped = Path(self._tmp.name) / 'elsewhere'
+        (escaped / 'pcm0c' / 'sub0').mkdir(parents=True)
+        (escaped / 'id').write_text('Esc\n')
+        proc = Path(self._tmp.name) / 'asound2'
+        proc.mkdir()
+        (proc / 'iD14').symlink_to(escaped, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, 'identity'):
+            audio_sources.usb_capture_ready(usb(), 48000, proc=proc, processes=Path(self._tmp.name) / 'proc')
+
+    def test_closed_foreign_owned_and_stalled_capture_are_refused(self):
+        tree = self.build()
+        tree[2].write_text('closed\n')
+        with self.assertRaisesRegex(RuntimeError, 'not open'):
+            self.check(tree)
+        self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+        with self.assertRaisesRegex(RuntimeError, 'not owned by CamillaDSP'):
+            self.check(self.build(comm='arecord'))
+        self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+        with self.assertRaisesRegex(RuntimeError, 'stalled'):
+            self.check(self.build(), advance=False)
+        for label, status in dict(
+                hw_only=pcm_status(hw_ptr=3400, appl_ptr=900), appl_only=pcm_status(hw_ptr=1000, appl_ptr=3300),
+                backwards=pcm_status(hw_ptr=10, appl_ptr=10), xrun=pcm_status(hw_ptr=3400, appl_ptr=3300, state='XRUN'),
+                other_owner=pcm_status(hw_ptr=3400, appl_ptr=3300, owner=999)).items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                proc, processes, path = self.build()
+                with self.assertRaises(RuntimeError):
+                    audio_sources.usb_capture_ready(usb(), 48000, proc=proc, processes=processes,
+                                                    sleep=lambda _: path.write_text(status))
+
+    def test_exact_native_format_channels_and_rate_are_required(self):
+        for label, change in dict(plug=dict(fmt='S16_LE'), channels=dict(channels=2), rate=dict(rate=44100)).items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                with self.assertRaisesRegex(RuntimeError, 'format'):
+                    self.check(self.build(**change))
+        for device in ('plughw:CARD=iD14,DEV=0', 'hw:CARD=iD14,DEV=1', 'hw:3,0', 'default'):
+            with self.subTest(device=device), self.assertRaises(ValueError):
+                audio_sources.usb_capture_ready(dict(usb(), device=device), 48000)
+
+    def test_malformed_status_and_non_usb_sources_are_refused(self):
+        for label, text in dict(duplicate=pcm_status() + 'hw_ptr: 5\n', garbage='state RUNNING', huge='x: ' + 'y' * 9000,
+                                missing_owner='state: RUNNING\nhw_ptr: 1\nappl_ptr: 1\n').items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                with self.assertRaises(RuntimeError):
+                    self.check(self.build(status=text), advance=False)
+        for source in (audio_sources.AIRPLAY, audio_sources.TIDAL):
+            with self.assertRaises(ValueError):
+                audio_sources.usb_capture_ready(source, 48000)
+
+
 if __name__ == '__main__':
     unittest.main()
