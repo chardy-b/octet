@@ -489,6 +489,35 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'lifetime deadline'):
             self.run_bridge()
 
+    def test_explicit_none_lifetime_continues_past_manual_cutoff_until_stopped(self):
+        calls = []
+        self.close.side_effect = lambda *a: calls.append('mute')
+        self.child.terminate.side_effect = lambda *a: calls.append('reap')
+        self.supervisor = self.make(lifetime=None, startup_timeout=1)
+        self.event.is_set = lambda: self.now >= 5
+        self.observe = self.normal
+        self.run_bridge()  # manual lifetime=2 would have lapsed at now=2
+        self.assertGreaterEqual(self.now, 5)
+        self.assertTrue(self.ready_seen[-1])
+        self.assertEqual(calls, ['mute', 'reap'])
+
+    def test_none_lifetime_still_bounds_startup_and_stall(self):
+        self.supervisor = self.make(lifetime=None)
+        self.event.is_set = lambda: False
+        self.observe = lambda: (None, None)
+        with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+            self.run_bridge()
+        self.close.assert_called_once()
+        self.setUp()
+        self.supervisor = self.make(lifetime=None)
+        self.event.is_set = lambda: False
+        self.observe = lambda: self.normal() if self.ticks < 2 else (
+            PCM(48000, 'S16_LE', 2, 123, 20, 20), PCM(48000, 'S16_LE', 2, 456, 20, 20))
+        with self.assertRaises(RuntimeError):
+            self.run_bridge()
+        self.close.assert_called_once()
+        self.child.terminate.assert_called_once()
+
     def test_phone_can_start_late_but_must_progress_before_120_seconds(self):
         self.assertEqual(BridgeSupervisor(self.close).startup_timeout, 120)
         self.supervisor = self.make(startup_timeout=120, lifetime=300,

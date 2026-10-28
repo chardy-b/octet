@@ -184,7 +184,9 @@ class BridgeSupervisor:
         if prepare is not None and not callable(prepare):
             raise ValueError('Prepare callback must be callable')
         self.prepare = prepare
-        for value in (interval, startup_timeout, stall_timeout, lifetime, stop_timeout):
+        # lifetime=None is an explicit opt-in for callers with their own watchdog.
+        for value in (interval, startup_timeout, stall_timeout, stop_timeout,
+                      *(() if lifetime is None else (lifetime,))):
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError('Deadlines must be finite and positive')
         if startup_timeout > 120.0:
@@ -281,7 +283,8 @@ class BridgeSupervisor:
             startup_deadline = start + self.startup_timeout
             if self.deadline is not None:
                 startup_deadline = min(startup_deadline, self.deadline)
-            startup_deadline = min(startup_deadline, start + self.lifetime)
+            if self.lifetime is not None:
+                startup_deadline = min(startup_deadline, start + self.lifetime)
             if start >= startup_deadline:
                 raise RuntimeError('Bridge startup deadline')
             argv = bridge_arguments(address, self.policy())
@@ -322,7 +325,7 @@ class BridgeSupervisor:
                     raise RuntimeError('Bridge process exited')
                 pair = self.observe()
                 now = self.clock()
-                if now - start >= self.lifetime:
+                if self.lifetime is not None and now - start >= self.lifetime:
                     raise RuntimeError('Bridge lifetime deadline')
                 if not self.ready and now >= startup_deadline:
                     raise RuntimeError('Bridge startup deadline')
