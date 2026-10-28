@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 
 from bluetooth_bridge import PCM, BridgeSupervisor
 from bluetooth_control import BluetoothControl, handle_connection
+from bluetooth_transport import StreamGeneration
 import test_bluetooth_control
 
 MAC = '12:34:56:78:9A:BC'
@@ -529,6 +530,203 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(self.state['mute'])
         self.assertFalse(restarted.route.exists())
         self.assertFalse(restarted.owns_audio())
+
+    def generation(self, counter=1):
+        device = '/org/bluez/hci0/dev_12_34_56_78_9A_BC'
+        return StreamGeneration(':1.10', ':1.11', device, device + '/fd6', MAC, 0, counter)
+
+    def auto(self, generation=None, current=lambda generation: True):
+        self.state['mpd'] = 'stop'
+        return self.control.start_auto(generation or self.generation(), current)
+
+    def assert_untouched(self):
+        self.assertEqual(self.calls, [])
+        self.assertNotIn('pause 1', self.mpd_calls)
+        self.spawn.assert_not_called()
+        self.assertIsNone(self.control.session)
+        self.assertFalse(self.control.route.exists())
+
+    def test_auto_refuses_connection_only_and_fabricated_generation(self):
+        self.state['mpd'] = 'stop'
+        forged = self.generation()._replace(transport_path='/org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA/fd6')
+        for bad in (MAC, (MAC,), None, forged, self.generation()._replace(address=MAC.lower()),
+                    self.generation()._replace(counter=True)):
+            with self.subTest(bad=bad), self.assertRaises((TypeError, ValueError)):
+                self.control.start_auto(bad, lambda generation: True)
+        with self.assertRaises(TypeError):
+            self.control.start_auto(self.generation(), None)
+        self.assert_untouched()
+        self.identity.assert_not_called()
+
+    def test_auto_stale_before_start_or_unlisted_refuses_without_mutation(self):
+        with self.assertRaisesRegex(RuntimeError, 'generation'):
+            self.auto(current=lambda generation: False)
+        def broken(generation):
+            raise RuntimeError('cache unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'generation'):
+            self.auto(current=broken)
+        self.allowed = lambda: ('11:22:33:44:55:66',)
+        with self.assertRaises(ValueError):
+            self.auto()
+        self.assert_untouched()
+
+    def test_auto_refuses_mpd_play_or_pause_before_mute_or_pause(self):
+        for mpd in ('play', 'pause'):
+            with self.subTest(mpd=mpd):
+                self.state['mpd'] = mpd
+                with self.assertRaisesRegex(RuntimeError, 'Music player'):
+                    self.control.start_auto(self.generation(), lambda generation: True)
+                self.assertTrue({c[0] for c in self.calls} <= {'GetConfigFilePath', 'GetState'})
+                self.assertEqual(self.mpd_calls[-1:], ['status'])
+                self.assertNotIn('pause 1', self.mpd_calls)
+                self.assertEqual(self.state['mpd'], mpd)
+                self.spawn.assert_not_called()
+                self.assertIsNone(self.control.session)
+
+    def test_auto_refuses_unless_mpd_explicitly_stopped(self):
+        for label, status in (('missing state', [['volume', '50']]), ('empty status', []),
+                              ('unknown value', [['state', 'buffering']])):
+            with self.subTest(status=label):
+                self.mpd_calls.clear()
+                self.calls.clear()
+                def unknown(*commands, status=status):
+                    self.mpd_calls.extend(commands)
+                    return [status] if commands == ('status',) else [[]]
+                self.server.mpd = unknown
+                with self.assertRaisesRegex(RuntimeError, 'Music player'):
+                    self.control.start_auto(self.generation(), lambda generation: True)
+                self.assertTrue({c[0] for c in self.calls} <= {'GetConfigFilePath', 'GetState'})
+                self.assertEqual(self.mpd_calls, ['status'])
+                self.spawn.assert_not_called()
+                self.assertIsNone(self.control.session)
+                self.assertFalse(self.control.route.exists())
+
+    def test_auto_refuses_other_owners_without_touching_them(self):
+        self.state['mpd'] = 'stop'
+        self.server.AIRPLAY_CONTROL.active = True
+        with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
+            self.control.start_auto(self.generation(), lambda generation: True)
+        self.server.AIRPLAY_CONTROL.active = False
+        self.server.TUNING.status = lambda: {'audio_owned': True}
+        with self.assertRaisesRegex(RuntimeError, 'Auto Tune'):
+            self.control.start_auto(self.generation(), lambda generation: True)
+        self.assertNotIn(('SetMute', True), self.calls)
+        self.assertEqual(self.mpd_calls, [])
+        self.spawn.assert_not_called()
+        self.assertFalse(self.control.route.exists())
+
+    def test_auto_refuses_while_manual_session_owns_audio(self):
+        self.control.start(MAC)
+        calls = len(self.calls)
+        with self.assertRaisesRegex(RuntimeError, 'already pending'):
+            self.auto()
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.control.session.mode, 'manual')
+        self.assertTrue(self.control.status()['active'])
+
+    def test_auto_stale_before_unmute_never_unmutes_and_recovers(self):
+        # Valid through every precheck and the clamp; lost right before SetMute(False).
+        def current(generation):
+            return ('SetVolume', -18.0) not in self.calls
+        with self.assertRaisesRegex(RuntimeError, 'generation'):
+            self.auto(current=current)
+        self.assertNotIn(('SetMute', False), self.calls)
+        self.assertTrue(self.state['mute'])
+        self.assertIsNone(self.control.session)
+        self.assertFalse(self.control.route.exists())
+        self.assertEqual(self.state['path'], str(self.path))
+        self.control._thread.join(5)
+        self.child.terminate.assert_called_once()
+
+    def test_auto_matching_generation_uses_guarded_route_and_outlives_manual_cutoff(self):
+        self.control = self.controller(lifetime=0.2)
+        self.auto()
+        self.assertIsNone(self.supervisors[0].lifetime)
+        self.assertEqual(self.control.session.mode, 'auto')
+        self.assertEqual(self.state['volume'], -18.0)
+        self.assertFalse(self.state['mute'])
+        self.assertLess(self.index(('SetMute', True)), self.index(('SetVolume', -18.0)))
+        self.assertLess(self.index(('SetVolume', -18.0)), self.index(('SetMute', False)))
+        self.assertEqual(self.mpd_calls[:3], ['status', 'pause 1', 'status'])
+        time.sleep(0.5)
+        self.control.tick()
+        self.assertTrue(self.control.status()['active'])
+        self.assertEqual(self.state['mpd'], 'stop')
+
+    def test_manual_keeps_lifetime_and_mode(self):
+        self.control = self.controller(lifetime=123.0)
+        self.control.start(MAC)
+        self.assertEqual(self.supervisors[0].lifetime, 123.0)
+        self.assertEqual(self.control.session.mode, 'manual')
+        self.assertEqual(self.control.lifetime, 123.0)
+
+    def test_auto_lost_generation_on_tick_mutes_then_reaps_child(self):
+        alive = [True]
+        self.auto(current=lambda generation: alive[0])
+        order = []
+        self.child.terminate.side_effect = lambda: order.append(('terminate', self.state['mute']))
+        alive[0] = False
+        self.control.tick()
+        self.assertIsNone(self.control.session)
+        self.control._thread.join(5)
+        self.assertEqual(order, [('terminate', True)])
+        self.assertTrue(self.state['mute'])
+        self.assertEqual(self.state['path'], str(self.path))
+        self.assertIn('generation', self.control.status()['error'])
+        self.assertFalse(self.control.route.exists())
+
+    def test_auto_lost_generation_during_preparation_also_fails_on_tick(self):
+        alive = [True]
+        self.frozen = True
+        self.timeout = 3.0
+        self.control = self.controller()
+        self.state['mpd'] = 'stop'
+        errors = []
+        def start():
+            try:
+                self.control.start_auto(self.generation(), lambda generation: alive[0])
+            except RuntimeError as error:
+                errors.append(error)
+        thread = threading.Thread(target=start)
+        thread.start()
+        self.wait_for(lambda: self.control.session is not None
+                      and self.control.session.expected is not None)
+        alive[0] = False
+        self.control.tick()
+        thread.join(5)
+        self.assertIsNone(self.control.session)
+        self.assertNotIn(('SetMute', False), self.calls)
+        self.assertTrue(self.state['mute'])
+
+    def test_stale_or_wrong_stop_auto_cannot_stop_newer_or_manual_session(self):
+        newer = self.generation(counter=2)
+        self.auto(newer)
+        self.control.stop_auto(self.generation(counter=1), 'stale invalidate')
+        self.control.stop_auto(newer._replace(address='AA:BB:CC:DD:EE:FF'), 'wrong phone')
+        self.assertTrue(self.control.status()['active'])
+        self.assertFalse(self.state['mute'])
+        self.child.terminate.assert_not_called()
+        self.control.stop()
+        self.control._thread.join(5)
+        self.calls.clear()
+        self.state['volume'] = -18.0
+        self.control.start(MAC)
+        self.control.stop_auto(newer, 'stale event against manual')
+        self.assertTrue(self.control.status()['active'])
+        self.assertFalse(self.state['mute'])
+        self.assertEqual(self.control.session.mode, 'manual')
+
+    def test_matching_stop_auto_mutes_reaps_restores_and_never_resumes_mpd(self):
+        generation = self.generation()
+        self.auto(generation)
+        status = self.control.stop_auto(generation, 'stream ended')
+        self.assertEqual(status, dict(active=False, preparing=False, recovery_pending=False, error=None))
+        self.assertTrue(self.state['mute'])
+        self.assertEqual(self.state['path'], str(self.path))
+        self.control._thread.join(5)
+        self.child.terminate.assert_called_once()
+        self.assertEqual(self.state['mpd'], 'stop')
+        self.assertEqual(self.control.stop_auto(generation, 'again'), self.control.status())
 
 
 class SocketTests(unittest.TestCase):

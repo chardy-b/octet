@@ -11,6 +11,9 @@ override that stops Bluetooth muted. Start, stop, failure and recovery never
 resume MPD. The only unmute is the guarded one in _activate (at most -18 dB on a
 verified live candidate with fresh PCM progress on both sub2 endpoints).
 
+Automatic sessions (start_auto) reuse the same guarded start with a stream generation
+and a cached validator, no cutoff lifetime, and are stopped only by their own generation.
+
 Failure order is fixed: emergency mute, then confirmed termination and reaping of
 the session's own bridge child, and only then DSP restore/reload. If termination
 is not confirmed, the DSP is never restored or reloaded: mute, journal and flock
@@ -46,6 +49,7 @@ from bluetooth_bridge import BridgeSupervisor
 from bluetooth_contract import bridge_arguments
 from bluetooth_identity import observe_identity, service_policy
 from bluetooth_route import BluetoothRoute
+from bluetooth_transport import CODECS, StreamGeneration, _TRANSPORT, _UNIQUE
 
 SOCKET = '/run/octet-bluetooth/control.sock'
 START_TIMEOUT = 120.0
@@ -58,10 +62,14 @@ def safe_volume(value):
 
 
 class Session:
-    def __init__(self, address, deadline):
+    def __init__(self, address, deadline, stream=None, is_current=None):
         self.generation = uuid.uuid4().hex
         self.address = address
         self.deadline = deadline
+        # Automatic sessions carry the observer's StreamGeneration and its validator.
+        self.mode = 'manual' if stream is None else 'auto'
+        self.stream = stream
+        self.is_current = is_current
         self.stop_event = threading.Event()
         self.supervisor = None
         self.thread = None
@@ -199,7 +207,55 @@ class BluetoothControl:
         if state not in ('pause', 'stop'):
             raise RuntimeError('Music player did not pause; Bluetooth start refused')
 
+    def _check_generation(self, generation, is_current):
+        """Shape-check a StreamGeneration before any policy, bus or DSP access."""
+        if not isinstance(generation, StreamGeneration):
+            raise TypeError('Automatic Bluetooth start requires a stream generation')
+        if not callable(is_current):
+            raise TypeError('Automatic Bluetooth start requires a generation validator')
+        owners = (generation.bluez_owner, generation.bluealsa_owner)
+        match = (_TRANSPORT.fullmatch(generation.transport_path)
+                 if isinstance(generation.transport_path, str) else None)
+        if (not all(isinstance(owner, str) and _UNIQUE.fullmatch(owner) for owner in owners)
+                or match is None or generation.device_path != match[1]
+                or generation.address != match[2].replace('_', ':')
+                or type(generation.codec) is not int or generation.codec not in CODECS
+                or type(generation.counter) is not int or generation.counter < 1):
+            raise ValueError('Malformed Bluetooth stream generation')
+
+    def start_auto(self, generation, is_current):
+        """Start for a validated stream; the phone address comes only from the generation.
+
+        is_current(generation) must be a fast, thread-safe read of cached observer
+        state and must never call D-Bus: the controller and bridge workers call it.
+        """
+        self._check_generation(generation, is_current)
+        return self._start(generation.address, generation, is_current)
+
+    @staticmethod
+    def _current(session, stream=None, is_current=None):
+        """False once an automatic stream is stale or unreadable; manual has none."""
+        if session is not None:
+            stream, is_current = session.stream, session.is_current
+        if stream is None:
+            return True
+        try:
+            return is_current(stream) is True
+        except Exception:
+            return False
+
+    def stop_auto(self, generation, reason='Bluetooth stream ended'):
+        """Stop only the automatic session of exactly this generation, muted."""
+        with self.server.LOCK:
+            session = self.session
+            if session is not None and session.stream == generation:
+                self.stop(reason)
+            return self.status()
+
     def start(self, address):
+        return self._start(address)
+
+    def _start(self, address, stream=None, is_current=None):
         deadline = self.clock() + self.timeout
         if self.session is not None or self._bridges or self.route.exists():
             raise RuntimeError('Bluetooth session or recovery already pending')
@@ -219,8 +275,14 @@ class BluetoothControl:
                 raise RuntimeError('Bluetooth session or recovery already pending')
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError('Previous Bluetooth bridge is still stopping')
+            if stream is not None and not self._current(None, stream, is_current):
+                raise RuntimeError('Bluetooth stream generation is not current')
             self._idle()
-            session = Session(address, deadline)
+            if stream is not None:
+                # Automatic playback never takes over a playing or paused queue.
+                if dict(self.server.mpd('status')[0]).get('state') != 'stop':
+                    raise RuntimeError('Music player is not stopped; automatic Bluetooth refused')
+            session = Session(address, deadline, stream, is_current)
             self.session = session
             self.error = None
             try:
@@ -229,7 +291,8 @@ class BluetoothControl:
                 session.supervisor = self.supervisor(
                     partial(self._exited, session), prepare=partial(self._prepare, session),
                     policy=self.policy, identity=self.identity, deadline=deadline,
-                    startup_timeout=self.timeout, lifetime=self.lifetime)
+                    startup_timeout=self.timeout,
+                    lifetime=self.lifetime if stream is None else None)
                 session.thread = threading.Thread(target=self._run, args=(session,),
                                                   name='octet-bluetooth', daemon=True)
                 self._thread = session.thread
@@ -333,6 +396,8 @@ class BluetoothControl:
                 self._verify(session, muted=True, dsp=dsp, volume=True)
                 if not self._streaming(session) or self.clock() >= session.deadline:
                     raise RuntimeError('Bluetooth PCM progress or start deadline lost before unmute')
+                if not self._current(session):
+                    raise RuntimeError('Bluetooth stream generation lost before unmute')
                 self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(session.expected)
                 session.active = True
                 try:
@@ -359,6 +424,8 @@ class BluetoothControl:
             try:
                 if session.thread is None or not session.thread.is_alive():
                     raise RuntimeError('Bluetooth bridge supervisor exited')
+                if not self._current(session):
+                    raise RuntimeError('Bluetooth stream generation lost')
                 if session.active:
                     if not self._streaming(session):
                         raise RuntimeError('Bluetooth PCM stalled or bridge not ready')

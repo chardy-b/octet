@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 import yaml
 from airplay_baseline import digest
 from bluetooth_control import BluetoothControl
+from bluetooth_transport import StreamGeneration
 import test_bluetooth_contract
 
 
@@ -574,3 +575,24 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(self.control.route.journal.read_bytes(), record)
         self.run_check.assert_not_called()
         self.control.route.check_lock()
+
+
+class AutoValidationTests(unittest.TestCase):
+    """start_auto refuses a malformed generation before any policy, bus or DSP access."""
+
+    def test_malformed_generation_touches_nothing(self):
+        server = Mock()
+        policy, identity = Mock(), Mock()
+        control = BluetoothControl(server, policy=policy, identity=identity)
+        device = '/org/bluez/hci0/dev_12_34_56_78_9A_BC'
+        good = StreamGeneration(':1.10', ':1.11', device, device + '/fd6', '12:34:56:78:9A:BC', 0, 1)
+        for bad in ('12:34:56:78:9A:BC', good._replace(bluez_owner='org.bluez'),
+                    good._replace(bluealsa_owner=None), good._replace(device_path=device + '/x'),
+                    good._replace(transport_path=device + '/fd6/extra'), good._replace(codec=1),
+                    good._replace(codec=True), good._replace(counter=0), good._replace(address=None)):
+            with self.subTest(bad=bad), self.assertRaises((TypeError, ValueError)):
+                control.start_auto(bad, lambda generation: True)
+        policy.assert_not_called()
+        identity.assert_not_called()
+        self.assertEqual(server.mock_calls, [])
+        self.assertIsNone(control.session)
