@@ -99,10 +99,23 @@ def read_exact(sock, count):
     return bytes(result)
 
 
+DSP_SOCKET = '/run/octet-dsp/control.sock'
+
+
 class DSP:
-    """Small synchronous RFC6455 client for the local CamillaDSP control socket."""
+    """Small synchronous RFC6455 client for the DSP proxy's Unix socket (no direct TCP fallback)."""
     def __enter__(self):
-        self.sock = socket.create_connection(('127.0.0.1', 1234), timeout=4)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.sock.settimeout(4)
+            self.sock.connect(DSP_SOCKET)
+            self.handshake()
+        except Exception:
+            self.sock.close()
+            raise
+        return self
+
+    def handshake(self):
         key = base64.b64encode(os.urandom(16)).decode()
         request = ('GET / HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nUpgrade: websocket\r\n'
                    'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\nSec-WebSocket-Version: 13\r\n\r\n')
@@ -110,11 +123,26 @@ class DSP:
         response = bytearray()
         while not response.endswith(b'\r\n\r\n') and len(response) < 8192:
             response.extend(read_exact(self.sock, 1))
-        expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
-        if not response.startswith(b'HTTP/1.1 101 ') or expected not in response:
-            self.sock.close()
+        expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+        if not response.endswith(b'\r\n\r\n') or not self.upgrade_accepted(bytes(response), expected):
             raise RuntimeError('DSP connection failed')
-        return self
+
+    @staticmethod
+    def upgrade_accepted(response, expected):
+        lines = response.decode('latin-1').split('\r\n')
+        if not lines[0].startswith('HTTP/1.1 101 '):
+            return False
+        headers = {}
+        for line in lines[1:]:
+            if not line:
+                continue
+            name, separator, value = line.partition(':')
+            if not separator:
+                return False
+            headers.setdefault(name.strip().lower(), []).append(value.strip())
+        accept, upgrade, connection = (headers.get(name, []) for name in ('sec-websocket-accept', 'upgrade', 'connection'))
+        return (accept == [expected] and len(upgrade) == 1 and upgrade[0].lower() == 'websocket'
+                and any(token.strip().lower() == 'upgrade' for value in connection for token in value.split(',')))
 
     def __exit__(self, *args):
         self.sock.close()

@@ -13,22 +13,167 @@ from octetmeasure.autotune.camilla import export
 from octetmeasure.autotune.web import Controller, check_safety, create_app
 
 
-def test_camilla_control_closes_websocket_without_context_manager(monkeypatch):
-    import sys
-    from types import SimpleNamespace
+class UnixEndpoint:
+    """Real AF_UNIX RFC6455 server standing in for the DSP proxy socket."""
+    def __init__(self, directory, replies=None):
+        import socket, threading
+        self.path = str(directory / 'control.sock')
+        self.replies, self.requests, self.handshakes = replies or {}, [], []
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(self.path)
+        self.listener.listen(4)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    @staticmethod
+    def exact(conn, count):
+        data = b''
+        while len(data) < count:
+            chunk = conn.recv(count - len(data))
+            if not chunk:
+                raise EOFError
+            data += chunk
+        return data
+
+    def serve(self):
+        while True:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    self.session(conn)
+                except (EOFError, OSError):
+                    pass
+
+    def session(self, conn):
+        import base64, hashlib, struct
+        head = b''
+        while not head.endswith(b'\r\n\r\n'):
+            head += self.exact(conn, 1)
+        self.handshakes.append(head)
+        key = next(l.split(b': ', 1)[1] for l in head.split(b'\r\n') if l.lower().startswith(b'sec-websocket-key'))
+        accept = base64.b64encode(hashlib.sha1(key + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+        conn.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                     b'Sec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
+        while True:
+            first, second = self.exact(conn, 2)
+            length = second & 127
+            if length == 126:
+                length = struct.unpack('!H', self.exact(conn, 2))[0]
+            mask = self.exact(conn, 4)
+            payload = bytes(v ^ mask[i % 4] for i, v in enumerate(self.exact(conn, length)))
+            if first & 15 == 8:
+                return
+            request = json.loads(payload)
+            name = request if isinstance(request, str) else next(iter(request))
+            self.requests.append(request)
+            body = json.dumps({name: self.replies.get(name, dict(result='Ok'))}).encode()
+            conn.sendall(bytes([0x81, len(body)]) + body)
+
+
+@pytest.fixture
+def unix_dsp(monkeypatch):
+    import socket, tempfile
+    from pathlib import Path
+    from octetmeasure.autotune import camilla
+    pytest.importorskip('websocket')
+    dialed = []
+    def refuse(address, *args, **kwargs):
+        dialed.append(address)
+        raise AssertionError(f'direct TCP dial: {address!r}')
+    monkeypatch.setattr(socket, 'create_connection', refuse)
+    # websocket-client's own TCP path goes through the same helpers; none may run.
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: dialed.append(a) or (_ for _ in ()).throw(AssertionError('resolve')))
+    with tempfile.TemporaryDirectory() as short:   # AF_UNIX paths are length-limited
+        yield from _serve(Path(short), monkeypatch, camilla, dialed)
+
+
+def _serve(tmp_path, monkeypatch, camilla, dialed):
+    endpoint = UnixEndpoint(tmp_path, {'GetState': dict(result='Ok', value='Running'),
+                                        'SetMute': dict(result='Error')})
+    monkeypatch.setattr(camilla, 'DSP_SOCKET', endpoint.path)
+    endpoint.dialed = dialed
+    yield endpoint
+    endpoint.listener.close()
+
+
+def test_camilla_control_uses_unix_websocket_never_tcp(unix_dsp):
     from octetmeasure.autotune.camilla import control
-    class Socket:
+    assert control([('GetState', None), ('GetState', None)]) == ['Running', 'Running']
+    assert unix_dsp.requests == ['GetState', 'GetState']
+    assert unix_dsp.handshakes[0].startswith(b'GET / HTTP/1.1\r\n')
+    assert unix_dsp.dialed == []
+
+
+def test_camilla_control_keeps_rejection_error(unix_dsp):
+    from octetmeasure.autotune.camilla import control
+    with pytest.raises(RuntimeError, match='CamillaDSP rejected SetMute'):
+        control([('SetMute', True)])
+
+
+def test_camilla_control_missing_socket_fails_closed(tmp_path, monkeypatch):
+    import socket
+    from octetmeasure.autotune import camilla
+    dialed = []
+    monkeypatch.setattr(socket, 'create_connection', lambda *a, **k: dialed.append(a))
+    monkeypatch.setattr(camilla, 'DSP_SOCKET', str(tmp_path / 'absent.sock'))
+    with pytest.raises(OSError):
+        camilla.control([('SetMute', False)])
+    assert dialed == []
+
+
+def test_camilla_control_production_socket_path():
+    from octetmeasure.autotune import camilla
+    assert camilla.DSP_SOCKET == '/run/octet-dsp/control.sock'
+
+
+def test_camilla_control_closes_websocket_without_context_manager(unix_dsp):
+    import websocket
+    from octetmeasure.autotune.camilla import control
+    created = []
+    real = websocket.create_connection
+    def spy(*a, **k):
+        created.append(real(*a, **k))
+        return created[-1]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(websocket, 'create_connection', spy)
+        assert control([('GetState', None)]) == ['Running']
+    assert created and not created[0].connected
+
+
+def test_camilla_control_closes_unix_socket_when_handshake_fails(monkeypatch):
+    import socket, tempfile, threading, types
+    from pathlib import Path
+    from octetmeasure.autotune import camilla
+    pytest.importorskip('websocket')
+    made = []
+    class Tracked(socket.socket):
         closed = False
-        def send(self, text):
-            self.command = json.loads(text)
-        def recv(self):
-            return json.dumps({self.command: dict(result='Ok', value='Running')})
         def close(self):
             self.closed = True
-    sock = Socket()
-    monkeypatch.setitem(sys.modules, 'websocket', SimpleNamespace(create_connection=lambda *a, **k: sock))
-    assert control([('GetState', None)]) == ['Running']
-    assert sock.closed
+            super().close()
+    def factory(*a, **k):
+        made.append(Tracked(*a, **k))
+        return made[-1]
+    shim = types.SimpleNamespace(AF_UNIX=socket.AF_UNIX, SOCK_STREAM=socket.SOCK_STREAM, socket=factory)
+    with tempfile.TemporaryDirectory() as short:
+        path = str(Path(short) / 'bad.sock')
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(path)
+        listener.listen(1)
+        def refuse():
+            conn, _ = listener.accept()
+            with conn:
+                conn.recv(4096)
+                conn.sendall(b'HTTP/1.1 403 Forbidden\r\n\r\n')
+        threading.Thread(target=refuse, daemon=True).start()
+        monkeypatch.setattr(camilla, 'socket', shim)
+        monkeypatch.setattr(camilla, 'DSP_SOCKET', path)
+        with pytest.raises(Exception):
+            camilla.control([('GetState', None)])
+        listener.close()
+    assert len(made) == 1 and made[0].closed
 
 
 def candidate():
