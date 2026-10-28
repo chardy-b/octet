@@ -500,6 +500,33 @@ class InitializationSafety(unittest.TestCase):
                 self.control.recover.assert_not_called()
                 self.assertTrue(self.control.needs_mute)
 
+    def test_auto_bluetooth_starts_only_with_runtime_directory_and_after_muted_init(self):
+        order = []
+        for present in (False, True):
+            with self.subTest(present=present), \
+                 patch.object(server, 'initialize_dsp', lambda: order.append('initialize_dsp')), \
+                 patch.object(server, 'start_auto_bluetooth',
+                              lambda control: order.append(('auto', control))), \
+                 patch.object(server.os, 'umask'), \
+                 patch.object(server.Path, 'exists',
+                              lambda path: present and str(path) == '/run/octet-bluetooth'), \
+                 patch.object(server.threading, 'Thread'), \
+                 patch.object(server, 'ThreadingHTTPServer'):
+                order.clear()
+                server.main()
+                self.assertEqual(order, ['initialize_dsp'] + (
+                    [('auto', server.BLUETOOTH_CONTROL)] if present else []))
+
+    def test_failed_dsp_initialization_never_starts_auto_bluetooth(self):
+        with patch.object(server, 'initialize_dsp', side_effect=RuntimeError('unmuted')), \
+             patch.object(server, 'start_auto_bluetooth') as auto, \
+             patch.object(server.os, 'umask'), \
+             patch.object(server.Path, 'exists', return_value=True), \
+             patch.object(server.threading, 'Thread'), \
+             self.assertRaises(RuntimeError):
+            server.main()
+        auto.assert_not_called()
+
     def test_post_recovery_mute_failure_is_fatal(self):
         for command in ('SetMute', 'GetMute', 'connect', 'unmuted'):
             with self.subTest(command=command):

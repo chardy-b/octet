@@ -25,6 +25,7 @@ from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from now_playing_bridge import fetch_song, fetch_artwork
 from airplay_control import AirPlayController, serve as serve_airplay
+from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
 from network_access import NetworkAccess
 
@@ -1303,6 +1304,9 @@ def main():
     if Path('/run/octet-bluetooth').exists():
         # RuntimeDirectory exists only with the guarded Bluetooth installer drop-in.
         threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
+        # Optional observer/worker after muted recovery; failures are contained and leave
+        # the manual socket, Tidal and AirPlay running.
+        start_auto_bluetooth(BLUETOOTH_CONTROL)
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
