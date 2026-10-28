@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from bluetooth_bridge import BridgeSupervisor, PCM, bus_owner, parse_pcm, read_endpoints
+from bluetooth_bridge import (BridgeSupervisor, PCM, bus_owner, parse_pcm, read_endpoints,
+                              verify_task)
 
 MAC = '12:34:56:78:9A:BC'
 
@@ -67,10 +68,18 @@ class ParsingTests(unittest.TestCase):
                 self.assertEqual(parse_pcm(hw(rate, fmt), status()).format, (rate, fmt, 2))
         self.assertIsNone(parse_pcm('closed\n', 'closed\n'))
 
+    def test_prepared_state_is_reported_not_treated_as_running(self):
+        # Live WIL-249: bluealsa-aplay's sub2 playback is PREPARED briefly before RUNNING.
+        pcm = parse_pcm(hw(44100), status(owner=9878, state='PREPARED'))
+        self.assertEqual((pcm.format, pcm.owner, pcm.state), ((44100, 'S16_LE', 2), 9878, 'PREPARED'))
+        self.assertEqual(parse_pcm(hw(), status()).state, 'RUNNING')
+
     def test_reject_invalid_unknown_or_incomplete_observations(self):
         cases = [(hw(96000), status()), (hw(fmt='FLOAT_LE'), status()),
                  (hw(channels=1), status()), (hw(), status(state='XRUN')),
-                 (hw(), status(state='PREPARED')), (hw(), status(owner=0)),
+                 (hw(), status(state='SETUP')), (hw(), status(state='DRAINING')),
+                 (hw(), status(state='PAUSED')), (hw(), status(state='prepared')),
+                 (hw(), status(owner=0)),
                  (hw(), status(pointer=-1)), (hw(), status() + 'hw_ptr: 20\n'),
                  (hw().replace('48000/1', '44100/1'), status()),
                  ('closed', status()), (hw(), 'closed'), ('', ''),
@@ -126,6 +135,69 @@ class ParsingTests(unittest.TestCase):
                     read_endpoints()
 
 
+class TaskOwnershipTests(unittest.TestCase):
+    def fake_proc(self, root, tid, tgid, *, member=True, pid=None):
+        (root / str(tid)).mkdir(parents=True, exist_ok=True)
+        (root / str(tid) / 'status').write_text(
+            f'Name:\tbluealsa-aplay\nTgid:\t{tgid}\nPid:\t{tid if pid is None else pid}\n')
+        (root / str(tgid) / 'task').mkdir(parents=True, exist_ok=True)
+        if member:
+            (root / str(tgid) / 'task' / str(tid)).mkdir(exist_ok=True)
+
+    def test_worker_task_of_exact_process_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.fake_proc(root, 9878, 9876)
+            self.fake_proc(root, 9876, 9876)
+            verify_task(9876, 9878, root=root)
+            verify_task(9876, 9876, root=root)
+
+    def test_unrelated_vanished_or_inconsistent_task_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.fake_proc(root, 9878, 9876)
+            self.fake_proc(root, 5000, 4000)
+            self.fake_proc(root, 6000, 9876, member=False)
+            self.fake_proc(root, 7000, 9876, pid=7001)
+            (root / '9876' / 'task' / '8000').mkdir()  # listed, but status vanished
+            for pid, tid in ((9876, 5000), (9876, 6000), (9876, 7000), (9876, 8000),
+                             (9876, 4242), (4000, 9878), (0, 9878), (9876, 0)):
+                with self.subTest(pid=pid, tid=tid), self.assertRaisesRegex(
+                        RuntimeError, 'not owned by bridge'):
+                    verify_task(pid, tid, root=root)
+            (root / '9878' / 'status').write_text('Tgid:\t9876\nTgid:\t9876\nPid:\t9878\n')
+            with self.assertRaisesRegex(RuntimeError, 'not owned by bridge'):
+                verify_task(9876, 9878, root=root)
+
+    def test_real_worker_thread_of_disposable_child(self):
+        # Only a disposable local Python child; never BlueALSA or an audio device.
+        code = ('import threading,sys,time\n'
+                'def w():\n print(threading.get_native_id(), flush=True); time.sleep(30)\n'
+                'threading.Thread(target=w, daemon=True).start(); time.sleep(30)\n')
+        child = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True)
+        other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            worker = int(child.stdout.readline())
+            self.assertNotEqual(worker, child.pid)
+            verify_task(child.pid, worker)
+            verify_task(child.pid, child.pid)
+            for tid in (other.pid, 1):
+                with self.assertRaisesRegex(RuntimeError, 'not owned by bridge'):
+                    verify_task(child.pid, tid)
+            with self.assertRaisesRegex(RuntimeError, 'not owned by bridge'):
+                verify_task(other.pid, worker)
+            child.kill()
+            child.wait(timeout=2)
+            with self.assertRaisesRegex(RuntimeError, 'not owned by bridge'):
+                verify_task(child.pid, worker)
+        finally:
+            for proc in (child, other):
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=2)
+            child.stdout.close()
+
+
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
         self.now = 0.0
@@ -141,7 +213,13 @@ class SupervisorTests(unittest.TestCase):
         self.observe = self.normal
         self.event = SimpleNamespace(is_set=lambda: self.ticks >= 4, wait=self.wait)
         self.ready_seen = []
+        # Thread groups visible in the fake /proc: bluealsa-aplay main 123, IO worker 125.
+        self.tasks = {123: {123, 125}}
         self.supervisor = self.make()
+
+    def task(self, pid, tid):
+        if tid not in self.tasks.get(pid, ()):
+            raise RuntimeError('Playback is not owned by bridge')
 
     def make(self, **kwargs):
         deadlines = dict(interval=0.1, startup_timeout=1,
@@ -149,7 +227,113 @@ class SupervisorTests(unittest.TestCase):
         deadlines.update(kwargs)
         return BridgeSupervisor(self.close, policy=self.policy, identity=self.identity,
             owner=self.owner, observe=lambda: self.observe(), spawn=self.spawn,
-            clock=lambda: self.now, **deadlines)
+            clock=lambda: self.now, task=self.task, **deadlines)
+
+    def pcm(self, owner=125, state='RUNNING', pointer=None, rate=44100):
+        pointer = self.ticks * 10 if pointer is None else pointer
+        return PCM(rate, 'S16_LE', 2, owner, pointer, pointer, state)
+
+    def test_real_task_check_is_the_default(self):
+        self.assertIs(BridgeSupervisor(self.close).task, verify_task)
+
+    def test_worker_task_owner_reaches_ready(self):
+        # Live WIL-249: main Popen PID spawns an IO worker task that owns sub2 playback.
+        self.observe = lambda: (self.pcm(owner=125), self.pcm(owner=456))
+        self.run_bridge()
+        self.assertEqual(self.ready_seen, [False, True, True, True])
+
+    def test_transient_prepared_then_running_with_worker_owner(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared, startup_timeout=2, lifetime=3)
+        self.event.is_set = lambda: self.ticks >= 7
+        def observe():
+            if self.ticks < 2:
+                return self.pcm(state='PREPARED', pointer=0), None
+            if not prepared.called:
+                return self.pcm(), None
+            return self.pcm(), self.pcm(owner=456)
+        self.observe = observe
+        self.run_bridge()
+        prepared.assert_called_once_with(44100, 'S16_LE')
+        self.assertEqual(self.ready_seen[:3], [False, False, False])
+        self.assertTrue(self.ready_seen[-1])
+
+    def test_prepared_never_prepares_route_or_counts_as_progress(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared)
+        self.event.is_set = lambda: False
+        self.observe = lambda: (self.pcm(state='PREPARED'), self.pcm(owner=456))
+        with self.assertRaisesRegex(RuntimeError, 'startup deadline'):
+            self.run_bridge()
+        prepared.assert_not_called()
+        self.assertFalse(any(self.ready_seen))
+        self.close.assert_called_once()
+        self.child.terminate.assert_called_once()
+
+    def test_prepared_after_any_running_playback_rejected(self):
+        for after_prepare in (False, True):
+            with self.subTest(after_prepare=after_prepare):
+                self.setUp()
+                prepared = Mock()
+                self.supervisor = self.make(prepare=prepared if after_prepare else None)
+                def observe():
+                    if self.ticks == 0:
+                        return self.pcm(), self.pcm(owner=456)
+                    return self.pcm(state='PREPARED'), self.pcm(owner=456)
+                self.observe = observe
+                with self.assertRaisesRegex(RuntimeError, 'not RUNNING'):
+                    self.run_bridge()
+                self.assertFalse(any(self.ready_seen))
+                self.child.terminate.assert_called_once()
+
+    def test_prepared_capture_rejected(self):
+        self.observe = lambda: (self.pcm(), self.pcm(owner=456, state='PREPARED'))
+        with self.assertRaisesRegex(RuntimeError, 'not RUNNING'):
+            self.run_bridge()
+        self.assertFalse(any(self.ready_seen))
+        self.child.terminate.assert_called_once()
+
+    def test_unrelated_owner_rejected_even_while_prepared(self):
+        for state in ('PREPARED', 'RUNNING'):
+            with self.subTest(state=state):
+                self.setUp()
+                prepared = Mock()
+                self.supervisor = self.make(prepare=prepared)
+                self.observe = lambda: (self.pcm(owner=999, state=state), None)
+                with self.assertRaisesRegex(RuntimeError, 'not owned by bridge'):
+                    self.run_bridge()
+                prepared.assert_not_called()
+                self.child.terminate.assert_called_once()
+
+    def test_changed_or_vanished_worker_owner_rejected(self):
+        for failure in ('changed_after_prepared', 'changed_running', 'vanished'):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.tasks[123].add(126)  # a different, otherwise valid task
+                def observe():
+                    if failure == 'changed_after_prepared':
+                        if self.ticks == 0:
+                            return self.pcm(state='PREPARED'), None
+                        return self.pcm(owner=126), self.pcm(owner=456)
+                    if failure == 'changed_running' and self.ticks >= 2:
+                        return self.pcm(owner=126), self.pcm(owner=456)
+                    if failure == 'vanished' and self.ticks >= 2:
+                        self.tasks[123].discard(125)
+                    return self.pcm(), self.pcm(owner=456)
+                self.observe = observe
+                with self.assertRaisesRegex(RuntimeError, 'owner changed|not owned by bridge'):
+                    self.run_bridge()
+                self.child.terminate.assert_called_once()
+
+    def test_owner_check_requires_child_still_running(self):
+        def observe():
+            if self.ticks >= 1:
+                self.child.poll.return_value = 0  # reaped: PID no longer ours
+            return self.pcm(), self.pcm(owner=456)
+        self.observe = observe
+        with self.assertRaisesRegex(RuntimeError, 'exited'):
+            self.run_bridge()
+        self.assertFalse(any(self.ready_seen))
 
     def normal(self):
         return (PCM(48000, 'S16_LE', 2, 123, self.ticks * 10, self.ticks * 10),

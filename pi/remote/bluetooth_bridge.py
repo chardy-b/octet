@@ -34,6 +34,7 @@ class PCM:
     owner: int
     hw_ptr: int
     appl_ptr: int
+    state: str = 'RUNNING'
 
     @property
     def format(self):
@@ -75,7 +76,11 @@ def _integer(value):
 
 
 def parse_pcm(hw_params, status):
-    """Return None only for a fully closed endpoint during bounded startup."""
+    """Return None only for a fully closed endpoint during bounded startup.
+
+    PREPARED is reported, not accepted: only the supervisor may tolerate it,
+    and only for playback before it has ever been observed RUNNING.
+    """
     if hw_params.strip() == status.strip() == 'closed':
         return None
     hw, state = _fields(hw_params), _fields(status, status=True)
@@ -83,13 +88,39 @@ def parse_pcm(hw_params, status):
     if (not rate or (rate[2] and rate[1] != rate[2])
             or hw['format'] not in ('S16_LE', 'S32_LE') or hw['channels'] != '2'):
         raise ValueError('Unsupported native PCM format')
-    if state['state'] != 'RUNNING':
+    if state['state'] not in ('RUNNING', 'PREPARED'):
         raise ValueError('PCM is not RUNNING')
     owner = _integer(state['owner_pid'])
     if owner <= 0:
         raise ValueError('Invalid PCM owner')
     return PCM(int(rate[1]), hw['format'], 2, owner,
-               _integer(state['hw_ptr']), _integer(state['appl_ptr']))
+               _integer(state['hw_ptr']), _integer(state['appl_ptr']), state['state'])
+
+
+def verify_task(pid, tid, *, root=Path('/proc')):
+    """Require ALSA owner tid to be a live task of thread group pid.
+
+    bluealsa-aplay opens the PCM from an IO worker thread, so owner_pid is that
+    task's ID, not the Popen PID. Both views must agree: the task's own status
+    names pid as its Tgid, and pid's task directory lists tid. The caller must
+    hold pid unreaped (Popen) so it cannot be reused during the check.
+    """
+    try:
+        if type(pid) is not int or type(tid) is not int or pid <= 0 or tid <= 0:
+            raise ValueError('Invalid task ID')
+        fields = {}
+        for line in (root / str(tid) / 'status').read_text().splitlines():
+            key, _, value = line.partition(':')
+            if key in ('Tgid', 'Pid'):
+                if key in fields:
+                    raise ValueError('Duplicate task status field')
+                fields[key] = _integer(value.strip())
+        if fields.get('Pid') != tid or fields.get('Tgid') != pid:
+            raise ValueError('Task is not in bridge thread group')
+        if not (root / str(pid) / 'task' / str(tid)).is_dir():
+            raise ValueError('Task is not listed by bridge process')
+    except (OSError, ValueError) as exc:
+        raise RuntimeError('Playback is not owned by bridge') from exc
 
 
 def read_endpoints():
@@ -145,7 +176,7 @@ class BridgeSupervisor:
     cannot impose a safe timeout on arbitrary in-process recovery code.
     """
     def __init__(self, fail_closed, *, prepare=None, policy=local_policy, identity=verify_identity,
-                 owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen,
+                 owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen, task=verify_task,
                  clock=time.monotonic, interval=0.1, startup_timeout=120.0,
                  stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0, deadline=None):
         if not callable(fail_closed):
@@ -165,7 +196,7 @@ class BridgeSupervisor:
         self.deadline = deadline
         self.fail_closed = fail_closed
         self.policy, self.identity, self.owner = policy, identity, owner
-        self.observe, self.spawn, self.clock = observe, spawn, clock
+        self.observe, self.spawn, self.clock, self.task = observe, spawn, clock, task
         self.interval, self.startup_timeout = interval, startup_timeout
         self.stall_timeout, self.lifetime, self.stop_timeout = stall_timeout, lifetime, stop_timeout
         self.ready = False
@@ -282,6 +313,8 @@ class BridgeSupervisor:
                     shell=False, close_fds=True)
             prepared = None
             previous = None
+            playback_owner = None
+            running_seen = False
             progress = None
             while not stop_event.is_set():
                 verify()
@@ -294,13 +327,29 @@ class BridgeSupervisor:
                 if not self.ready and now >= startup_deadline:
                     raise RuntimeError('Bridge startup deadline')
                 playback, capture = pair
+                if capture is not None and capture.state != 'RUNNING':
+                    raise RuntimeError('Capture PCM is not RUNNING')
                 if playback is not None:
-                    if playback.owner != child.pid:
-                        raise RuntimeError('Playback is not owned by bridge')
+                    if playback_owner is None:
+                        playback_owner = playback.owner
+                    elif playback.owner != playback_owner:
+                        raise RuntimeError('Playback owner changed')
+                    # owner_pid is bluealsa-aplay's IO worker task, not the Popen PID.
+                    self.task(child.pid, playback.owner)
+                    if child.poll() is not None:
+                        raise RuntimeError('Bridge process exited during owner check')
                     if (playback.rate not in (44100, 48000)
                             or playback.sample_format not in ('S16_LE', 'S32_LE')
                             or playback.channels != 2):
                         raise RuntimeError('Unsupported native PCM format')
+                    if playback.state != 'RUNNING':
+                        if running_seen:
+                            raise RuntimeError('Playback PCM is not RUNNING')
+                        # Transient startup PREPARED: never prepares, never progress;
+                        # the startup deadline above still bounds it.
+                        stop_event.wait(self.interval)
+                        continue
+                    running_seen = True
                     if prepared is None:
                         prepared = playback.format
                         if self.prepare is not None:
@@ -321,8 +370,6 @@ class BridgeSupervisor:
                         raise RuntimeError('PCM endpoint closed')
                 else:
                     playback, capture = pair
-                    if playback.owner != child.pid:
-                        raise RuntimeError('Playback is not owned by bridge')
                     if playback.format != capture.format:
                         raise RuntimeError('PCM endpoint format mismatch')
                     pointers = tuple(n for pcm in pair for n in (pcm.hw_ptr, pcm.appl_ptr))

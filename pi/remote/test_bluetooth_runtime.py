@@ -108,9 +108,15 @@ class RuntimeTests(unittest.TestCase):
     def factory(self, fail_closed, **kwargs):
         supervisor = BridgeSupervisor(
             fail_closed, owner=lambda name: b's ":1.42"\n', observe=self.observe,
-            spawn=self.spawn, interval=0.01, stall_timeout=0.5, stop_timeout=0.2, **kwargs)
+            spawn=self.spawn, task=self.task, interval=0.01, stall_timeout=0.5, stop_timeout=0.2, **kwargs)
         self.supervisors.append(supervisor)
         return supervisor
+
+    @staticmethod
+    def task(pid, tid):
+        # Fake /proc: bluealsa-aplay main 123 owns sub2 through IO worker task 125.
+        if (pid, tid) not in ((123, 123), (123, 125)):
+            raise RuntimeError('Playback is not owned by bridge')
 
     def observe(self):
         if not self.phone_streams:
@@ -121,7 +127,7 @@ class RuntimeTests(unittest.TestCase):
             return PCM(44100, 'S16_LE', 2, owner, self.pointer, self.pointer)
         # CamillaDSP only opens capture sub2 once the candidate is loaded.
         loaded = self.state['path'] == str(self.control.route.candidate)
-        return pcm(123), pcm(456) if loaded else None
+        return pcm(125), pcm(456) if loaded else None
 
     def wait_for(self, condition, seconds=5):
         end = time.monotonic() + seconds
