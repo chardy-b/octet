@@ -15,7 +15,8 @@ const status = {profile:'Test output DSP',volume:-36,max_db:-18,sample_rate:4800
     filters:[],always_active:[],always_active_controls:settings()}))};
 
 (async()=>{
-  const browser=await chromium.launch({headless:true,...(process.env.DSP_BROWSER_CHANNEL?{channel:process.env.DSP_BROWSER_CHANNEL}:{})});
+  const browser=await chromium.launch({headless:true,...(process.env.DSP_BROWSER_CHANNEL?{channel:process.env.DSP_BROWSER_CHANNEL}:{}),
+    ...(process.env.OCTET_BROWSER_EXECUTABLE?{executablePath:process.env.OCTET_BROWSER_EXECUTABLE,args:['--no-sandbox']}:{})});
   try {
     const page=await browser.newPage({viewport:{width:1280,height:1000}});
     const errors=[],writes=[];let rejectSave=false;
@@ -78,6 +79,15 @@ const status = {profile:'Test output DSP',volume:-36,max_db:-18,sample_rate:4800
     assert.equal(await input(1,'Attenuation in dB').inputValue(),'-20.5');
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    // An approved baseline with an input route loaded is that profile, read-only, plus its input.
+    Object.assign(status,{profile:'Auto Tune 2026-10-26',auto_tuned:true,channels:[],input_label:'Audient iD14 · Input 1 · mono',
+      tuning:{chosen:{},selected_pairs:['a','b','sub','tweeter']}});
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#profile-name').textContent(),'Auto Tune 2026-10-26 · input: Audient iD14 · Input 1 · mono');
+    assert.equal(await page.locator('.active-editor').count(),0);
+    status.input_label='Tidal';
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#profile-name').textContent(),'Auto Tune 2026-10-26');
     assert.deepEqual(errors,[]);
     if(process.env.DSP_SCREENSHOT)await page.screenshot({path:process.env.DSP_SCREENSHOT,fullPage:true});
     console.log('DSP browser checks passed: eight editors, explicit save, isolated values, polling drafts, validation, retry, reload, mobile layout.');

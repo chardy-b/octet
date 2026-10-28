@@ -10,8 +10,8 @@ const sources = [
   {id:'usb:iD14:mono-1',label:'Audient iD14 · Input 1 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
   {id:'usb:iD14:mono-2',label:'Audient iD14 · Input 2 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
 ];
-const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switching_available:true,
-  ready:true,muted:false,volume:-31,min_db:-60,max_db:-18,level_unlocked:false,profile:'Output DSP controls',profile_description:'Eight outputs',
+const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switching_available:true,source_switching_reason:null,
+  ready:true,muted:false,volume:-31,min_db:-60,max_db:-18,level_unlocked:false,profile:'Auto Tune 2026-10-26',profile_description:'Saved system tuning · tweeter safety high-pass active',
   playback:'pause',duration:90,elapsed:20,song_position:0,current:{title:'Saved song',artist:'Saved artist',album:'Saved album'},
   queue:[{position:0,title:'Saved song',artist:'Saved artist'}]});
 (async()=>{
@@ -55,6 +55,9 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),true);
     assert.equal(await page.locator('#mute').textContent(),'Unmute');
     assert.match(await page.locator('#source-status').textContent(),/muted/);
+    // An input route never relabels the approved output profile or offers it as a preset.
+    assert.equal(await page.locator('#dsp-profile-name').textContent(),'Auto Tune 2026-10-26');
+    assert.equal(await page.locator('#source-apply').isDisabled(),true);
     assert.equal(await page.locator('#volume').inputValue(),'-31');
     assert.equal(await page.locator('#queue-count').textContent(),'1');
     await page.screenshot({path:path.resolve(__dirname,'../../out/music-source-desktop.png'),fullPage:true});
@@ -93,6 +96,37 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.match(await page.locator('#song-artist').textContent(),/cast active/);
     assert.equal(await page.locator('#song-album').textContent(),'');
     assert.equal(await page.locator('#cover').isVisible(),false);
+    // Unsafe states disable the selector and say why, instead of a stale preset hint.
+    const reasons=[
+      [{source_switching_available:false,source_switching_reason:'Auto Tune owns the speaker outputs, or its ownership is unknown.'},/Auto Tune owns/],
+      [{source_switching_available:false,source_switching_reason:'Source routing recovery is pending. Output stays muted; press Mute to retry.',source_route:{active:false,recovery_pending:true,error:'pending'}},/recovery is pending/],
+      [{source_switching_available:false,source_switching_reason:'The active DSP configuration is not an approved output profile.'},/not an approved output profile/],
+      [{source_switching_available:false},/unavailable/],
+    ];
+    for(const [change,pattern] of reasons){
+      state={...initial(),source:'tidal',source_label:'Tidal',...change};
+      await page.evaluate(()=>refresh());
+      assert.equal(await page.locator('#source-choice').isDisabled(),true);
+      assert.equal(await page.locator('#source-apply').isDisabled(),true);
+      const text=await page.locator('#source-status').textContent();
+      assert.match(text,pattern);
+      assert.doesNotMatch(text,/Output DSP controls/);
+    }
+    // Back on a verified baseline the selector is enabled, and the reason disappears.
+    state=initial();await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#source-choice').isDisabled(),false);
+    assert.equal(await page.locator('#source-status').textContent(),'');
+    // A manually selected AirPlay is waiting for a cast, never an active receiver.
+    state={...initial(),source:'airplay',source_label:'AirPlay',muted:true,airplay:{active:false,preparing:false,error:null}};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#source-status').textContent(),/selected · waiting for a cast/);
+    assert.doesNotMatch(await page.locator('#source-status').textContent(),/cast active/);
+    // A blocked state is never hidden behind the AirPlay waiting message.
+    state={...initial(),source:'airplay',source_label:'AirPlay',muted:true,airplay:{active:false},
+      source_switching_available:false,source_switching_reason:'Source routing recovery is pending. Output stays muted; press Mute to retry.'};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#source-status').textContent(),/recovery is pending/);
+    assert.equal(await page.locator('#source-status').evaluate(node=>node.classList.contains('error')),true);
     assert.deepEqual(errors,[]);
     console.log('Browser source flow passed: selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, mobile layout.');
   }finally{await browser.close();}

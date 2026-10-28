@@ -76,7 +76,14 @@ def routed(config):
     return result
 
 
+def lexists(path):
+    return path.exists() or path.is_symlink()
+
+
 class BaselineRoute:
+    # Other owners' journals: their presence is a conflict, never permission to proceed.
+    foreign_journals = ('manual-source-recovery.json',)
+
     def __init__(self, server):
         self.server = server
         self.root = ROOT
@@ -153,14 +160,20 @@ class BaselineRoute:
             raise RuntimeError('AirPlay baseline approval or digest changed')
         return path, yaml.safe_load(data)
 
+    def refuse_foreign(self):
+        if any(lexists(self.root / name) for name in self.foreign_journals):
+            raise RuntimeError('A manual source route owns audio recovery evidence; recovery retained')
+
     def ownership(self):
         self.check_lock()
         if self.server.TUNING.status().get('audio_owned') is not False:
             raise RuntimeError('Auto Tune owns audio or ownership is unknown; AirPlay recovery retained')
+        self.refuse_foreign()
 
     def begin(self, path, loaded):
         if self.exists():
             raise RuntimeError('AirPlay recovery is still pending')
+        self.refuse_foreign()
         self.acquire()
         try:
             approval = self.server.TUNING.active(path)
@@ -210,6 +223,7 @@ class BaselineRoute:
                 and yaml.safe_load(read_bounded(self.candidate, MAX_CONFIG)) == expected)
 
     def recover(self):
+        self.refuse_foreign()  # before taking the lease: a refused owner must not hold it
         self.acquire()
         self.ownership()
         original, config = self.original()

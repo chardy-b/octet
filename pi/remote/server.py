@@ -20,13 +20,14 @@ from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 from visualizer_state import VisualizerState
-from audio_sources import discover_sources, source_config, source_metadata, meter_channels
+from audio_sources import discover_sources, source_config, source_metadata, meter_channels, require_tidal_baseline
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from now_playing_bridge import fetch_song, fetch_artwork
 from airplay_control import AirPlayController, serve as serve_airplay
 from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
+from manual_source_route import ManualSourceRoute
 from network_access import NetworkAccess
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
@@ -363,7 +364,7 @@ def stream_url(identifier):
 
 def approved(dsp):
     path = dsp.call('GetConfigFilePath')
-    if path not in PROFILES and not TUNING.active(path):
+    if path not in PROFILES and not TUNING.active(path) and not MANUAL_ROUTE.approves(dsp, path):
         raise RuntimeError('Select an approved exciter DSP preset before playback')
 
 
@@ -381,6 +382,12 @@ def restore_channel_profile(previous):
     AIRPLAY_CONTROL.recover()
 
 
+def select_manual_source(source):
+    """Approved Auto Tune baseline: journaled, muted route; never CHANNEL_PROFILE."""
+    with LOCK:
+        MANUAL_ROUTE.select(source)  # it also updates ACTIVE_CAPTURE_CHANNELS
+
+
 def select_source(identifier, defer_ready=False):
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
@@ -390,11 +397,16 @@ def select_source(identifier, defer_ready=False):
     if source is None:
         raise ValueError('That input is no longer connected. Refresh the available sources.')
     with DSP() as dsp:
-        if dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE):
-            raise RuntimeError('Source selection requires the Output DSP controls preset')
-        config = json.loads(dsp.call('GetConfigJson'))
-        if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
-            return (None, config) if defer_ready else None
+        manual = dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE)
+        if not manual:
+            config = json.loads(dsp.call('GetConfigJson'))
+            if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
+                return (None, config) if defer_ready else None
+    if manual:
+        # Approved Auto Tune baseline: a journaled route; CHANNEL_PROFILE is never touched.
+        if defer_ready:
+            raise RuntimeError('Automatic source selection requires the Output DSP controls preset')
+        return select_manual_source(source)
     updated = source_config(config, source)
     candidate = CHANNEL_PROFILE.with_name('channel-dsp-source-candidate.yml')
     previous = CHANNEL_PROFILE.read_bytes()
@@ -708,13 +720,19 @@ def dsp_status():
     with LOCK, DSP() as dsp:
         config = json.loads(dsp.call('GetConfigJson'))
         path = dsp.call('GetConfigFilePath')
+        tuned = None
+        if path != str(CHANNEL_PROFILE):
+            tuned = TUNING.active(path) or MANUAL_ROUTE.approval(dsp, path)
         result = dict(profile=config.get('title', 'CamillaDSP'), volume=dsp.call('GetVolume'),
                       muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
                       min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
         result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
-    tuned = TUNING.active(path) if path != str(CHANNEL_PROFILE) else None
     if tuned:
         result.update(auto_tuned=True, tuning=tuned, profile=tuned['name'])
+        try:
+            result['input_label'] = source_metadata(config)['label']
+        except RuntimeError:
+            pass
         return result
     filters = config.get('filters', {})
     roles = ['EX30HESF2-4', 'EX30HESF2-4', 'EX32VBDS-4', 'EX32VBDS-4', 'Subwoofer', 'Subwoofer', 'PRO Neo-8 tweeter', 'PRO Neo-8 tweeter']
@@ -743,6 +761,32 @@ def dsp_status():
                                       always_active_controls=always_active_controls(config, output) if available else [],
                                       always_active=[describe(name) for name in protected]))
     return result
+
+
+def source_switching(profile, config, state, tuned, manual):
+    """Whether a manual source change is safe now, with a concise reason when it is not."""
+    if state != 'Running':
+        return False, 'The speaker DSP is not running.'
+    if meter_audio_owned():
+        return False, 'Auto Tune owns the speaker outputs, or its ownership is unknown.'
+    if MANUAL_ROUTE.exists() and (MANUAL_ROUTE.blocked or MANUAL_ROUTE.record is None):
+        return False, 'Source routing recovery is pending. Output stays muted; press Mute to retry.'
+    if AIRPLAY_CONTROL.restore_pending is not None or AIRPLAY_CONTROL.needs_mute:
+        return False, 'AirPlay recovery is pending. Output stays muted.'
+    if BLUETOOTH_CONTROL.status()['recovery_pending']:
+        return False, 'Bluetooth recovery is pending. Output stays muted.'
+    if profile == str(CHANNEL_PROFILE) or manual:
+        return True, None
+    # A cooperative AirPlay/Bluetooth owner is stopped (muted) before a manual change.
+    if AIRPLAY_CONTROL.baseline.exists() or BLUETOOTH_CONTROL.owns_audio():
+        return True, None
+    if not tuned:
+        return False, 'The active DSP configuration is not an approved output profile.'
+    try:
+        require_tidal_baseline(config)
+    except RuntimeError as error:
+        return False, str(error)
+    return True, None
 
 
 def current_status():
@@ -780,14 +824,20 @@ def current_status():
                                               available=False, group='Unavailable', description='Reconnect the interface or choose Tidal.'))
             result.update(source=source['id'], source_label=source['label'])
             tuned = TUNING.active(profile)
+            manual = None if tuned else MANUAL_ROUTE.approval(dsp, profile)
+            tuned = tuned or manual
             label, description = PROFILES.get(profile, (tuned['name'], 'Saved system tuning · tweeter safety high-pass active') if tuned else ('Other DSP preset', 'Playback controls require an approved exciter preset'))
             result.update(volume=dsp.call('GetVolume'), muted=dsp.call('GetMute'),
                           dsp_state=dsp.call('GetState'), ready=(profile in PROFILES or bool(tuned)) and selected is not None,
                           profile=label, profile_description=description)
-            result['source_switching_available'] = profile == str(CHANNEL_PROFILE)
+            result['source_switching_available'], result['source_switching_reason'] = source_switching(
+                profile, config, result['dsp_state'], tuned, manual is not None)
     except (OSError, RuntimeError, ValueError):
-        result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
+        result.update(volume=-36, muted=True, ready=False, dsp_state='Offline',
+                      source_switching_available=False,
+                      source_switching_reason='The speaker DSP is unavailable.')
     result['airplay'] = AIRPLAY_CONTROL.status()
+    result['source_route'] = MANUAL_ROUTE.status()
     return result
 
 
@@ -795,6 +845,7 @@ AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
 # Disabled unless the root-owned local policy is enabled; started only over the
 # root-only local socket, never over HTTP.
 BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__])
+MANUAL_ROUTE = ManualSourceRoute(sys.modules[__name__])
 
 
 def action(name, data):
@@ -817,6 +868,16 @@ def _action(name, data):
         # Every manual or Auto Tune request overrides Bluetooth, which stops muted.
         # A failed restore raises here, so no mutation proceeds on its route.
         BLUETOOTH_CONTROL.stop('Manual control override')
+    if MANUAL_ROUTE.exists():
+        # Mirrors the AirPlay recovery gate: finish (or fail) recovery of the manual
+        # source route before any other control mutates or hands off to Auto Tune.
+        if ((name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True))
+                and TUNING.status().get('audio_owned')):
+            # Auto Tune took audio from the route: mute and let it stop; never recover over it.
+            MANUAL_ROUTE.mute()
+            return TUNING.request('stop', {})
+        if MANUAL_ROUTE.blocked is not None or name.startswith('auto-'):
+            MANUAL_ROUTE.recover()
     if name.startswith('auto-'):
         with LOCK:
             AIRPLAY_CONTROL.invalidate()
@@ -1269,6 +1330,10 @@ def initialize_dsp():
         AIRPLAY_CONTROL.needs_mute = True
         try:
             confirm_mute()
+            # Order: manual source route, AirPlay, then Bluetooth. AirPlay and Bluetooth
+            # refuse while a manual journal exists (and the reverse), so any pair of
+            # journals is a conflict that stays muted with all evidence retained.
+            MANUAL_ROUTE.startup()
             AIRPLAY_CONTROL.recover()
         except Exception:
             AIRPLAY_CONTROL.needs_mute = True

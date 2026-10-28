@@ -235,6 +235,7 @@ class BluetoothRoute(BaselineRoute):
     def recover(self, *, cleanup=True):
         # Mute is attempted even if the lock/approval is now unavailable.
         self.mute()
+        self.refuse_foreign()
         self.acquire()
         self.ownership()
         path, config = self.original()

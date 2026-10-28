@@ -185,6 +185,12 @@ class AirPlayController:
             try:
                 self.mute()
                 check_deadline()
+                manual = getattr(self.server, 'MANUAL_ROUTE', None)
+                if manual is not None and manual.exists():
+                    # A fresh cast supersedes a manual input route, never layers on it:
+                    # restore the approved baseline (muted, verified) first. A conflict
+                    # or failed restore raises here and the cast is refused.
+                    manual.recover()
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
                 with self.server.DSP() as dsp:

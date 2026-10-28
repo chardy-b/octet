@@ -80,9 +80,10 @@ The same crossover, EQ, polarity, output mutes and master level apply to all
 sources. Track transport is hidden while a physical input is selected; browsing
 and adding tracks to the Tidal queue remain available.
 
-Source switching requires the **Output DSP controls** preset. It adds a source
-mixer before the existing stereo-to-eight-output pipeline and captures all ten
-iD14 channels in the hardware's native format. USB inputs use asynchronous
+Source switching works with the **Output DSP controls** preset and with an approved
+Auto Tune baseline (see [Manual source selection on an approved baseline](#manual-source-selection-on-an-approved-baseline-wil-250)).
+It adds a source mixer before the existing stereo-to-eight-output pipeline and
+captures all ten iD14 channels in the hardware's native format. USB inputs use asynchronous
 resampling and rate adjustment to follow the DAC8x clock. Returning to Tidal
 restores its original capture and clock settings. The source is saved in the
 existing DSP preset and survives service restarts; boot remains muted. Each
@@ -518,8 +519,8 @@ are restored on stop or failure, still muted.
 The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
 Manual source selection stays muted. Auto Tune excludes automatic playback;
 a missing receiver, loopback, unsupported preset or failed reload stays muted.
-Manual source selection still requires the **Output DSP controls** preset. Automatic
-AirPlay also supports a SHA-verified `TUNING.active(path)` baseline directly under
+Manual source selection works on the channel preset or, with its own journal, on an
+approved baseline (WIL-250, below). Automatic AirPlay also supports a SHA-verified `TUNING.active(path)` baseline directly under
 `/var/lib/octet-autotune/baselines`, provided its loaded JSON exactly equals the
 baseline YAML and it uses stereo Tidal loopback at a 48 kHz DSP rate. Unsupported
 configs fail closed; there is no fallback to the 37-filter channel preset.
@@ -630,6 +631,64 @@ confirm audible left/right output through protected filters; check MPD queue and
 position retention, −18 dB startup at maximum phone volume, output pair mute
 retention, source round trips, tuning exclusion, stop/start and service failure.
 Do not claim end-to-end playback from mocked tests alone.
+
+## Manual source selection on an approved baseline (WIL-250)
+
+**Software-tested only; not validated on the Pi, with no physical speaker output.**
+Tidal, AirPlay and USB inputs can be chosen while a SHA-verified Auto Tune baseline
+(`TUNING.active(path)`, directly under `/var/lib/octet-autotune/baselines`) is the
+active speaker profile. `CHANNEL_PROFILE` is not required and is never loaded as a
+substitute. `source_switching_available` and a concise `source_switching_reason` in
+`/api/status` say whether a manual change is safe now; the selector is disabled with
+that reason for Auto Tune ownership (or unknown ownership), an unapproved, altered or
+unsupported configuration, a stopped DSP, or pending recovery. The DSP page and
+status keep the baseline's name and show it as a read-only profile with the input
+shown beside it; they never present the route as an editable channel preset. The
+channel preset keeps its existing in-place, persistent source behavior.
+
+**The route.** `manual_source_route.py` derives a candidate from the *original*
+baseline bytes (never from a previous candidate, so input stages cannot accumulate).
+`audio_sources.verify_output_equivalence` requires the entire speaker side (pipeline,
+filters, mixers, playback device, polarity, mutes, gains, protections, title and every
+other key) to be exactly equal; only the one first `octet_source` mixer and the capture
+and clock fields may differ, and CamillaDSP's parsed defaults are tolerated on the
+input side only. Only a stereo Tidal-loopback original at 48 kHz feeding an explicit
+eight-output DAC is accepted. `source_metadata` now rejects malformed, duplicate,
+unexpected or ambiguous source records before anything changes. The baseline file is
+never written. A candidate passes CamillaDSP `--check`, then a 0600 bounded
+`/var/lib/octet-dsp/manual-source-recovery.json` (original path, SHA-256, a generation,
+the previous generation and the source) is created exclusively with fdatasync and
+directory fsync **before** `SetConfigFilePath(candidate)` and `Reload`. Selection mutes
+and pauses MPD without clearing it, and success stays **muted**: Tidal needs Play and
+a line input needs Unmute. The route returns to the original path and exact config
+(muted, DSP running, mute read back) on a failed reload, wrong loaded config, lost
+mute or when Tidal is selected; only then are candidates and the journal deleted.
+A second manual switch writes a new generation and keeps the previous one in the
+journal until the new one is verified. Selecting the current source is a no-op. A
+restart does not keep a manual route: startup recovers the baseline, muted.
+
+**One owner at a time.** The manual journal, `airplay-recovery.json` and
+`bluetooth-recovery.json` are mutually exclusive, together with the existing
+cross-process `audio.lock` lease and `server.LOCK`. Startup order is: confirm mute,
+manual recovery, AirPlay recovery, Bluetooth recovery. A manual journal beside either
+other journal, an active AirPlay or Bluetooth owner, an Auto Tune owner, an unknown
+owner, a foreign candidate path, or a changed approval/digest keeps output muted,
+retains every file and refuses recovery, source changes and unmute until an operator
+resolves it. AirPlay and Bluetooth recovery refuse over a manual journal for the same
+reason. Manual selection first stops and restores an automatic AirPlay or Bluetooth
+owner (muted); if that fails it stops there. A fresh AirPlay cast restores a manual
+route before it prepares its own baseline route; Bluetooth start is refused while a
+manual route is loaded. `approved()` recognises a candidate path only for this
+process's journaled route with exact loaded content. Auto Tune actions restore the
+manual route first. Never delete a journal to bypass a failed restore; a retry runs
+on the next control (for example Mute).
+
+**Not covered.** CamillaDSP has no compare-and-set, so a non-cooperative websocket
+client (CamillaGUI) is detected by readback, not prevented. Software tests use a
+synthetic 129-filter baseline and a simulated CamillaDSP; they do not show that any
+real Pi baseline can be routed, that USB capture opens, or that sound reaches the
+speakers. Deployment, restarts and attended low-level listening with graph, PCM and
+rollback checks remain separate approved steps.
 
 ## Bluetooth A2DP manual receiver (WIL-249)
 
