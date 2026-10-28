@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import bluetooth_identity
+import install_airplay
 import install_bluetooth
 
 OPEN = dict(version=2, mode='open', enabled=True, addresses=[])
@@ -50,6 +51,14 @@ class InstallerPolicyDefaultTests(unittest.TestCase):
     def test_install_source_never_writes_an_open_policy(self):
         self.assertNotIn(b'"open"', install_bluetooth.DEFAULT)
         self.assertEqual(self.read(json.dumps(OPEN).encode()).mode, 'open')
+
+    def test_bluetooth_dropin_preserves_airplay_socket_traversal(self):
+        # systemd merges RuntimeDirectory names but applies the last mode to both.
+        # Shairport's octet-airplay group needs x on /run/octet-airplay.
+        self.assertIn('RuntimeDirectoryMode=0750\n', install_airplay.REMOTE_OVERRIDE)
+        self.assertIn('RuntimeDirectoryMode=0750\n', install_bluetooth.dropin())
+        self.assertIn('RuntimeDirectory=octet-bluetooth\n', install_bluetooth.dropin())
+        self.assertNotIn('RuntimeDirectoryMode=0770\n', install_bluetooth.dropin())
 
 
 if __name__ == '__main__':

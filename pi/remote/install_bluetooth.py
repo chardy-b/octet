@@ -67,7 +67,9 @@ def dropin():
     return ('[Service]\n'
             f'SupplementaryGroups={" ".join(groups)}\n'
             'RuntimeDirectory=octet-bluetooth\n'
-            'RuntimeDirectoryMode=0700\n'
+            # systemd applies the last RuntimeDirectoryMode to AirPlay too.
+            # Both directories need group traversal; control.sock remains owner-only 0600.
+            'RuntimeDirectoryMode=0750\n'
             'ExecStopPost=/usr/bin/python3 /opt/octet-remote/airplay_control.py mute-on-exit\n')
 
 
