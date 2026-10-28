@@ -12,7 +12,7 @@ import time
 
 import yaml
 
-from audio_sources import source_metadata
+from audio_sources import loaded_config_matches_approved, source_metadata
 
 ROOT = Path('/var/lib/octet-dsp')
 MAX_CONFIG = 2 * 1024 * 1024
@@ -185,9 +185,9 @@ class BaselineRoute:
                 raise RuntimeError('AirPlay baseline is not approved')
             self.record = dict(version=1, original=path, sha256=approval['sha256'])
             original, config = self.original()
-            if loaded != config:
+            if not loaded_config_matches_approved(config, loaded):
                 raise RuntimeError('Loaded DSP differs from the approved baseline')
-            expected = routed(loaded)
+            expected = routed(config)
             persist(self.candidate, yaml.safe_dump(expected, sort_keys=False).encode(), 0o640)
             check = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(self.candidate)],
                                    capture_output=True, timeout=10)
@@ -223,7 +223,7 @@ class BaselineRoute:
         self.original()
         return (dsp.call('GetConfigFilePath') == str(self.candidate)
                 and dsp.call('GetState') == 'Running'
-                and loaded == expected
+                and loaded_config_matches_approved(expected, loaded)
                 and yaml.safe_load(read_bounded(self.candidate, MAX_CONFIG)) == expected)
 
     def recover(self):
@@ -236,7 +236,9 @@ class BaselineRoute:
             loaded = json.loads(dsp.call('GetConfigJson'))
             if current not in (str(original), str(self.candidate)):
                 raise RuntimeError('DSP ownership changed; AirPlay recovery retained')
-            if current == str(original) and loaded not in (config, routed(config)):
+            if (current == str(original)
+                    and not (loaded_config_matches_approved(config, loaded)
+                             or loaded_config_matches_approved(routed(config), loaded))):
                 raise RuntimeError('DSP config changed; AirPlay recovery retained')
             self.ownership()
             dsp.call('SetConfigFilePath', str(original))
@@ -248,7 +250,7 @@ class BaselineRoute:
                 self.ownership()
                 self.original()
                 if (dsp.call('GetConfigFilePath') == str(original)
-                        and json.loads(dsp.call('GetConfigJson')) == config
+                        and loaded_config_matches_approved(config, json.loads(dsp.call('GetConfigJson')))
                         and dsp.call('GetState') == 'Running'):
                     self.server.ACTIVE_CAPTURE_CHANNELS = (0, 1)
                     # Journal last: a crash during cleanup still has recovery evidence.

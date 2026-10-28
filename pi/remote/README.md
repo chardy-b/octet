@@ -650,10 +650,12 @@ channel preset keeps its existing in-place, persistent source behavior.
 baseline bytes (never from a previous candidate, so input stages cannot accumulate).
 `audio_sources.verify_output_equivalence` requires the entire speaker side (pipeline,
 filters, mixers, playback device, polarity, mutes, gains, protections, title and every
-other key) to be exactly equal; only the one first `octet_source` mixer and the capture
-and clock fields may differ, and CamillaDSP's parsed defaults are tolerated on the
-input side only. Only a stereo Tidal-loopback original at 48 kHz feeding an explicit
-eight-output DAC is accepted. `source_metadata` now rejects malformed, duplicate,
+other key) to match; only CamillaDSP's observed inert `description: null` for filters
+whose approved YAML omits a description is normalized on readback. The approved
+file remains byte-digest-verified, and no acoustic/output field is ignored. Only the
+one first `octet_source` mixer and the capture and clock fields may differ;
+CamillaDSP's parsed defaults are tolerated on the input side only. Only a stereo
+Tidal-loopback original at 48 kHz feeding an explicit eight-output DAC is accepted. `source_metadata` now rejects malformed, duplicate,
 unexpected or ambiguous source records before anything changes. The baseline file is
 never written. A candidate passes CamillaDSP `--check`, then a 0600 bounded
 `/var/lib/octet-dsp/manual-source-recovery.json` (original path, SHA-256, a generation,

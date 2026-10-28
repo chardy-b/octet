@@ -320,6 +320,29 @@ def baseline_config():
 class OutputEquivalence(unittest.TestCase):
     """The speaker side of an approved profile may never differ from its source route."""
 
+    def test_real_camilladsp_null_filter_description_normalization_is_inert_only(self):
+        # Read-only Pi observation: five live filters without a description in the
+        # approved YAML have `description: null` in GetConfigJson. No other field differs.
+        original = baseline_config()
+        name = 'baseline_only_1'
+        self.assertNotIn('description', original['filters'][name])
+        loaded = copy.deepcopy(original)
+        loaded['filters'][name]['description'] = None
+        self.assertTrue(audio_sources.loaded_config_matches_approved(original, loaded))
+        routed = audio_sources.source_config(original, usb())
+        routed['filters'][name]['description'] = None
+        audio_sources.verify_output_equivalence(original, routed, usb())
+        for changed in ('non-null', 0, False):
+            with self.subTest(changed=changed):
+                altered = copy.deepcopy(loaded)
+                altered['filters'][name]['description'] = changed
+                self.assertFalse(audio_sources.loaded_config_matches_approved(original, altered))
+        altered = copy.deepcopy(loaded)
+        altered['filters'][name]['parameters']['gain'] = 12
+        self.assertFalse(audio_sources.loaded_config_matches_approved(original, altered))
+        with self.assertRaisesRegex(RuntimeError, 'speaker output'):
+            audio_sources.verify_output_equivalence(original, altered)
+
     def test_baseline_round_trip_proves_output_subtree_for_every_source(self):
         original = baseline_config()
         self.assertEqual(len(original['filters']), 129)

@@ -39,8 +39,8 @@ import yaml
 
 from airplay_baseline import (BaselineRoute, MAX_CONFIG, MAX_JOURNAL, digest, lexists,
                               persist, read_bounded, sync_directory)
-from audio_sources import (meter_channels, require_tidal_baseline, source_config,
-                           usb_capture_ready, validate_source, verify_output_equivalence)
+from audio_sources import (loaded_config_matches_approved, meter_channels, require_tidal_baseline,
+                           source_config, usb_capture_ready, validate_source, verify_output_equivalence)
 
 JOURNAL = 'manual-source-recovery.json'
 CANDIDATE = 'manual-source-{}.yml'
@@ -201,7 +201,8 @@ class ManualSourceRoute(BaselineRoute):
         data = read_bounded(original, MAX_CONFIG)
         approval = self.server.TUNING.active(path)
         config = yaml.safe_load(data)
-        if not approval or approval['sha256'] != digest(data) or config != loaded:
+        if (not approval or approval['sha256'] != digest(data)
+                or not loaded_config_matches_approved(config, loaded)):
             raise RuntimeError('Source routing requires the exact approved baseline to be loaded')
         return data, config
 
@@ -460,7 +461,7 @@ class ManualSourceRoute(BaselineRoute):
                 self.ownership()
                 self.original()
                 if (dsp.call('GetConfigFilePath') == str(path)
-                        and json.loads(dsp.call('GetConfigJson')) == config
+                        and loaded_config_matches_approved(config, json.loads(dsp.call('GetConfigJson')))
                         and dsp.call('GetState') == 'Running'
                         and dsp.call('GetMute') is True):
                     self.server.ACTIVE_CAPTURE_CHANNELS = (0, 1)

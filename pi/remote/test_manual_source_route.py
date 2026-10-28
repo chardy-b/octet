@@ -189,6 +189,31 @@ JOURNAL = 'manual-source-recovery.json'
 
 
 class Selection(RouteFixture):
+    def test_real_loaded_null_filter_label_allows_manual_airplay_round_trip(self):
+        # CamillaDSP observed on Octet adds description=null to five filters
+        # with no label in the approved 146-filter YAML. Simulate that exact
+        # readback on every reload without rewriting approved baseline bytes.
+        label = 'baseline_only_1'
+        self.assertNotIn('description', self.config['filters'][label])
+        self.loaded['filters'][label]['description'] = None
+        original_call = self.dsp.call.side_effect
+        def normalized_call(name, *args):
+            result = original_call(name, *args)
+            if name == 'Reload':
+                self.loaded['filters'][label]['description'] = None
+            return result
+        with patch.object(self.dsp, 'call', side_effect=normalized_call):
+            self.assertTrue(server.current_status()['source_switching_available'])
+            self.select(AIRPLAY)
+            self.assertEqual(audio_sources.source_metadata(self.loaded)['id'], 'airplay')
+            self.assertTrue(self.muted)
+            self.assertEqual(self.original.read_bytes(), self.original_bytes)
+            self.select(audio_sources.TIDAL)
+            self.assertEqual(self.path, str(self.original))
+            self.assertTrue(audio_sources.loaded_config_matches_approved(self.config, self.loaded))
+            self.assertFalse((self.storage / 'manual-source-recovery.json').exists())
+            self.assert_never_unmuted()
+
     def test_repeated_switches_round_trip_from_the_original_each_time(self):
         seen = []
         real = audio_sources.source_config

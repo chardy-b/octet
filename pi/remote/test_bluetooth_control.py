@@ -94,6 +94,24 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.control.route.exists())
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
 
+    def test_live_null_filter_label_allows_approved_baseline_and_muted_recovery(self):
+        label = next(name for name, value in self.config['filters'].items() if 'description' not in value)
+        self.state['config']['filters'][label]['description'] = None
+        original_call = self.dsp.call.side_effect
+        def normalized_call(name, *args):
+            result = original_call(name, *args)
+            if name == 'Reload':
+                self.state['config']['filters'][label]['description'] = None
+            return result
+        with patch.object(self.dsp, 'call', side_effect=normalized_call):
+            self.control.route.begin(str(self.path), self.state['config'])
+            self.control.route.verify()
+            self.control.route.recover()
+        self.assertEqual(self.state['path'], str(self.path))
+        self.assertEqual(self.path.read_bytes(), self.data)
+        self.assertFalse(self.control.route.exists())
+        self.assertTrue(self.state['mute'])
+
     def test_snapshot_is_exact_readonly_and_journal_precedes_any_path_change(self):
         self.prepare()
         self.assertEqual(self.control.route.snapshot.read_bytes(), self.data)

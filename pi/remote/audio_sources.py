@@ -402,6 +402,26 @@ def _output_subtree(config):
     return result
 
 
+def loaded_config_matches_approved(approved, loaded):
+    """Accept only CamillaDSP's inert null description for a missing filter label.
+
+    The approved file still has to pass its byte-digest check independently. No
+    acoustic/output setting or non-null metadata is normalized away here.
+    """
+    if not isinstance(approved, dict) or not isinstance(loaded, dict):
+        return False
+    normalized = copy.deepcopy(loaded)
+    expected_filters = approved.get('filters')
+    actual_filters = normalized.get('filters')
+    if isinstance(expected_filters, dict) and isinstance(actual_filters, dict):
+        for name, expected in expected_filters.items():
+            actual = actual_filters.get(name)
+            if (isinstance(expected, dict) and isinstance(actual, dict)
+                    and 'description' not in expected and actual.get('description') is None):
+                actual.pop('description', None)
+    return normalized == approved
+
+
 def _contains(actual, expected):
     """CamillaDSP adds parsed defaults; every requested value must still be present."""
     if isinstance(expected, dict):
@@ -422,7 +442,7 @@ def verify_output_equivalence(original, candidate, source=None):
     """
     if source_metadata(original)['id'] != 'tidal':
         raise RuntimeError('The approved original must use the Tidal capture')
-    if _output_subtree(candidate) != _output_subtree(original):
+    if not loaded_config_matches_approved(_output_subtree(original), _output_subtree(candidate)):
         raise RuntimeError('The source route changed a speaker output setting')
     metadata = source_metadata(candidate)
     devices, base = candidate['devices'], original['devices']
