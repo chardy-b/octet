@@ -59,6 +59,8 @@ class RouteFixture(unittest.TestCase):
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         self.dsp.call.side_effect = self.call
+        self.readiness = []
+        self.capture_failure = None
         self.sources = [audio_sources.TIDAL, audio_sources.AIRPLAY, MONO_1, MONO_2, PAIR]
         self.patches = [
             patch.object(airplay_baseline, 'ROOT', self.storage),
@@ -74,6 +76,8 @@ class RouteFixture(unittest.TestCase):
             patch('airplay_control.receiver_running', return_value=True),
             patch('airplay_control.pcm_running', return_value=True),
             patch('manual_source_route.time.sleep'),
+            # Real /proc/asound proof is covered in test_audio_sources; here it is a recorded stub.
+            patch('manual_source_route.usb_capture_ready', side_effect=self.capture_ready),
         ]
         for item in self.patches:
             item.start()
@@ -129,6 +133,12 @@ class RouteFixture(unittest.TestCase):
                     for source in row['sources']:
                         source.setdefault('inverted', False)
         return None
+
+    def capture_ready(self, source, rate):
+        # Readiness is only meaningful once the candidate is the loaded path.
+        self.readiness.append((source['id'], rate, Path(self.path).name.startswith('manual-source-')))
+        if self.capture_failure:
+            raise RuntimeError(self.capture_failure.pop(0) if isinstance(self.capture_failure, list) else self.capture_failure)
 
     def names(self):
         return [call[0] for call in self.calls]
@@ -948,6 +958,149 @@ class Status(RouteFixture):
         self.manual.blocked = None
         self.control.needs_mute = True
         self.assertRegex(server.current_status()['source_switching_reason'], 'AirPlay recovery')
+
+
+
+class AutomaticJournalExclusion(Arbitration):
+    """AirPlay and Bluetooth journals are mutually exclusive, not just exclusive of manual."""
+
+    def airplay_journal(self, boundary='journal'):
+        """A real AirPlay journal left by a process that died (before or after the path switch)."""
+        normal = self.dsp.call.side_effect
+        def crash_call(name, *args):
+            result = normal(name, *args)
+            if boundary == 'path' and name == 'SetConfigFilePath':
+                raise SystemExit('simulated process death')
+            return result
+        real = airplay_baseline.persist
+        def crash_persist(path, data, mode):
+            real(path, data, mode)
+            if boundary == 'journal' and path.suffix == '.json':
+                raise SystemExit('simulated process death')
+        with patch.object(airplay_baseline, 'persist', side_effect=crash_persist), \
+             patch.object(self.dsp, 'call', side_effect=crash_call):
+            with self.assertRaises(SystemExit):
+                self.control.event('start', now=0)
+        self.assertTrue((self.storage / 'airplay-recovery.json').exists())
+
+    def bluetooth_journal(self):
+        """Valid Bluetooth recovery evidence: journal plus its immutable snapshot."""
+        record = dict(version=1, original=str(self.original), sha256=self.sha, generation='b' * 32)
+        (self.storage / 'bluetooth-recovery.json').write_text(json.dumps(record))
+        (self.storage / 'bluetooth-original.yml').write_bytes(self.original_bytes)
+
+    def evidence_unchanged(self, before):
+        self.assertEqual(self.evidence(), before)
+        self.assertTrue(self.muted)
+        self.assertNotIn('SetConfigFilePath', self.names())
+        self.assertNotIn('Reload', self.names())
+        self.assertNotIn(('SetMute', False), self.calls)
+
+    def test_both_automatic_journals_at_startup_stay_muted_and_retained(self):
+        for boundary in ('journal', 'path'):
+            with self.subTest(boundary=boundary):
+                self.airplay_journal(boundary)
+                self.bluetooth_journal()
+                bt = self.bluetooth()
+                self.new_process()
+                bt.route.release()
+                before = self.evidence()
+                self.calls.clear()
+                server.initialize_dsp()
+                self.evidence_unchanged(before)
+                self.assertTrue(self.control.needs_mute)
+                self.assertTrue(self.control.baseline.exists())
+                self.assertTrue(bt.route.exists())
+                for action, body in (('mute', dict(muted=False)), ('volume', dict(db=-40)),
+                                     ('source', dict(id=MONO_1['id']))):
+                    with self.assertRaises(Exception):
+                        server.action(action, body)
+                self.evidence_unchanged(before)
+                # Only an operator removing one journal lets the other recover.
+                self.control.baseline.release()
+                bt.route.release()
+                (self.storage / 'bluetooth-recovery.json').unlink()
+                (self.storage / 'bluetooth-original.yml').unlink()
+                self.new_process()
+                server.initialize_dsp()
+                self.assertFalse((self.storage / 'airplay-recovery.json').exists())
+                self.assertEqual(self.path, str(self.original))
+                self.assertTrue(self.muted)
+                self.assertNotIn(('SetMute', False), self.calls)
+
+    def test_neither_automatic_route_begins_or_recovers_over_the_other(self):
+        self.bluetooth_journal()
+        before = self.evidence()
+        with self.assertRaisesRegex(RuntimeError, 'Bluetooth'):
+            self.control.baseline.begin(str(self.original), copy.deepcopy(self.config))
+        with self.assertRaisesRegex(RuntimeError, 'Bluetooth'):
+            self.control.baseline.recover()
+        with self.assertRaises(RuntimeError):
+            self.control.event('start', now=0)
+        self.assertEqual(self.evidence(), before)
+        self.assertNotIn('SetConfigFilePath', self.names())
+        self.assertIsNone(self.control.baseline._lock_fd)  # a refused owner never holds the lease
+        (self.storage / 'bluetooth-recovery.json').unlink()
+        (self.storage / 'bluetooth-original.yml').unlink()
+        self.airplay_journal()
+        before = self.evidence()
+        bt = self.bluetooth()
+        for call in (lambda: bt.route.begin(str(self.original), copy.deepcopy(self.config)),
+                     lambda: bt.route.recover()):
+            with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
+                call()
+        self.assertEqual(self.evidence(), before)
+        self.assertIsNone(bt.route._lock_fd)
+
+
+
+class CaptureReadiness(RouteFixture):
+    def test_usb_selection_requires_running_capture_after_the_path_switch(self):
+        self.select(MONO_1)
+        self.assertEqual(self.readiness[0], (MONO_1['id'], 48000, True))
+        self.assertTrue(self.muted)
+        self.assert_never_unmuted()
+
+    def test_each_usb_switch_is_checked_and_airplay_never_needs_a_live_caster(self):
+        for source in (MONO_1, PAIR, MONO_2):
+            self.select(source)
+        self.assertEqual([item[0] for item in self.readiness], [MONO_1['id'], PAIR['id'], MONO_2['id']])
+        self.readiness.clear()
+        with patch('airplay_control.pcm_running', return_value=False):  # nobody is casting
+            self.select(AIRPLAY)
+            self.assertEqual(server.current_status()['source'], 'airplay')
+            self.assertFalse(server.current_status()['airplay']['active'])
+        self.select(audio_sources.TIDAL)
+        self.assertEqual(self.readiness, [])
+        self.assertTrue(self.muted)
+        self.assert_never_unmuted()
+
+    def test_unready_capture_restores_the_baseline_muted_with_the_reason(self):
+        for reason in ('The USB interface is not connected', 'The USB capture substream stalled',
+                       'The USB capture substream is not owned by CamillaDSP'):
+            with self.subTest(reason=reason):
+                self.capture_failure = reason
+                with self.assertRaisesRegex(RuntimeError, 'original baseline was restored') as caught:
+                    self.select(MONO_1)
+                self.assertIn(reason, str(caught.exception))
+                self.assert_baseline_restored()
+                self.assert_never_unmuted()
+        self.capture_failure = None
+        self.select(MONO_1)  # the failed attempts left nothing behind
+
+    def test_a_late_starting_capture_is_accepted_within_the_bounded_window(self):
+        self.capture_failure = ['stalled', 'stalled']
+        self.select(MONO_1)
+        self.assertEqual(len(self.readiness), 3)
+        self.assertTrue(self.muted)
+
+    def test_failed_switch_between_usb_inputs_returns_to_the_baseline_not_the_old_route(self):
+        self.select(MONO_1)
+        self.capture_failure = 'The USB capture substream stalled'
+        with self.assertRaisesRegex(RuntimeError, 'original baseline was restored'):
+            self.select(MONO_2)
+        self.assert_baseline_restored()
+        self.assert_never_unmuted()
 
 
 if __name__ == '__main__':

@@ -34,6 +34,8 @@ def persist(path, data, mode):
 
 
 class BluetoothRoute(BaselineRoute):
+    foreign_journals = ('airplay-recovery.json', 'manual-source-recovery.json')
+
     @property
     def journal(self):
         return self.root / 'bluetooth-recovery.json'

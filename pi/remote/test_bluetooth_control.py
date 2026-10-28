@@ -490,8 +490,10 @@ class PrepareTests(unittest.TestCase):
             with self.subTest(race=race):
                 self.setUp()
                 airplay_journal = self.root / 'airplay-recovery.json'
-                airplay_journal.write_bytes(b'preserve AirPlay evidence')
                 def check(*args, **kwargs):
+                    # AirPlay evidence appearing mid-check is a conflict (Bluetooth would
+                    # refuse to begin beside it); it must survive whatever the race does.
+                    airplay_journal.write_bytes(b'preserve AirPlay evidence')
                     if race == 'candidate':
                         self.control.route.candidate.write_bytes(b'changed')
                     elif race == 'approval':

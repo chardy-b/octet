@@ -81,8 +81,9 @@ def lexists(path):
 
 
 class BaselineRoute:
-    # Other owners' journals: their presence is a conflict, never permission to proceed.
-    foreign_journals = ('manual-source-recovery.json',)
+    # Every other owner's journal. Its presence is a conflict, never permission to
+    # proceed: each route (AirPlay, Bluetooth, manual) lists all journals but its own.
+    foreign_journals = ('bluetooth-recovery.json', 'manual-source-recovery.json')
 
     def __init__(self, server):
         self.server = server
@@ -161,8 +162,11 @@ class BaselineRoute:
         return path, yaml.safe_load(data)
 
     def refuse_foreign(self):
-        if any(lexists(self.root / name) for name in self.foreign_journals):
-            raise RuntimeError('A manual source route owns audio recovery evidence; recovery retained')
+        owners = {'manual-source-recovery.json': 'A manual source route', 'bluetooth-recovery.json': 'Bluetooth',
+                  'airplay-recovery.json': 'AirPlay'}
+        for name in self.foreign_journals:
+            if lexists(self.root / name):
+                raise RuntimeError(f'{owners[name]} owns audio recovery evidence; recovery retained')
 
     def ownership(self):
         self.check_lock()

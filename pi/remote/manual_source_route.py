@@ -40,7 +40,7 @@ import yaml
 from airplay_baseline import (BaselineRoute, MAX_CONFIG, MAX_JOURNAL, digest, lexists,
                               persist, read_bounded, sync_directory)
 from audio_sources import (meter_channels, require_tidal_baseline, source_config,
-                           validate_source, verify_output_equivalence)
+                           usb_capture_ready, validate_source, verify_output_equivalence)
 
 JOURNAL = 'manual-source-recovery.json'
 CANDIDATE = 'manual-source-{}.yml'
@@ -376,6 +376,7 @@ class ManualSourceRoute(BaselineRoute):
                     dsp.call('Reload')
                 finally:
                     self.mute()
+                unready = None
                 for _ in range(VERIFY_ATTEMPTS):
                     self.ownership()
                     _, config = self.original()
@@ -385,13 +386,21 @@ class ManualSourceRoute(BaselineRoute):
                         raise RuntimeError('Manual source physical mute lost')
                     if (dsp.call('GetConfigFilePath') == str(candidate) and dsp.call('GetState') == 'Running'
                             and equivalent(config, json.loads(dsp.call('GetConfigJson')), source)):
-                        if dsp.call('GetMute') is not True:  # last readback before success
-                            raise RuntimeError('Manual source physical mute lost')
-                        self.blocked = None
-                        self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(expected)
-                        return expected
+                        try:
+                            if source['id'].startswith('usb:'):
+                                # Running DSP and --check do not prove the physical capture
+                                # substream runs: read it (never open it) while Camilla owns it.
+                                usb_capture_ready(source, expected['devices']['samplerate'])
+                        except RuntimeError as error:
+                            unready = str(error)
+                        else:
+                            if dsp.call('GetMute') is not True:  # last readback before success
+                                raise RuntimeError('Manual source physical mute lost')
+                            self.blocked = None
+                            self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(expected)
+                            return expected
                     time.sleep(.1)
-            raise RuntimeError('The selected input did not start')
+            raise RuntimeError('The selected input did not start' + (f': {unready}' if unready else ''))
         except Exception as error:
             self.fail(error)
 
@@ -403,7 +412,7 @@ class ManualSourceRoute(BaselineRoute):
         except Exception as recovery:
             raise RuntimeError('Source change failed and the original baseline could not be '
                                'verified; output is muted and recovery evidence is retained') from recovery
-        raise RuntimeError('Source change failed; the original baseline was restored and output is muted') from error
+        raise RuntimeError(f'Source change failed ({error}); the original baseline was restored and output is muted') from error
 
     # --- recovery -----------------------------------------------------------------
     def startup(self):

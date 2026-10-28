@@ -4,6 +4,7 @@ import ctypes
 import subprocess
 import sys
 import json
+import time
 from pathlib import Path
 import re
 
@@ -238,6 +239,93 @@ def _check_source_mixer(config, metadata):
                       and capture.get('channels') == count)
     if capture.get('type') != 'Alsa' or not consistent:
         raise RuntimeError('The active capture device does not match the selected source')
+
+
+def _pcm_text(path):
+    try:
+        raw = path.read_text()
+    except (OSError, UnicodeDecodeError) as error:
+        raise RuntimeError('The USB capture substream could not be read') from error
+    if len(raw) > 8192:
+        raise RuntimeError('Oversized PCM observation')
+    return raw
+
+
+def _pcm_fields(raw):
+    result = {}
+    for line in raw.splitlines():
+        if not line.strip() or line == '-----':
+            continue
+        key, separator, value = line.partition(':')
+        key, value = key.strip(), value.strip()
+        if not separator or not key or not value or key in result:
+            raise RuntimeError('Invalid or duplicate PCM field')
+        result[key] = value
+    return result
+
+
+def _capture_sample(sub, processes):
+    raw = _pcm_text(sub / 'status')
+    if raw.strip() == 'closed':
+        raise RuntimeError('The USB capture substream is not open')
+    fields = _pcm_fields(raw)
+    if fields.get('state') != 'RUNNING':
+        raise RuntimeError('The USB capture substream is not RUNNING')
+    try:
+        owner, hw_ptr, appl_ptr = (int(fields[key]) for key in ('owner_pid', 'hw_ptr', 'appl_ptr'))
+    except (KeyError, ValueError) as error:
+        raise RuntimeError('Invalid PCM status') from error
+    if owner <= 0 or hw_ptr < 0 or appl_ptr < 0:
+        raise RuntimeError('Invalid PCM status')
+    # The ALSA owner is a task (thread); its thread group must be the CamillaDSP process.
+    try:
+        group = [line.partition(':')[2].strip() for line in (processes / str(owner) / 'status').read_text().splitlines()
+                 if line.startswith('Tgid:')]
+        name = (processes / str(int(group[0])) / 'comm').read_text().strip() if len(group) == 1 else None
+    except (OSError, ValueError, IndexError):
+        name = None
+    if name != 'camilladsp':
+        raise RuntimeError('The USB capture substream is not owned by CamillaDSP')
+    return owner, hw_ptr, appl_ptr
+
+
+def usb_capture_ready(source, rate, *, proc=Path('/proc/asound'), processes=Path('/proc'),
+                      interval=.05, sleep=time.sleep):
+    """Read-only proof that the selected USB capture is running under CamillaDSP and advancing.
+
+    Never opens the (occupied) PCM and does not require signal. The card is found by the
+    discovered ALSA ID and must resolve inside proc to a cardN whose id matches; the
+    exact hw: device (no plughw), native S32_LE, channel count and rate must match the
+    selection; the substream must be RUNNING, owned by a CamillaDSP thread, with both
+    pointers advancing across a bounded interval. Raises ValueError for a source that is
+    not a USB capture and RuntimeError, with a specific reason, for anything unready.
+    """
+    validate_source(source)
+    match = re.fullmatch(r'usb:([A-Za-z0-9_]+):.+', source['id'])
+    if match is None:
+        raise ValueError('Capture readiness applies only to USB inputs')
+    card_id = match[1]
+    try:
+        card = (proc / card_id).resolve(strict=True)
+        identity = (card / 'id').read_text().strip()
+    except OSError as error:
+        raise RuntimeError('The USB interface is not connected') from error
+    if card.parent != proc.resolve() or not re.fullmatch(r'card[0-9]+', card.name) or identity != card_id:
+        raise RuntimeError('USB card identity does not match the selected input')
+    sub = card / 'pcm0c' / 'sub0'
+    first = _capture_sample(sub, processes)
+    params = _pcm_fields(_pcm_text(sub / 'hw_params'))
+    actual_rate = re.fullmatch(r'([0-9]+)(?: \(([0-9]+)/1\))?', params.get('rate', ''))
+    if (params.get('format') != 'S32_LE' or params.get('channels') != str(source['channels'])
+            or actual_rate is None or int(actual_rate[1]) != rate
+            or (actual_rate[2] is not None and int(actual_rate[2]) != rate)):
+        raise RuntimeError('USB capture format, channels or rate differ from the selected input')
+    sleep(interval)
+    second = _capture_sample(sub, processes)
+    if second[0] != first[0]:
+        raise RuntimeError('The USB capture substream changed owner')
+    if second[1] <= first[1] or second[2] <= first[2]:
+        raise RuntimeError('The USB capture substream stalled')
 
 
 def source_metadata(config):

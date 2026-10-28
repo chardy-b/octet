@@ -367,6 +367,33 @@ class OutputEquivalence(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         audio_sources.verify_output_equivalence(original, candidate, checked)
 
+    def test_per_output_polarity_protection_and_routing_drift_is_rejected(self):
+        original = baseline_config()
+        def stage_for(c, name):
+            return next(st for st in c['pipeline'] if name in st.get('names', []) and st['type'] == 'Filter')
+        def invert(c): c['filters']['output_3_polarity']['parameters']['inverted'] = True
+        def mute_live_output(c): c['filters']['output_1_polarity']['parameters']['mute'] = True  # unmuted in the fixture
+        def tweeter_hp(c): c['filters']['tweeter_hp']['parameters']['freq'] = 200
+        def sub_lp(c): c['filters']['sub_lp']['parameters']['freq'] = 5000
+        def tweeter_gain(c): c['filters']['tweeter_attenuation']['parameters']['gain'] = 0
+        def filter_type(c): c['filters']['tweeter_hp']['type'] = 'Gain'
+        def reroute(c): stage_for(c, 'tweeter_hp')['channels'] = [0, 1]
+        def bypass(c): stage_for(c, 'exciter_ex30_1')['bypassed'] = True
+        def stage_names(c): stage_for(c, 'tweeter_hp')['names'] = ['tweeter_lp']
+        def playback_channels(c): c['devices']['playback']['channels'] = 2
+        def playback_format(c): c['devices']['playback']['format'] = 'S16_LE'
+        def rate(c): c['devices']['samplerate'] = 44100
+        def mixer_out(c): c['mixers']['exciter_pairs']['channels']['out'] = 4
+        for source in (usb((0, 0), 'mono-1'), audio_sources.AIRPLAY):
+            for mutate in (invert, mute_live_output, tweeter_hp, sub_lp, tweeter_gain, filter_type, reroute,
+                           bypass, stage_names, playback_channels, playback_format, rate, mixer_out):
+                with self.subTest(source=source['id'], mutate=mutate.__name__):
+                    candidate = audio_sources.source_config(original, source)
+                    mutate(candidate)
+                    for checked in (source, None):
+                        with self.assertRaises(RuntimeError):
+                            audio_sources.verify_output_equivalence(original, candidate, checked)
+
     def test_source_stage_must_be_single_first_and_truthful(self):
         original = baseline_config()
         source = usb((0, 0), 'mono-1')
@@ -498,6 +525,113 @@ class StrictSourceMetadata(unittest.TestCase):
         audio_sources.validate_source(usb())
         audio_sources.validate_source(audio_sources.AIRPLAY)
         audio_sources.validate_source(audio_sources.TIDAL)
+
+
+
+# The Pi's ALSA status layout (as in test_bluetooth_bridge.PI_STATUS), parametrised by pointers.
+def pcm_status(hw_ptr=1000, appl_ptr=900, owner=4242, state='RUNNING'):
+    return (f'state: {state}\nowner_pid : {owner}\ntrigger_time: 1793059200.123456789\n'
+            f'tstamp: 1793059201.123456789\ndelay: 1024\navail: 1024\navail_max: 4096\n-----\n'
+            f'hw_ptr: {hw_ptr}\nappl_ptr: {appl_ptr}\n')
+
+
+class USBCaptureReadiness(unittest.TestCase):
+    """Read-only /proc/asound proof that Camilla's selected USB capture runs and advances.
+
+    Fake trees only: no USB interface was attached when this was written, so the real
+    card, thread and comm names are unverified.
+    """
+
+    def build(self, card='iD14', channels=10, rate=48000, fmt='S32_LE', owner=4242, tgid=4200,
+              comm='camilladsp', status=None):
+        root = Path(self._tmp.name)
+        proc, processes = root / 'asound', root / 'proc'
+        sub = proc / 'card3' / 'pcm0c' / 'sub0'
+        sub.mkdir(parents=True)
+        (proc / 'card3' / 'id').write_text(card + '\n')
+        (proc / card).symlink_to(proc / 'card3', target_is_directory=True)
+        (sub / 'hw_params').write_text(f'access: RW_INTERLEAVED\nformat: {fmt}\nchannels: {channels}\n'
+                                        f'rate: {rate} ({rate}/1)\nperiod_size: 1024\n')
+        (sub / 'status').write_text(status or pcm_status(owner=owner))
+        (processes / str(owner)).mkdir(parents=True)
+        (processes / str(owner) / 'status').write_text(f'Name:\tCapture\nTgid:\t{tgid}\nPid:\t{owner}\n')
+        (processes / str(tgid)).mkdir(exist_ok=True)
+        (processes / str(tgid) / 'comm').write_text(comm + '\n')
+        return proc, processes, sub / 'status'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def check(self, tree, source=None, rate=48000, advance=True, **kwargs):
+        proc, processes, status = tree
+        def sleep(_):
+            if advance:
+                status.write_text(pcm_status(hw_ptr=3400, appl_ptr=3300, **kwargs))
+        return audio_sources.usb_capture_ready(source or usb(), rate, proc=proc, processes=processes, sleep=sleep)
+
+    def test_running_advancing_camilla_owned_capture_is_ready(self):
+        self.check(self.build())  # the ALSA owner is a Camilla thread (4242), not its main PID (4200)
+
+    def test_disconnected_or_mismatched_cards_are_refused(self):
+        root = Path(self._tmp.name)
+        with self.assertRaisesRegex(RuntimeError, 'not connected'):
+            audio_sources.usb_capture_ready(usb(), 48000, proc=root / 'asound', processes=root / 'proc')
+        tree = self.build(card='Other')  # a different card answers to the symlink's name
+        (tree[0] / 'iD14').symlink_to(tree[0] / 'card3', target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, 'identity'):
+            self.check(tree)
+        escaped = Path(self._tmp.name) / 'elsewhere'
+        (escaped / 'pcm0c' / 'sub0').mkdir(parents=True)
+        (escaped / 'id').write_text('Esc\n')
+        proc = Path(self._tmp.name) / 'asound2'
+        proc.mkdir()
+        (proc / 'iD14').symlink_to(escaped, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, 'identity'):
+            audio_sources.usb_capture_ready(usb(), 48000, proc=proc, processes=Path(self._tmp.name) / 'proc')
+
+    def test_closed_foreign_owned_and_stalled_capture_are_refused(self):
+        tree = self.build()
+        tree[2].write_text('closed\n')
+        with self.assertRaisesRegex(RuntimeError, 'not open'):
+            self.check(tree)
+        self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+        with self.assertRaisesRegex(RuntimeError, 'not owned by CamillaDSP'):
+            self.check(self.build(comm='arecord'))
+        self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+        with self.assertRaisesRegex(RuntimeError, 'stalled'):
+            self.check(self.build(), advance=False)
+        for label, status in dict(
+                hw_only=pcm_status(hw_ptr=3400, appl_ptr=900), appl_only=pcm_status(hw_ptr=1000, appl_ptr=3300),
+                backwards=pcm_status(hw_ptr=10, appl_ptr=10), xrun=pcm_status(hw_ptr=3400, appl_ptr=3300, state='XRUN'),
+                other_owner=pcm_status(hw_ptr=3400, appl_ptr=3300, owner=999)).items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                proc, processes, path = self.build()
+                with self.assertRaises(RuntimeError):
+                    audio_sources.usb_capture_ready(usb(), 48000, proc=proc, processes=processes,
+                                                    sleep=lambda _: path.write_text(status))
+
+    def test_exact_native_format_channels_and_rate_are_required(self):
+        for label, change in dict(plug=dict(fmt='S16_LE'), channels=dict(channels=2), rate=dict(rate=44100)).items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                with self.assertRaisesRegex(RuntimeError, 'format'):
+                    self.check(self.build(**change))
+        for device in ('plughw:CARD=iD14,DEV=0', 'hw:CARD=iD14,DEV=1', 'hw:3,0', 'default'):
+            with self.subTest(device=device), self.assertRaises(ValueError):
+                audio_sources.usb_capture_ready(dict(usb(), device=device), 48000)
+
+    def test_malformed_status_and_non_usb_sources_are_refused(self):
+        for label, text in dict(duplicate=pcm_status() + 'hw_ptr: 5\n', garbage='state RUNNING', huge='x: ' + 'y' * 9000,
+                                missing_owner='state: RUNNING\nhw_ptr: 1\nappl_ptr: 1\n').items():
+            with self.subTest(label=label):
+                self._tmp.cleanup(); self._tmp = tempfile.TemporaryDirectory()
+                with self.assertRaises(RuntimeError):
+                    self.check(self.build(status=text), advance=False)
+        for source in (audio_sources.AIRPLAY, audio_sources.TIDAL):
+            with self.assertRaises(ValueError):
+                audio_sources.usb_capture_ready(source, 48000)
 
 
 if __name__ == '__main__':

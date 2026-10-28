@@ -668,7 +668,9 @@ journal until the new one is verified. Selecting the current source is a no-op. 
 restart does not keep a manual route: startup recovers the baseline, muted.
 
 **One owner at a time.** The manual journal, `airplay-recovery.json` and
-`bluetooth-recovery.json` are mutually exclusive, together with the existing
+`bluetooth-recovery.json` are pairwise mutually exclusive (each route refuses to
+begin, recover or take the lease while either other journal exists, so AirPlay beside
+Bluetooth evidence is a conflict too), together with the existing
 cross-process `audio.lock` lease and `server.LOCK`. Startup order is: confirm mute,
 manual recovery, AirPlay recovery, Bluetooth recovery. A manual journal beside either
 other journal, an active AirPlay or Bluetooth owner, an Auto Tune owner, an unknown
@@ -682,6 +684,20 @@ manual route is loaded. `approved()` recognises a candidate path only for this
 process's journaled route with exact loaded content. Auto Tune actions restore the
 manual route first. Never delete a journal to bypass a failed restore; a retry runs
 on the next control (for example Mute).
+
+**USB capture readiness.** After `Reload`, a USB selection must also pass a read-only
+check of `/proc/asound/<card ID>/pcm0c/sub0`: the card symlink must resolve inside
+`/proc/asound` to a `cardN` whose `id` is the discovered ID; the exact `hw:CARD=…,DEV=0`
+device (never `plughw`) must be open in native S32_LE with the selected channel count
+and the DSP rate; `state` must be RUNNING and owned by a thread of the `camilladsp`
+process; and both `hw_ptr` and `appl_ptr` must advance over a bounded interval. It
+retries inside the existing six-second window, never opens the occupied PCM and does
+not need signal. A missing card, closed or foreign-owned substream, wrong format or a
+stall restores the baseline muted and reports the reason. Manual AirPlay selection is
+never checked this way and needs no live caster. **Unverified on hardware:** no USB
+interface was attached, so the real card ID, ALSA owner thread and process name are
+assumed from the kernel's documented layout and the Pi's Loopback observations; if
+they differ the check fails closed rather than selecting the input.
 
 **Not covered.** CamillaDSP has no compare-and-set, so a non-cooperative websocket
 client (CamillaGUI) is detected by readback, not prevented. Software tests use a
