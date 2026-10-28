@@ -12,17 +12,21 @@ const sources = [
 ];
 const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switching_available:true,
   ready:true,muted:false,volume:-31,min_db:-60,max_db:-18,level_unlocked:false,profile:'Output DSP controls',profile_description:'Eight outputs',
-  playback:'pause',duration:90,elapsed:20,song_position:0,current:{title:'Saved song',artist:'Saved artist'},
+  playback:'pause',duration:90,elapsed:20,song_position:0,current:{title:'Saved song',artist:'Saved artist',album:'Saved album'},
   queue:[{position:0,title:'Saved song',artist:'Saved artist'}]});
 (async()=>{
-  const browser=await chromium.launch({headless:true,channel:'msedge'});
+  const browser=await chromium.launch(process.env.OCTET_BROWSER_EXECUTABLE
+    ? {headless:true,executablePath:process.env.OCTET_BROWSER_EXECUTABLE,args:['--no-sandbox']}
+    : {headless:true,channel:'msedge'});
   try{
     const page=await browser.newPage({viewport:{width:1280,height:1000}});
-    const errors=[],writes=[];let state=initial(),reject=false;
+    const errors=[],writes=[];let state=initial(),reject=false,nowPlaying=null;
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('http://octet.test/**',async route=>{
       const url=new URL(route.request().url());
       if(url.pathname==='/api/status')return route.fulfill({json:state});
+      if(url.pathname==='/api/now-playing')return route.fulfill({json:{song:nowPlaying}});
+      if(url.pathname.startsWith('/api/now-playing/artwork/'))return route.fulfill({body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/Scv2WQAAAABJRU5ErkJggg==','base64'),contentType:'image/png'});
       if(url.pathname==='/api/input-levels')return route.fulfill({json:{inputs:[],age_ms:0,message:'No USB audio inputs connected.'}});
       if(url.pathname==='/api/favorites')return route.fulfill({json:{tracks:[{id:'1',title:'Library song',artist:'Artist',album:'Album',duration:90}]}});
       if(url.pathname==='/api/control/source'){
@@ -32,7 +36,9 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
         return route.fulfill({json:state});
       }
       const asset=url.pathname==='/'?'index.html':url.pathname.slice(1);
-      return route.fulfill({body:fs.readFileSync(path.join(__dirname,asset)),contentType:asset.endsWith('.js')?'text/javascript':asset.endsWith('.css')?'text/css':'text/html'});
+      const root=process.env.OCTET_WEB_ROOT||__dirname;
+      const file=path.join(root,asset);
+      return route.fulfill({body:fs.readFileSync(fs.existsSync(file)?file:path.join(__dirname,asset)),contentType:asset.endsWith('.js')?'text/javascript':asset.endsWith('.css')?'text/css':'text/html'});
     });
     await page.goto('http://octet.test/');
     await page.waitForFunction(()=>document.getElementById('source-choice').options.length===5);
@@ -63,6 +69,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('.transport').isVisible(),true);
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),false);
     assert.equal(await page.locator('#song-title').textContent(),'Saved song');
+    assert.equal(await page.locator('#song-album').textContent(),'Saved album');
     assert.deepEqual(writes,[{id:'usb:iD14:mono-1'},{id:'tidal'},{id:'tidal'}]);
     state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:false}};
     await page.evaluate(()=>refresh());
@@ -72,6 +79,20 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.evaluate(()=>refresh());
     assert.match(await page.locator('#source-status').textContent(),/cast active/);
     assert.equal(await page.locator('#queue-count').textContent(),'1');
+    // Published live metadata replaces the fallback card only for the selected source.
+    nowPlaying={source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)};
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#song-title').textContent(),'AirPlay song');
+    assert.equal(await page.locator('#song-artist').textContent(),'AirPlay artist');
+    assert.equal(await page.locator('#song-album').textContent(),'AirPlay album');
+    assert.match(await page.locator('#cover').getAttribute('src'),/\/api\/now-playing\/artwork\//);
+    assert.equal(await page.locator('#cover').isVisible(),true);
+    nowPlaying={...nowPlaying,source:'bluetooth'};
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#song-title').textContent(),'AirPlay');
+    assert.match(await page.locator('#song-artist').textContent(),/cast active/);
+    assert.equal(await page.locator('#song-album').textContent(),'');
+    assert.equal(await page.locator('#cover').isVisible(),false);
     assert.deepEqual(errors,[]);
     console.log('Browser source flow passed: selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, mobile layout.');
   }finally{await browser.close();}

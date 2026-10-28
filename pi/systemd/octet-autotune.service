@@ -1,11 +1,18 @@
+# SOURCE-ONLY: not deployable. User=octet-autotune requires a reviewed atomic installer that first
+# creates the octet-autotune UID/GID and the octet-dsp-control GID, then, backing up and migrating
+# /var/lib/octet-autotune ownership from octet:audio (preserving modes, speaker.yaml 0640 and the
+# audio.lock lease), with a tested rollback that restores the original octet ownership. All of that
+# must complete before any unit restart; the installer must refuse the identity change if the state
+# cannot be backed up and migrated safely. Changing User alone would break state writes.
 [Unit]
 Description=Octet automatic measurement and tuning
 After=sound.target network.target
 
 [Service]
 Type=simple
-User=octet
+User=octet-autotune
 Group=audio
+SupplementaryGroups=octet-dsp-control
 WorkingDirectory=/opt/octet-measure
 Environment=OCTET_TUNE_DATA=/var/lib/octet-autotune
 Environment=PYTHONDONTWRITEBYTECODE=1

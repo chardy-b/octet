@@ -3,6 +3,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import time
 
@@ -14,10 +15,24 @@ from .. import peq
 from .dsp import branch_sos
 
 
+DSP_SOCKET = '/run/octet-dsp/control.sock'
+
+
 def control(commands):
-    """Local CamillaDSP control; only the tuner service needs this dependency."""
+    """CamillaDSP control through the DSP proxy's Unix socket; only the tuner service needs websocket-client.
+
+    A missing or unreachable socket raises; there is no direct TCP fallback.
+    """
     import websocket
-    with closing(websocket.create_connection('ws://127.0.0.1:1234', timeout=5, suppress_origin=True)) as sock:
+    raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        raw.settimeout(5)
+        raw.connect(DSP_SOCKET)
+        client = websocket.create_connection('ws://127.0.0.1:1234', timeout=5, suppress_origin=True, socket=raw)
+    except Exception:
+        raw.close()
+        raise
+    with closing(client) as sock:
         results = []
         for name, value in commands:
             sock.send(json.dumps(name if value is None else {name: value}))

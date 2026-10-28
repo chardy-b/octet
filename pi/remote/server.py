@@ -23,7 +23,10 @@ from visualizer_state import VisualizerState
 from audio_sources import discover_sources, source_config, source_metadata, meter_channels
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
+from now_playing_bridge import fetch_song, fetch_artwork
 from airplay_control import AirPlayController, serve as serve_airplay
+from bluetooth_auto import start_auto_bluetooth
+from bluetooth_control import BluetoothControl, serve as serve_bluetooth
 from network_access import NetworkAccess
 
 BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
@@ -97,10 +100,23 @@ def read_exact(sock, count):
     return bytes(result)
 
 
+DSP_SOCKET = '/run/octet-dsp/control.sock'
+
+
 class DSP:
-    """Small synchronous RFC6455 client for the local CamillaDSP control socket."""
+    """Small synchronous RFC6455 client for the DSP proxy's Unix socket (no direct TCP fallback)."""
     def __enter__(self):
-        self.sock = socket.create_connection(('127.0.0.1', 1234), timeout=4)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.sock.settimeout(4)
+            self.sock.connect(DSP_SOCKET)
+            self.handshake()
+        except Exception:
+            self.sock.close()
+            raise
+        return self
+
+    def handshake(self):
         key = base64.b64encode(os.urandom(16)).decode()
         request = ('GET / HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nUpgrade: websocket\r\n'
                    'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\nSec-WebSocket-Version: 13\r\n\r\n')
@@ -108,11 +124,26 @@ class DSP:
         response = bytearray()
         while not response.endswith(b'\r\n\r\n') and len(response) < 8192:
             response.extend(read_exact(self.sock, 1))
-        expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
-        if not response.startswith(b'HTTP/1.1 101 ') or expected not in response:
-            self.sock.close()
+        expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+        if not response.endswith(b'\r\n\r\n') or not self.upgrade_accepted(bytes(response), expected):
             raise RuntimeError('DSP connection failed')
-        return self
+
+    @staticmethod
+    def upgrade_accepted(response, expected):
+        lines = response.decode('latin-1').split('\r\n')
+        if not lines[0].startswith('HTTP/1.1 101 '):
+            return False
+        headers = {}
+        for line in lines[1:]:
+            if not line:
+                continue
+            name, separator, value = line.partition(':')
+            if not separator:
+                return False
+            headers.setdefault(name.strip().lower(), []).append(value.strip())
+        accept, upgrade, connection = (headers.get(name, []) for name in ('sec-websocket-accept', 'upgrade', 'connection'))
+        return (accept == [expected] and len(upgrade) == 1 and upgrade[0].lower() == 'websocket'
+                and any(token.strip().lower() == 'upgrade' for value in connection for token in value.split(',')))
 
     def __exit__(self, *args):
         self.sock.close()
@@ -761,6 +792,9 @@ def current_status():
 
 
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
+# Disabled unless the root-owned local policy is enabled; started only over the
+# root-only local socket, never over HTTP.
+BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__])
 
 
 def action(name, data):
@@ -779,6 +813,10 @@ def _action(name, data):
             AIRPLAY_CONTROL.recover()
         if AIRPLAY_CONTROL.baseline.exists():
             AIRPLAY_CONTROL.invalidate()
+    if BLUETOOTH_CONTROL.owns_audio():
+        # Every manual or Auto Tune request overrides Bluetooth, which stops muted.
+        # A failed restore raises here, so no mutation proceeds on its route.
+        BLUETOOTH_CONTROL.stop('Manual control override')
     if name.startswith('auto-'):
         with LOCK:
             AIRPLAY_CONTROL.invalidate()
@@ -1125,6 +1163,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_visualizer()
             if parsed.path == '/api/status':
                 return self.send(current_status())
+            if parsed.path == '/api/now-playing':
+                return self.send({'song': fetch_song()})
+            artwork = re.fullmatch(r'/api/now-playing/artwork/([a-f0-9]{64})', parsed.path)
+            if artwork:
+                try:
+                    body, kind = fetch_artwork(artwork.group(1))
+                except (OSError, ValueError):
+                    return self.send({'error': 'Artwork unavailable'}, 404)
+                return self.send(body, content_type=kind)
             if parsed.path == '/api/input-levels':
                 return self.send(INPUT_LEVELS.snapshot())
             if parsed.path == '/api/dsp':
@@ -1227,6 +1274,11 @@ def initialize_dsp():
             AIRPLAY_CONTROL.needs_mute = True
             AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
         finally:
+            try:
+                # Independent of AirPlay; failure retains its journal and error.
+                BLUETOOTH_CONTROL.startup()
+            except Exception:
+                logging.warning('Bluetooth startup recovery failed; output remains muted')
             # Recovery can reload the DSP or fail partway through. Always use a
             # fresh connection to mute again, and refuse startup without proof.
             try:
@@ -1249,6 +1301,15 @@ def main():
     initialize_dsp()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
+    if Path('/run/octet-bluetooth').exists():
+        # RuntimeDirectory exists only with the guarded Bluetooth installer drop-in.
+        threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
+        # Optional observer/worker after muted recovery; failures are contained and leave
+        # the manual socket, Tidal and AirPlay running.
+        # Automatic unmute is deployment-gated until the private DSP proxy and
+        # all clients are verified. A runtime directory alone is not consent.
+        if os.environ.get('OCTET_BLUETOOTH_AUTO') == '1':
+            start_auto_bluetooth(BLUETOOTH_CONTROL)
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
