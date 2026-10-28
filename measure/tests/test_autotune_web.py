@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import socket
 
 import numpy as np
 import pytest
@@ -11,6 +12,10 @@ from octetmeasure import peq
 from octetmeasure.autotune import config, dsp
 from octetmeasure.autotune.camilla import export
 from octetmeasure.autotune.web import Controller, check_safety, create_app
+
+# Auto Tune DSP control is a Pi-only AF_UNIX integration. Measurement remains
+# cross-platform; Windows has no socket.AF_UNIX to exercise the real endpoint.
+unix_only = pytest.mark.skipif(not hasattr(socket, 'AF_UNIX'), reason='requires AF_UNIX')
 
 
 class UnixEndpoint:
@@ -74,7 +79,9 @@ class UnixEndpoint:
 
 @pytest.fixture
 def unix_dsp(monkeypatch):
-    import socket, tempfile
+    if not hasattr(socket, 'AF_UNIX'):
+        pytest.skip('requires AF_UNIX')
+    import tempfile
     from pathlib import Path
     from octetmeasure.autotune import camilla
     pytest.importorskip('websocket')
@@ -112,6 +119,7 @@ def test_camilla_control_keeps_rejection_error(unix_dsp):
         control([('SetMute', True)])
 
 
+@unix_only
 def test_camilla_control_missing_socket_fails_closed(tmp_path, monkeypatch):
     import socket
     from octetmeasure.autotune import camilla
@@ -142,6 +150,7 @@ def test_camilla_control_closes_websocket_without_context_manager(unix_dsp):
     assert created and not created[0].connected
 
 
+@unix_only
 def test_camilla_control_closes_unix_socket_when_handshake_fails(monkeypatch):
     import socket, tempfile, threading, types
     from pathlib import Path
