@@ -44,7 +44,8 @@ ADMIN_UID = 0
 DEFAULT = json.dumps(dict(version=1, enabled=False, addresses=[])).encode() + b'\n'
 REQUIRED = ('server.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py',
             'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py',
-            'bluetooth_admin.py', 'airplay_control.py')
+            'bluetooth_admin.py', 'bluetooth_auto.py', 'bluetooth_transport.py',
+            'airplay_control.py', 'airplay_baseline.py')
 # Observed, never changed. bluealsa.service is the packaged daemon, which must
 # not own org.bluealsa alongside ours; the installer only reports its state.
 UNITS = ('octet-remote.service', 'octet-bluealsa.service', 'bluealsa.service', 'bluetooth.service')

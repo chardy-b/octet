@@ -12,8 +12,11 @@ import pwd
 import yaml
 from server import CHANNEL_PROFILE, channel_config
 
+# WIL-249 BLOCKER: main() writes a Camilla override binding 0.0.0.0 (see octet-startup.conf below).
+# It also stops mpd/camilladsp and copies media, so this is NOT a safe WIL-249 rollout path even
+# with a complete file list; test_install_manifest.py keeps this flagged.
 # install_bluetooth.py imports helpers from install_airplay.py, so both ship together.
-REMOTE_FILES = ('server.py', 'network_access.py', 'airplay_control.py', 'airplay_baseline.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py', 'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py', 'bluetooth_admin.py', 'install_bluetooth.py', 'install_airplay.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'now_playing_bridge.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+REMOTE_FILES = ('server.py', 'network_access.py', 'airplay_control.py', 'airplay_baseline.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py', 'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py', 'bluetooth_admin.py', 'bluetooth_auto.py', 'bluetooth_transport.py', 'dsp_proxy.py', 'install_bluetooth.py', 'install_airplay.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'now_playing_bridge.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
                 'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md')
 
 
