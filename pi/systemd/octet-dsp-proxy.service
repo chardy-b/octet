@@ -1,0 +1,42 @@
+[Unit]
+Description=Octet CamillaDSP guarded Unix socket proxy
+After=camilladsp.service
+Requires=camilladsp.service
+BindsTo=camilladsp.service
+# BindsTo stops this unit whenever Camilla stops or restarts. PartOf propagates an explicit
+# Camilla restart, and the [Install] WantedBy link (camilladsp.service.wants/) makes every Camilla
+# start job, including Restart=always, activate this unit again. Camilla has no dependency on it.
+PartOf=camilladsp.service
+JoinsNamespaceOf=camilladsp.service
+
+[Service]
+User=octet-dsp-proxy
+Group=octet-dsp-control
+PrivateNetwork=yes
+RuntimeDirectory=octet-dsp
+RuntimeDirectoryMode=0750
+UMask=0007
+ExecStart=/usr/bin/python3 /opt/octet-remote/dsp_proxy.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+
+[Install]
+WantedBy=camilladsp.service
