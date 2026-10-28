@@ -500,10 +500,28 @@ class InitializationSafety(unittest.TestCase):
                 self.control.recover.assert_not_called()
                 self.assertTrue(self.control.needs_mute)
 
+    def test_auto_bluetooth_requires_explicit_opt_in_even_with_runtime_directory(self):
+        for value in (None, '0', 'true'):
+            with self.subTest(value=value):
+                env = dict(server.os.environ)
+                env.pop('OCTET_BLUETOOTH_AUTO', None)
+                if value is not None:
+                    env['OCTET_BLUETOOTH_AUTO'] = value
+                with patch.dict(server.os.environ, env, clear=True), \
+                     patch.object(server, 'initialize_dsp'), \
+                     patch.object(server, 'start_auto_bluetooth') as auto, \
+                     patch.object(server.os, 'umask'), \
+                     patch.object(server.Path, 'exists', return_value=True), \
+                     patch.object(server.threading, 'Thread'), \
+                     patch.object(server, 'ThreadingHTTPServer'):
+                    server.main()
+                auto.assert_not_called()
+
     def test_auto_bluetooth_starts_only_with_runtime_directory_and_after_muted_init(self):
         order = []
         for present in (False, True):
             with self.subTest(present=present), \
+                 patch.dict(server.os.environ, {'OCTET_BLUETOOTH_AUTO': '1'}), \
                  patch.object(server, 'initialize_dsp', lambda: order.append('initialize_dsp')), \
                  patch.object(server, 'start_auto_bluetooth',
                               lambda control: order.append(('auto', control))), \

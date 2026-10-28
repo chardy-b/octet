@@ -1306,7 +1306,10 @@ def main():
         threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
         # Optional observer/worker after muted recovery; failures are contained and leave
         # the manual socket, Tidal and AirPlay running.
-        start_auto_bluetooth(BLUETOOTH_CONTROL)
+        # Automatic unmute is deployment-gated until the private DSP proxy and
+        # all clients are verified. A runtime directory alone is not consent.
+        if os.environ.get('OCTET_BLUETOOTH_AUTO') == '1':
+            start_auto_bluetooth(BLUETOOTH_CONTROL)
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
