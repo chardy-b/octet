@@ -102,6 +102,41 @@ class IntegrationSafetyTests(AirPlayTests):
                 self.assertFalse(self.control.needs_mute)
                 self.assertNotIn(('SetMute', False), self.calls())
 
+    def test_manual_invalidate_recovers_pending_channel_profile_without_baseline(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'channel-dsp.yml'
+            path.write_bytes(b'new')
+            self.control.restore_pending = b'old'
+            self.control.needs_mute = True
+            with patch.object(server, 'CHANNEL_PROFILE', path):
+                self.control.invalidate()
+            self.assertEqual(path.read_bytes(), b'old')
+            self.assertIsNone(self.control.restore_pending)
+            self.assertFalse(self.control.needs_mute)
+
+    def test_manual_invalidate_retains_recovery_latch_when_reload_fails(self):
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'channel-dsp.yml'
+            path.write_bytes(b'new')
+            self.control.restore_pending = b'old'
+            self.control.needs_mute = True
+            self.control.error = 'AirPlay preparation failed'
+            normal = self.dsp.call.side_effect
+            self.dsp.call.side_effect = lambda name, *args: (
+                (_ for _ in ()).throw(RuntimeError('reload failed'))
+                if name == 'Reload' else normal(name, *args))
+            with patch.object(server, 'CHANNEL_PROFILE', path), \
+                 self.assertRaisesRegex(RuntimeError, 'reload failed'):
+                self.control.invalidate()
+            self.assertEqual(self.control.restore_pending, b'old')
+            self.assertTrue(self.control.needs_mute)
+            self.assertEqual(self.control.error, 'AirPlay preparation failed')
+            self.assertFalse(self.control.suppressed)
+
     def test_status_does_not_treat_selected_source_as_active_cast(self):
         with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
              patch.object(server, 'discover_sources', return_value=[AIRPLAY]), \

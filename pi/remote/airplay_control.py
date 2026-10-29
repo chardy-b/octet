@@ -83,7 +83,7 @@ class AirPlayController:
 
     def invalidate(self, manual=True):
         # Called under the shared control lock for explicit user ownership changes.
-        if manual and self.baseline.exists():
+        if manual and (self.baseline.exists() or self.restore_pending is not None or self.needs_mute):
             # Finish recovery before permitting a manual mutation/Auto Tune request.
             self.active = False
             self.pending = None
