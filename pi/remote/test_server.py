@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import os
 import socket
@@ -341,6 +342,7 @@ class PlaybackGuards(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 server.quote(value)
 
+
     def test_both_existing_plugin_and_flat_session_formats(self):
         self.assertEqual(server.decode_credentials({'token_type': {'data': 'Bearer'}, 'is_pkce': {'data': False}}),
                          {'token_type': 'Bearer', 'is_pkce': False})
@@ -414,6 +416,85 @@ class PlaybackGuards(unittest.TestCase):
         page = (Path(server.__file__).parent / 'index.html').read_text()
         footer = page[page.index('<footer>'):page.index('</footer>')]
         self.assertIn('<a href="http://octet.local:8768/">Now playing · Wi-Fi</a>', footer)
+
+
+class ReceiverActionSeam(unittest.TestCase):
+    class Receiver:
+        def __init__(self):
+            self.calls = []
+        def owns_audio(self): return True
+        def set_muted(self, value): self.calls.append(('mute', value))
+        def set_volume(self, value): self.calls.append(('volume', value))
+        def relock_level(self): self.calls.append(('relock',))
+        def emergency_mute(self): self.calls.append(('emergency-mute',))
+        def stop(self, reason): self.calls.append(('stop', reason))
+
+    def setUp(self):
+        self.receiver = self.Receiver()
+        self.status = dict(volume=-36.0, muted=False, level_unlocked=False,
+                           source='bluetooth', sources=[{'id': 'tidal'}, {'id': 'bluetooth'}],
+                           airplay={'active': False}, source_route={'active': False},
+                           dsp_state='Running')
+        patches = [
+            patch.object(server, 'BLUETOOTH_CONTROL', self.receiver),
+            patch.object(server, 'current_status', side_effect=lambda: dict(self.status)),
+            patch.object(server.AIRPLAY_CONTROL, 'needs_mute', False),
+            patch.object(server.AIRPLAY_CONTROL.baseline, 'exists', return_value=False),
+            patch.object(server, 'LEVELS_UNLOCKED', False),
+        ]
+        for item in patches:
+            item.start(); self.addCleanup(item.stop)
+
+    def post(self, name, data):
+        handler = object.__new__(server.Handler)
+        body = json.dumps(data).encode()
+        handler.path = '/api/control/' + name
+        handler.headers = {'Content-Type': 'application/json', 'Content-Length': str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.valid_host = lambda: True
+        handler.request_origin = lambda: 'http://octet'
+        handler.send = MagicMock()
+        handler.do_POST()
+        return handler.send.call_args.args
+
+    def assert_full(self, response):
+        for field in ('volume', 'muted', 'level_unlocked', 'source', 'sources',
+                      'airplay', 'source_route'):
+            self.assertIn(field, response)
+
+    def test_http_mute_volume_and_relock_return_full_status(self):
+        self.status['muted'] = True
+        response, = self.post('mute', {'muted': True})
+        self.assert_full(response)
+        self.status.update(muted=False, volume=-40.0)
+        response, = self.post('volume', {'db': -40.0})
+        self.assert_full(response)
+        response, = self.post('unlock', {'enabled': False})
+        self.assert_full(response)
+        self.assertEqual(self.receiver.calls,
+                         [('mute', True), ('volume', -40.0), ('relock',)])
+
+    def test_failed_full_status_readback_mutes_and_does_not_claim_success(self):
+        self.status.update(dsp_state='Offline', muted=True)
+        response, code = self.post('mute', {'muted': True})
+        self.assertEqual(code, 503)
+        self.assertIn('status readback failed', response['error'])
+        self.assertEqual(self.receiver.calls, [('mute', True), ('emergency-mute',)])
+
+    def test_unlock_and_output_edits_reject_without_mutation(self):
+        for name, data in (('unlock', {'enabled': True}),
+                           ('channel-eq', {'output': 1, 'enabled': False}),
+                           ('channel-mute', {'output': 1, 'muted': True})):
+            with self.subTest(name=name):
+                response, code = self.post(name, data)
+                self.assertEqual(code, 503)
+        self.assertEqual(self.receiver.calls, [])
+
+    def test_route_taking_action_stops_receiver_muted(self):
+        with patch.object(server, 'mpd', return_value=[]):
+            self.post('pause', {})
+        self.assertEqual(self.receiver.calls, [('stop', 'Manual control override')])
+
 
 
 class InitializationSafety(unittest.TestCase):

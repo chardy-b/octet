@@ -77,6 +77,7 @@ class Session:
         self.candidate = None
         self.format = None
         self.active = False
+        self.intentionally_muted = False
 
 
 class BluetoothControl:
@@ -100,6 +101,95 @@ class BluetoothControl:
         self.error = None
         self.errors = {}
         self.mute_verified = False
+
+    def _settings_failure(self, reason):
+        """Latch a settings failure through the normal mute/recovery path."""
+        self.fail(reason)
+        raise RuntimeError(reason)
+
+    def emergency_mute(self):
+        """Physically mute an owned route without stopping its bridge."""
+        with self.server.LOCK:
+            if not self.owns_audio():
+                raise RuntimeError('Bluetooth does not own audio')
+            try:
+                with self.server.DSP() as dsp:
+                    dsp.call('SetMute', True)
+                    if dsp.call('GetMute') is not True:
+                        raise RuntimeError('Bluetooth emergency mute was not verified')
+                if self.session is not None:
+                    self.session.intentionally_muted = True
+                self.mute_verified = True
+            except Exception as error:
+                self._settings_failure(f'Bluetooth emergency mute failed: {error}')
+
+    def set_muted(self, muted):
+        if muted is True:
+            self.emergency_mute()
+            return
+        if muted is not False:
+            raise ValueError('Expected a mute setting')
+        with self.server.LOCK:
+            session = self.session
+            if session is None or not session.active:
+                raise RuntimeError('Bluetooth unmute requires an active session')
+            try:
+                expected_muted = bool(session.intentionally_muted)
+                self._verify(session, muted=expected_muted, volume=True)
+                if not self._streaming(session) or not self._current(session):
+                    raise RuntimeError('Bluetooth stream generation or PCM is not current')
+                # Repeated Unmute is verification-only, never a toggle.
+                if not expected_muted:
+                    return
+                with self.server.DSP() as dsp:
+                    self._verify(session, muted=True, dsp=dsp, volume=True)
+                    if not self._streaming(session) or not self._current(session):
+                        raise RuntimeError('Bluetooth stream generation or PCM was lost before unmute')
+                    dsp.call('SetMute', False)
+                    self._verify(session, muted=False, dsp=dsp, volume=True)
+                session.intentionally_muted = False
+            except Exception as error:
+                self._settings_failure(f'Bluetooth unmute failed: {error}')
+
+    def set_volume(self, value):
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or not -60.0 <= value <= MAX_DB):
+            raise ValueError('Bluetooth volume must be between -60 and -18 dB')
+        with self.server.LOCK:
+            session = self.session
+            if session is None or not session.active:
+                raise RuntimeError('Bluetooth volume requires an active session')
+            muted = bool(session.intentionally_muted)
+            try:
+                self._verify(session, muted=muted, volume=True)
+                if not self._streaming(session) or not self._current(session):
+                    raise RuntimeError('Bluetooth stream generation or PCM is not current')
+                with self.server.DSP() as dsp:
+                    self._verify(session, muted=muted, dsp=dsp, volume=True)
+                    dsp.call('SetVolume', value)
+                    if dsp.call('GetVolume') != value:
+                        raise RuntimeError('Bluetooth volume write was not verified')
+                    self._verify(session, muted=muted, dsp=dsp, volume=True)
+            except Exception as error:
+                self._settings_failure(f'Bluetooth volume failed: {error}')
+
+    def relock_level(self):
+        """Clamp an intentionally muted active receiver before global relock."""
+        with self.server.LOCK:
+            session = self.session
+            if session is None or not session.active or not session.intentionally_muted:
+                raise RuntimeError('Bluetooth level can only be relocked while its active session is muted')
+            try:
+                self._verify(session, muted=True)
+                with self.server.DSP() as dsp:
+                    self._verify(session, muted=True, dsp=dsp)
+                    if not safe_volume(dsp.call('GetVolume')):
+                        dsp.call('SetVolume', MAX_DB)
+                    if not safe_volume(dsp.call('GetVolume')):
+                        raise RuntimeError('Bluetooth level clamp was not verified')
+                    self._verify(session, muted=True, dsp=dsp, volume=True)
+            except Exception as error:
+                self._settings_failure(f'Bluetooth level relock failed: {error}')
 
     def owns_audio(self):
         """Called under server.LOCK by AirPlay before it touches the DSP."""
@@ -432,7 +522,7 @@ class BluetoothControl:
                 if session.active:
                     if not self._streaming(session):
                         raise RuntimeError('Bluetooth PCM stalled or bridge not ready')
-                    self._verify(session, muted=False)
+                    self._verify(session, muted=bool(session.intentionally_muted), volume=True)
                 else:
                     if self.clock() >= session.deadline:
                         raise RuntimeError('Bluetooth start deadline; output remains muted')

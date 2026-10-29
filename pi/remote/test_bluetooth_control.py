@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import yaml
 from airplay_baseline import digest
-from bluetooth_control import BluetoothControl
+from bluetooth_control import BluetoothControl, Session
 from bluetooth_transport import StreamGeneration
 import test_bluetooth_contract
 
@@ -28,7 +28,8 @@ class RecoveryTests(unittest.TestCase):
         self.path = self.root / 'baselines/approved.yml'
         self.data = b'# preserve exact comments and bytes\n' + yaml.safe_dump(self.config).encode()
         self.path.write_bytes(self.data)
-        self.state = dict(path=str(self.path), config=copy.deepcopy(self.config), mute=False, running='Running')
+        self.state = dict(path=str(self.path), config=copy.deepcopy(self.config), mute=False,
+                          volume=-30.0, running='Running')
         self.calls = []
         self.unreachable = False
         self.ignore_mute = False
@@ -57,6 +58,8 @@ class RecoveryTests(unittest.TestCase):
             raise RuntimeError('DSP unreachable')
         if name == 'SetMute' and not self.ignore_mute:
             self.state['mute'] = args[0]
+        if name == 'SetVolume':
+            self.state['volume'] = args[0]
         if name == 'SetConfigFilePath':
             self.assertTrue(self.state['mute'])
             self.assertTrue(self.control.route.journal.exists())
@@ -65,7 +68,8 @@ class RecoveryTests(unittest.TestCase):
             self.state['config'] = yaml.safe_load(Path(self.state['path']).read_bytes())
         return {'GetMute': self.state['mute'], 'GetState': self.state['running'],
                 'GetConfigFilePath': self.state['path'],
-                'GetConfigJson': json.dumps(self.state['config'])}.get(name)
+                'GetConfigJson': json.dumps(self.state['config']),
+                'GetVolume': self.state['volume']}.get(name)
 
     def prepare(self):
         return self.control.route.begin(str(self.path), self.config)
@@ -595,6 +599,93 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(self.control.route.journal.read_bytes(), record)
         self.run_check.assert_not_called()
         self.control.route.check_lock()
+
+
+class ReceiverSettingsTests(unittest.TestCase):
+    """Settings keep the guarded receiver route, or fail through recovery."""
+
+    controller = RecoveryTests.controller
+    call = RecoveryTests.call
+
+    def setUp(self):
+        RecoveryTests.setUp(self)
+        self.server.INPUT_LEVELS = Mock()
+        check = patch('bluetooth_route.subprocess.run',
+                      return_value=SimpleNamespace(returncode=0))
+        check.start()
+        self.addCleanup(check.stop)
+
+    def active(self, *, muted=False, current=True):
+        expected = self.control.route.prepare(44100, 'S16_LE')
+        session = Session('12:34:56:78:9A:BC', 999999)
+        session.expected = expected
+        session.candidate = self.control.route.candidate.read_bytes()
+        session.format = (44100, 'S16_LE', 2)
+        session.active = True
+        session.intentionally_muted = muted
+        session.is_current = lambda generation: current
+        session.supervisor = SimpleNamespace(ready=True, negotiated=session.format,
+                                             stall_timeout=5, progress_age=lambda: 0)
+        session.thread = SimpleNamespace(is_alive=lambda: True)
+        self.control.session = session
+        self.state.update(path=str(self.control.route.candidate), config=expected, mute=muted)
+        return session
+
+    def test_pending_emergency_mute_reads_back_without_dropping_bridge(self):
+        self.control.route.begin(str(self.path), self.config)
+        bridge = Mock()
+        self.control._bridges.append(bridge)
+        self.state['mute'] = False
+        self.calls.clear()
+        self.control.emergency_mute()
+        self.assertEqual(self.calls, [('SetMute', True), ('GetMute',)])
+        self.assertEqual(self.control._bridges, [bridge])
+        bridge.stop_child.assert_not_called()
+
+    def test_intentionally_muted_active_session_is_watchdog_valid_and_fully_checked(self):
+        session = self.active(muted=True)
+        self.calls.clear()
+        self.control.tick()
+        self.assertIs(self.control.session, session)
+        self.assertIn(('GetVolume',), self.calls)
+        self.control.route.check_lock()
+
+    def test_duplicate_unmute_only_verifies_and_never_toggles(self):
+        self.active(muted=False)
+        self.calls.clear()
+        self.control.set_muted(False)
+        self.assertFalse(any(call[0] == 'SetMute' for call in self.calls))
+        self.assertFalse(self.state['mute'])
+
+    def test_stale_generation_refuses_unmute_and_recovers_muted(self):
+        session = self.active(muted=True, current=False)
+        session.stream = StreamGeneration(':1.10', ':1.11',
+            '/org/bluez/hci0/dev_12_34_56_78_9A_BC',
+            '/org/bluez/hci0/dev_12_34_56_78_9A_BC/fd1',
+            '12:34:56:78:9A:BC', 0, 1)
+        with self.assertRaisesRegex(RuntimeError, 'generation'):
+            self.control.set_muted(False)
+        self.assertTrue(self.state['mute'])
+        self.assertIsNone(self.control.session)
+
+    def test_bad_volume_readback_emergency_mutes_and_latches_recovery(self):
+        self.active()
+        original = self.dsp.call.side_effect
+        def wrong_readback(name, *args):
+            result = original(name, *args)
+            return -29.0 if name == 'GetVolume' and ('SetVolume', -40.0) in self.calls else result
+        self.dsp.call.side_effect = wrong_readback
+        with self.assertRaisesRegex(RuntimeError, 'not verified'):
+            self.control.set_volume(-40.0)
+        self.assertTrue(self.state['mute'])
+        self.assertIsNone(self.control.session)
+
+    def test_volume_above_receiver_ceiling_is_rejected_without_dsp_access(self):
+        self.active()
+        self.calls.clear()
+        with self.assertRaises(ValueError):
+            self.control.set_volume(-17.9)
+        self.assertEqual(self.calls, [])
 
 
 class AutoValidationTests(unittest.TestCase):

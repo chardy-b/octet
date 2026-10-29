@@ -854,6 +854,26 @@ def action(name, data):
         return _action(name, data)
 
 
+def _bluetooth_settings_status(name, expected=None):
+    """Return the normal status schema only after its DSP readback succeeded."""
+    status = current_status()
+    required = {'volume', 'muted', 'level_unlocked', 'source', 'sources',
+                'airplay', 'source_route'}
+    valid = required <= status.keys() and status.get('dsp_state') == 'Running'
+    if name == 'mute':
+        valid = valid and status.get('muted') is expected
+    elif name == 'volume':
+        valid = valid and status.get('volume') == expected
+    elif name == 'unlock':
+        valid = valid and status.get('level_unlocked') is False
+    if not valid:
+        # A settings write without the established full readback is not success.
+        # Keep the bridge when this emergency mute itself can be verified.
+        BLUETOOTH_CONTROL.emergency_mute()
+        raise RuntimeError('Bluetooth settings status readback failed; output remains muted')
+    return status
+
+
 def _action(name, data):
     global LEVELS_UNLOCKED
     if AIRPLAY_CONTROL.needs_mute or AIRPLAY_CONTROL.baseline.exists():
@@ -865,8 +885,29 @@ def _action(name, data):
         if AIRPLAY_CONTROL.baseline.exists():
             AIRPLAY_CONTROL.invalidate()
     if BLUETOOTH_CONTROL.owns_audio():
-        # Every manual or Auto Tune request overrides Bluetooth, which stops muted.
-        # A failed restore raises here, so no mutation proceeds on its route.
+        output_edits = {'channel-eq', 'channel-mute', 'channel-polarity',
+                        'channel-always-active', 'all-eq'}
+        if name in output_edits:
+            raise RuntimeError('Output settings cannot change while Bluetooth owns audio')
+        if name == 'mute':
+            muted = data.get('muted')
+            BLUETOOTH_CONTROL.set_muted(muted)
+            return _bluetooth_settings_status(name, muted)
+        if name == 'volume':
+            value = data.get('db')
+            # Keep receiver policy capped even while the global UI is unlocked.
+            BLUETOOTH_CONTROL.set_volume(value)
+            return _bluetooth_settings_status(name, value)
+        if name == 'unlock':
+            enabled = data.get('enabled')
+            if not isinstance(enabled, bool):
+                raise ValueError('Expected an unlock setting')
+            if enabled:
+                raise RuntimeError('Higher levels cannot be unlocked while Bluetooth owns audio')
+            BLUETOOTH_CONTROL.relock_level()
+            LEVELS_UNLOCKED = False
+            return _bluetooth_settings_status(name, False)
+        # Route-taking actions retain the established muted stop/recovery handoff.
         BLUETOOTH_CONTROL.stop('Manual control override')
     if MANUAL_ROUTE.exists():
         # Mirrors the AirPlay recovery gate: finish (or fail) recovery of the manual

@@ -1,0 +1,126 @@
+# WIL-251 Bluetooth receiver settings A1 evidence
+
+## Scope and base
+
+- Repository base: `0998a4c20064f641d5fbb08e2b7e62b552521e58` (published `wil-251-unified-inputs` base supplied for this task).
+- No Pi, service, device, installer, UI, AirPlay, or source-intent action was performed.
+- Focused command, run from `pi/remote`:
+
+```console
+$ python3 -m unittest -v test_server test_bluetooth_control
+test_accept_hash_as_prefix_or_suffix_is_rejected (test_server.HandshakeFailures.test_accept_hash_as_prefix_or_suffix_is_rejected) ... ok
+test_accept_hash_hidden_in_other_header_is_rejected (test_server.HandshakeFailures.test_accept_hash_hidden_in_other_header_is_rejected) ... ok
+test_connect_failure_closes_socket (test_server.HandshakeFailures.test_connect_failure_closes_socket) ... ok
+test_duplicate_conflicting_accept_is_rejected (test_server.HandshakeFailures.test_duplicate_conflicting_accept_is_rejected) ... ok
+test_eof_mid_header_closes_socket (test_server.HandshakeFailures.test_eof_mid_header_closes_socket) ... ok
+test_missing_accept_is_rejected (test_server.HandshakeFailures.test_missing_accept_is_rejected) ... ok
+test_missing_or_wrong_connection_is_rejected (test_server.HandshakeFailures.test_missing_or_wrong_connection_is_rejected) ... ok
+test_missing_or_wrong_upgrade_is_rejected (test_server.HandshakeFailures.test_missing_or_wrong_upgrade_is_rejected) ... ok
+test_non_101_status_closes_socket (test_server.HandshakeFailures.test_non_101_status_closes_socket) ... ok
+test_oversized_header_closes_socket (test_server.HandshakeFailures.test_oversized_header_closes_socket) ... ok
+test_sendall_failure_closes_socket (test_server.HandshakeFailures.test_sendall_failure_closes_socket) ... ok
+test_timeout_closes_socket (test_server.HandshakeFailures.test_timeout_closes_socket) ... ok
+test_valid_headers_accept_case_and_token_variants (test_server.HandshakeFailures.test_valid_headers_accept_case_and_token_variants) ... ok
+test_wrong_accept_closes_socket (test_server.HandshakeFailures.test_wrong_accept_closes_socket) ... ok
+test_auto_bluetooth_requires_explicit_opt_in_even_with_runtime_directory (test_server.InitializationSafety.test_auto_bluetooth_requires_explicit_opt_in_even_with_runtime_directory) ... Octet music controls: http://100.100.177.81:8767
+Octet music controls: http://100.100.177.81:8767
+Octet music controls: http://100.100.177.81:8767
+ok
+test_auto_bluetooth_starts_only_with_runtime_directory_and_after_muted_init (test_server.InitializationSafety.test_auto_bluetooth_starts_only_with_runtime_directory_and_after_muted_init) ... Octet music controls: http://100.100.177.81:8767
+Octet music controls: http://100.100.177.81:8767
+ok
+test_failed_dsp_initialization_never_starts_auto_bluetooth (test_server.InitializationSafety.test_failed_dsp_initialization_never_starts_auto_bluetooth) ... ok
+test_initial_mute_failure_skips_recovery_and_retries (test_server.InitializationSafety.test_initial_mute_failure_skips_recovery_and_retries) ... ok
+test_mute_is_verified_before_and_after_recovery (test_server.InitializationSafety.test_mute_is_verified_before_and_after_recovery) ... ok
+test_post_recovery_mute_failure_is_fatal (test_server.InitializationSafety.test_post_recovery_mute_failure_is_fatal) ... WARNING:root:Bluetooth startup recovery failed; output remains muted
+WARNING:root:Bluetooth startup recovery failed; output remains muted
+WARNING:root:Bluetooth startup recovery failed; output remains muted
+WARNING:root:Bluetooth startup recovery failed; output remains muted
+ok
+test_recovery_failure_still_remutes_and_retains_retry (test_server.InitializationSafety.test_recovery_failure_still_remutes_and_retains_retry) ... ok
+test_unconfirmed_mute_prevents_both_services_starting (test_server.InitializationSafety.test_unconfirmed_mute_prevents_both_services_starting) ... WARNING:root:Bluetooth startup recovery failed; output remains muted
+WARNING:root:Bluetooth startup recovery failed; output remains muted
+WARNING:root:Bluetooth startup recovery failed; output remains muted
+ok
+test_artwork_response_uses_bridge_image_type_with_safety_headers (test_server.PlaybackGuards.test_artwork_response_uses_bridge_image_type_with_safety_headers) ... ok
+test_both_existing_plugin_and_flat_session_formats (test_server.PlaybackGuards.test_both_existing_plugin_and_flat_session_formats) ... ok
+test_failed_play_mutes_again (test_server.PlaybackGuards.test_failed_play_mutes_again) ... ok
+test_installer_packages_now_playing_bridge (test_server.PlaybackGuards.test_installer_packages_now_playing_bridge) ... ok
+test_invalid_artwork_keys_never_reach_the_bridge (test_server.PlaybackGuards.test_invalid_artwork_keys_never_reach_the_bridge) ... ok
+test_invalid_track_cannot_enter_mpd_command (test_server.PlaybackGuards.test_invalid_track_cannot_enter_mpd_command) ... ok
+test_mpd_arguments_reject_command_injection (test_server.PlaybackGuards.test_mpd_arguments_reject_command_injection) ... ok
+test_mute_is_allowed_even_with_wrong_configuration (test_server.PlaybackGuards.test_mute_is_allowed_even_with_wrong_configuration) ... ok
+test_now_playing_and_artwork_routes_use_live_bridge (test_server.PlaybackGuards.test_now_playing_and_artwork_routes_use_live_bridge) ... ok
+test_now_playing_without_song_reports_null (test_server.PlaybackGuards.test_now_playing_without_song_reports_null) ... ok
+test_remote_footer_links_wifi_now_playing (test_server.PlaybackGuards.test_remote_footer_links_wifi_now_playing) ... ok
+test_unmute_rejects_old_three_way_configuration (test_server.PlaybackGuards.test_unmute_rejects_old_three_way_configuration) ... ok
+test_volume_rejects_excessive_or_nonfinite_levels (test_server.PlaybackGuards.test_volume_rejects_excessive_or_nonfinite_levels) ... ok
+test_failed_full_status_readback_mutes_and_does_not_claim_success (test_server.ReceiverActionSeam.test_failed_full_status_readback_mutes_and_does_not_claim_success) ... ok
+test_http_mute_volume_and_relock_return_full_status (test_server.ReceiverActionSeam.test_http_mute_volume_and_relock_return_full_status) ... ok
+test_route_taking_action_stops_receiver_muted (test_server.ReceiverActionSeam.test_route_taking_action_stops_receiver_muted) ... ok
+test_unlock_and_output_edits_reject_without_mutation (test_server.ReceiverActionSeam.test_unlock_and_output_edits_reject_without_mutation) ... ok
+test_call_uses_unix_websocket_and_never_dials_tcp (test_server.UnixDspTransport.test_call_uses_unix_websocket_and_never_dials_tcp) ... ok
+test_connection_timeout_is_four_seconds (test_server.UnixDspTransport.test_connection_timeout_is_four_seconds) ... ok
+test_missing_socket_fails_closed_without_direct_fallback (test_server.UnixDspTransport.test_missing_socket_fails_closed_without_direct_fallback) ... ok
+test_missing_socket_never_unmutes (test_server.UnixDspTransport.test_missing_socket_never_unmutes) ... ok
+test_production_socket_path (test_server.UnixDspTransport.test_production_socket_path) ... ok
+test_rejected_command_keeps_error_semantics (test_server.UnixDspTransport.test_rejected_command_keeps_error_semantics) ... ok
+test_malformed_generation_touches_nothing (test_bluetooth_control.AutoValidationTests.test_malformed_generation_touches_nothing) ... ok
+test_airplay_real_journal_blocks_prepare_untouched (test_bluetooth_control.PrepareTests.test_airplay_real_journal_blocks_prepare_untouched) ... ok
+test_check_failure_or_missing_binary_never_switches (test_bluetooth_control.PrepareTests.test_check_failure_or_missing_binary_never_switches) ... ok
+test_check_races_retain_evidence_without_path_switch (test_bluetooth_control.PrepareTests.test_check_races_retain_evidence_without_path_switch) ... ok
+test_checked_exact_candidate_and_crash_recovery (test_bluetooth_control.PrepareTests.test_checked_exact_candidate_and_crash_recovery) ... ok
+test_existing_bluetooth_generation_never_overwritten (test_bluetooth_control.PrepareTests.test_existing_bluetooth_generation_never_overwritten) ... ok
+test_journal_sync_failure_prevents_check_and_switch (test_bluetooth_control.PrepareTests.test_journal_sync_failure_prevents_check_and_switch) ... ok
+test_reload_exception_and_mute_drift_fail_muted (test_bluetooth_control.PrepareTests.test_reload_exception_and_mute_drift_fail_muted) ... ok
+test_reload_failure_and_wrong_loaded_config_retain_evidence (test_bluetooth_control.PrepareTests.test_reload_failure_and_wrong_loaded_config_retain_evidence) ... ok
+test_unsupported_pcm_and_filter_count_never_switch (test_bluetooth_control.PrepareTests.test_unsupported_pcm_and_filter_count_never_switch) ... ok
+test_bad_volume_readback_emergency_mutes_and_latches_recovery (test_bluetooth_control.ReceiverSettingsTests.test_bad_volume_readback_emergency_mutes_and_latches_recovery) ... ok
+test_duplicate_unmute_only_verifies_and_never_toggles (test_bluetooth_control.ReceiverSettingsTests.test_duplicate_unmute_only_verifies_and_never_toggles) ... ok
+test_intentionally_muted_active_session_is_watchdog_valid_and_fully_checked (test_bluetooth_control.ReceiverSettingsTests.test_intentionally_muted_active_session_is_watchdog_valid_and_fully_checked) ... ok
+test_pending_emergency_mute_reads_back_without_dropping_bridge (test_bluetooth_control.ReceiverSettingsTests.test_pending_emergency_mute_reads_back_without_dropping_bridge) ... ok
+test_stale_generation_refuses_unmute_and_recovers_muted (test_bluetooth_control.ReceiverSettingsTests.test_stale_generation_refuses_unmute_and_recovers_muted) ... ok
+test_volume_above_receiver_ceiling_is_rejected_without_dsp_access (test_bluetooth_control.ReceiverSettingsTests.test_volume_above_receiver_ceiling_is_rejected_without_dsp_access) ... ok
+test_airplay_autotune_and_unapproved_baselines_refused (test_bluetooth_control.RecoveryTests.test_airplay_autotune_and_unapproved_baselines_refused) ... ok
+test_all_failure_stages_captured_and_restore_never_attempted_after_stop_failure (test_bluetooth_control.RecoveryTests.test_all_failure_stages_captured_and_restore_never_attempted_after_stop_failure) ... ok
+test_changed_baseline_during_reload_is_not_overwritten (test_bluetooth_control.RecoveryTests.test_changed_baseline_during_reload_is_not_overwritten) ... ok
+test_changed_snapshot_baseline_or_lock_retains_recovery (test_bluetooth_control.RecoveryTests.test_changed_snapshot_baseline_or_lock_retains_recovery) ... ok
+test_cleanup_directory_sync_failure_retains_lock_and_evidence (test_bluetooth_control.RecoveryTests.test_cleanup_directory_sync_failure_retains_lock_and_evidence) ... ok
+test_cleanup_lock_held_through_directory_sync (test_bluetooth_control.RecoveryTests.test_cleanup_lock_held_through_directory_sync) ... ok
+test_cleanup_refuses_unknown_or_unmuted_dsp (test_bluetooth_control.RecoveryTests.test_cleanup_refuses_unknown_or_unmuted_dsp) ... ok
+test_cleanup_sync_failure_can_be_retried (test_bluetooth_control.RecoveryTests.test_cleanup_sync_failure_can_be_retried) ... ok
+test_crash_recovery_restores_original_path_content_muted (test_bluetooth_control.RecoveryTests.test_crash_recovery_restores_original_path_content_muted) ... ok
+test_duplicate_and_nonobject_journal_rejected_after_restart (test_bluetooth_control.RecoveryTests.test_duplicate_and_nonobject_journal_rejected_after_restart) ... ok
+test_failed_restore_retains_journal_and_lock (test_bluetooth_control.RecoveryTests.test_failed_restore_retains_journal_and_lock) ... ok
+test_invalid_journal_formats (test_bluetooth_control.RecoveryTests.test_invalid_journal_formats) ... ok
+test_journal_publish_never_overwrites_existing_file (test_bluetooth_control.RecoveryTests.test_journal_publish_never_overwrites_existing_file) ... ok
+test_journal_swap_at_cleanup_boundary_is_retained (test_bluetooth_control.RecoveryTests.test_journal_swap_at_cleanup_boundary_is_retained) ... ok
+test_journal_write_failure_never_changes_path (test_bluetooth_control.RecoveryTests.test_journal_write_failure_never_changes_path) ... ok
+test_live_null_filter_label_allows_approved_baseline_and_muted_recovery (test_bluetooth_control.RecoveryTests.test_live_null_filter_label_allows_approved_baseline_and_muted_recovery) ... ok
+test_lock_owned_by_other_process_refuses_prepare (test_bluetooth_control.RecoveryTests.test_lock_owned_by_other_process_refuses_prepare) ... ok
+test_mute_failure_alone_still_attempts_restore_without_cleanup (test_bluetooth_control.RecoveryTests.test_mute_failure_alone_still_attempts_restore_without_cleanup) ... ok
+test_mute_failure_prevents_journal_and_path_changes (test_bluetooth_control.RecoveryTests.test_mute_failure_prevents_journal_and_path_changes) ... ok
+test_orphan_tick_and_stop_recover_start_refuses_pending_or_disabled (test_bluetooth_control.RecoveryTests.test_orphan_tick_and_stop_recover_start_refuses_pending_or_disabled) ... ok
+test_real_other_process_flock_contention_and_release (test_bluetooth_control.RecoveryTests.test_real_other_process_flock_contention_and_release) ... ok
+test_real_server_airplay_interface_guards_bluetooth_ownership (test_bluetooth_control.RecoveryTests.test_real_server_airplay_interface_guards_bluetooth_ownership) ... ok
+test_replaced_journal_even_identical_record_is_retained (test_bluetooth_control.RecoveryTests.test_replaced_journal_even_identical_record_is_retained) ... ok
+test_running_config_drift_recovers_muted (test_bluetooth_control.RecoveryTests.test_running_config_drift_recovers_muted) ... ok
+test_snapshot_is_exact_readonly_and_journal_precedes_any_path_change (test_bluetooth_control.RecoveryTests.test_snapshot_is_exact_readonly_and_journal_precedes_any_path_change) ... ok
+test_startup_mutes_and_stops_without_unmute (test_bluetooth_control.RecoveryTests.test_startup_mutes_and_stops_without_unmute) ... ok
+test_stop_failure_defers_restore_and_retains_mute_and_evidence (test_bluetooth_control.RecoveryTests.test_stop_failure_defers_restore_and_retains_mute_and_evidence) ... ok
+test_symlink_journal_never_followed_or_removed (test_bluetooth_control.RecoveryTests.test_symlink_journal_never_followed_or_removed) ... ok
+test_symlink_tmpdir_fixture_in_fresh_process (test_bluetooth_control.RecoveryTests.test_symlink_tmpdir_fixture_in_fresh_process) ... ok
+test_unlink_failure_retains_journal_and_lock (test_bluetooth_control.RecoveryTests.test_unlink_failure_retains_journal_and_lock) ... ok
+test_unreachable_dsp_stops_bridge_no_physical_mute_claim (test_bluetooth_control.RecoveryTests.test_unreachable_dsp_stops_bridge_no_physical_mute_claim) ... ok
+
+----------------------------------------------------------------------
+Ran 92 tests in 8.697s
+
+OK
+```
+
+## Result
+
+The focused suite completed successfully: **92 tests ran in 8.697 seconds, OK**. The response seam tests exercise `Handler.do_POST` through `server.action`, require the established full status fields (`volume`, `muted`, `level_unlocked`, `source`, `sources`, `airplay`, and `source_route`), and verify failed full-status readback is reported as failure after an emergency mute attempt.
+
+The physical deployment/acceptance gate remains open; this is code-and-test evidence only.
