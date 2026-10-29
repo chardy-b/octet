@@ -8,10 +8,11 @@ import threading
 import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from typing import get_args
 
 import numpy as np
 
-from . import analysis, calibration, clock, levels, store
+from . import clock, levels, store
 from .sweep import make_sweep, stereo_playback
 
 
@@ -49,9 +50,11 @@ class RecordConfig:
         for k, v in d.items():
             if k not in kinds or v is None:
                 continue
-            t = str(kinds[k])
-            out[k] = (int(v) if "int" in t and "float" not in t else float(v) if "float" in t else
-                      bool(v) if "bool" in t else str(v))
+            field_type = kinds[k]
+            optional_types = get_args(field_type)
+            if optional_types:
+                field_type = next(t for t in optional_types if t is not type(None))
+            out[k] = {int: int, float: float, bool: bool, str: str}[field_type](v)
         return cls(**out)
 
     def validate(self) -> None:
