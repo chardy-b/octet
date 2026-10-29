@@ -24,10 +24,6 @@ from .wavio import write_pcm_wav
 BLOCK_S = 0.05
 
 
-class Cancelled(Exception):
-    pass
-
-
 def ensure_com() -> bool:
     """Windows only: PortAudio's WASAPI backend fails to open a stream on a thread where COM has not been initialised
     (the error mentions WDM-KS). Every thread that opens an audio stream calls this first. Returns True if COM is

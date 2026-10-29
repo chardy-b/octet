@@ -22,6 +22,36 @@ def cfg(**kw):
     return RecordConfig.from_dict(base)
 
 
+def test_record_config_from_dict_converts_field_types_and_skips_unknowns():
+    config = RecordConfig.from_dict({
+        "fs": "48000",
+        "duration": "2.5",
+        "save": "",
+        "ref": "false",
+        "seconds": "3.25",
+        "trigger": 123,
+        "unknown": "ignored",
+    })
+
+    assert config.fs == 48000
+    assert config.duration == 2.5
+    assert config.save is False
+    assert config.ref is True
+    assert config.seconds == 3.25
+    assert config.trigger == "123"
+    assert not hasattr(config, "unknown")
+
+
+def test_record_config_from_dict_ignores_nulls_and_preserves_defaults():
+    config = RecordConfig.from_dict({"name": None, "seconds": None, "trigger": None})
+
+    assert config.name == "measurement"
+    assert config.seconds is None
+    assert config.trigger is None
+    assert config.fs == 44100
+    assert config.save is True
+
+
 def test_record_saves_a_measurement_and_reports_levels(workspace):
     io = DemoIO(speed=60, mic_gain_db=0.0)
     result, events = run(io, "run_record", cfg())
