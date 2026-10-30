@@ -36,7 +36,7 @@ from remote_manifest import EXECUTABLE, REMOTE_FILES  # noqa: E402
 TARGET = Path('/opt/octet-remote')
 DROPINS = Path('/etc/systemd/system/octet-remote.service.d')
 BACKUPS = Path('/var/backups/octet-remote-deploy')
-STAGING = Path('/var/tmp/octet-deploy')
+STAGING = '/var/tmp/octet-deploy'  # a string: it is a Linux path even when this runs on Windows
 STATUS_URL = 'http://127.0.0.1:8767/api/status'
 SOCKET_DIR = Path('/run/octet-airplay')
 RUNTIME_MODE = re.compile(r'(?m)^RuntimeDirectoryMode=0700$')
