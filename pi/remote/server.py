@@ -581,24 +581,29 @@ def select_source(identifier, defer_ready=False):
                         return  # Explicit Unmute/Play is required after a source change.
             raise RuntimeError('The selected input did not start')
         except Exception:
-            AIRPLAY_CONTROL.invalidate(manual=False)
-            if previous is not None:
-                candidate.write_bytes(previous)
-                candidate.chmod(0o640)
-                candidate.replace(target)
+            if target == CHANNEL_PROFILE:
+                # Durable, retryable restore: keeps the mute latched and the rollback bytes
+                # until both the file and the DSP reload have succeeded.
+                restore_channel_profile(previous)
             else:
-                target.unlink(missing_ok=True)
-            if manifest:
-                if previous_manifest is None:
-                    manifest.unlink(missing_ok=True)
+                AIRPLAY_CONTROL.invalidate(manual=False)
+                if previous is not None:
+                    candidate.write_bytes(previous)
+                    candidate.chmod(0o640)
+                    candidate.replace(target)
                 else:
-                    manifest.write_bytes(previous_manifest)
-                    manifest.chmod(0o640)
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
-                if str(target) != previous_path:
-                    dsp.call('SetConfigFilePath', previous_path)
-                dsp.call('Reload')
+                    target.unlink(missing_ok=True)
+                if manifest:
+                    if previous_manifest is None:
+                        manifest.unlink(missing_ok=True)
+                    else:
+                        manifest.write_bytes(previous_manifest)
+                        manifest.chmod(0o640)
+                with DSP() as dsp:
+                    dsp.call('SetMute', True)
+                    if str(target) != previous_path:
+                        dsp.call('SetConfigFilePath', previous_path)
+                    dsp.call('Reload')
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
             raise RuntimeError('Source change failed; the previous source was restored and output is muted')
     finally:
