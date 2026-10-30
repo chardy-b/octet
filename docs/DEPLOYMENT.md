@@ -88,7 +88,7 @@ These checks play nothing:
 ssh octet@octet 'cat /opt/octet-remote/REVISION'
 ssh octet@octet 'systemctl is-active shairport-sync octet-remote camilladsp mpd'
 ssh octet@octet 'stat -c "%U:%G %a %n" /run/octet-airplay'   # must be upmpdcli:octet-airplay 750
-ssh octet@octet 'curl -s localhost:8767/api/status | python3 -c "import json,sys;d=json.load(sys.stdin);print(d[\"muted\"],d[\"airplay\"])"'
+ssh octet@octet 'curl -s http://127.0.0.1:8767/api/status | python3 -c "import json,sys;d=json.load(sys.stdin);print(d[\"muted\"],d[\"airplay\"])"'
 ssh octet@octet 'journalctl -u shairport-sync -n 5 --no-pager'   # no "hook failed"
 ```
 
@@ -107,7 +107,7 @@ ssh octet@octet 'stat -c "%a %n" /run/octet-airplay; systemctl show octet-remote
 
 It must be `750`. systemd applies the **last** `RuntimeDirectoryMode` among the `octet-remote` drop-ins to every runtime directory, so a `0700` in `bluetooth.conf` locks Shairport (group `octet-airplay`) out of `/run/octet-airplay`. Fix: `python pi/remote/deploy.py` (it repairs the drop-ins), or by hand: set `RuntimeDirectoryMode=0750` in every drop-in, `sudo systemctl daemon-reload`, and `sudo chmod 750 /run/octet-airplay` for the running instance. The change takes full effect at the next `octet-remote` restart.
 
-**The AirPlay status shows an error.** `curl -s localhost:8767/api/status` prints `airplay.error`; common causes are Auto Tune owning the audio outputs, an unapproved DSP profile, or a Bluetooth session holding the audio. The design is fail-closed: it stays muted and tells you why.
+**The AirPlay status shows an error.** `curl -s http://127.0.0.1:8767/api/status` prints `airplay.error`; common causes are Auto Tune owning the audio outputs, an unapproved DSP profile, or a Bluetooth session holding the audio. The design is fail-closed: it stays muted and tells you why.
 
 **Octet does not appear in the AirPlay list.** Phone and Pi must be on the same LAN (the Pi is on `wlan0`; Tailscale carries no mDNS). Check `systemctl is-active avahi-daemon shairport-sync`.
 
