@@ -88,7 +88,7 @@ class NetworkSecurity(unittest.TestCase):
              patch.object(server, 'mpd', side_effect=player), \
              patch.object(server, 'playlist_contents', return_value=fixture.contents()):
             server.action('enqueue', {'id': '1'})
-            self.assertEqual(player.queue[-1][1], 'http://127.0.0.1:8767/stream/1')
+            self.assertTrue(any(url.startswith('http://127.0.0.1:8767/stream/1?entry=') for _, url in player.queue))
             server.action('play-playlist', {'id': playlists.PLAYLIST})
             self.assertTrue(all(url.startswith('http://127.0.0.1:8767/stream/') for _, url in player.queue))
 

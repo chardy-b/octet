@@ -81,7 +81,7 @@ class StagedTreeTests(unittest.TestCase):
 
     def test_staged_modules_import_from_the_staged_directory_only(self):
         # -I and an empty env: nothing but stdlib and the staged directory can satisfy imports.
-        code = ('import sys; sys.path.insert(0, sys.argv[1]); import bluetooth_auto, bluetooth_transport, '
+        code = ('import sys; sys.path.insert(0, sys.argv[1]); import bluetooth_auto, bluetooth_transport; '
                 'print(bluetooth_auto.__file__, bluetooth_transport.__file__)')
         result = subprocess.run([sys.executable, '-I', '-c', code, str(self.stage)],
                                 cwd=self.stage, capture_output=True, text=True, env={})
