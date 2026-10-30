@@ -138,6 +138,57 @@ class ProfileRollbackTests(unittest.TestCase):
                 self.assertIsNone(self.control.restore_pending)
                 self.assertNotIn(('SetMute', False), [c.args for c in self.dsp.call.call_args_list])
 
+    def _baseline_switch(self, reload_fails=False):
+        origin = self.path.with_name('baseline.yml')
+        origin.write_text('baseline')
+        copy_path = str(self.path.with_name('source-' + 'a' * 24 + '.yml'))
+        tidal = config()
+        state = dict(path=copy_path, config=config())
+        state['config']['devices']['capture'] = dict(type='Alsa', device=usb()['device'], channels=10, format='S32_LE')
+        calls = []
+
+        def call(name, *args):
+            calls.append(name if not args else (name, args[0]))
+            if name == 'SetConfigFilePath':
+                state['path'] = args[0]
+            if name == 'Reload':
+                if reload_fails:
+                    raise RuntimeError('reload failed')
+                state['config'] = tidal
+            return {'GetConfigFilePath': lambda: state['path'], 'GetConfigJson': lambda: json.dumps(state['config']),
+                    'GetState': lambda: 'Running', 'ReadConfigJson': lambda: args[0]}.get(name, lambda: None)()
+        self.dsp.call.side_effect = call
+        profile = dict(label='Tuned', description='', tuning={'name': 'Tuned'}, origin_path=str(origin))
+        patches = [patch.object(server, 'discover_sources', return_value=[dict(id='tidal', label='Tidal', available=True)]),
+                   patch.object(server, 'mpd'), patch.object(server.INPUT_LEVELS, 'release'),
+                   patch.object(server, 'listening_profile', return_value=profile),
+                   patch.object(server, 'meter_channels', return_value=8),
+                   patch.object(server.time, 'sleep'),
+                   patch.object(server, 'source_metadata', side_effect=lambda cfg: dict(
+                       id='usb' if cfg['devices']['capture'].get('device') == usb()['device'] else 'tidal'))]
+        return origin, copy_path, calls, state, patches
+
+    def test_tidal_returns_to_the_approved_baseline_path(self):
+        origin, copy_path, calls, state, patches = self._baseline_switch()
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(patch('yaml.safe_load', return_value=config()))
+            server.select_source('tidal')
+        self.assertEqual(state['path'], str(origin))
+        self.assertIn(('SetConfigFilePath', str(origin)), calls)
+        self.assertNotIn(('SetMute', False), calls)
+
+    def test_failed_return_to_baseline_restores_previous_path_muted(self):
+        origin, copy_path, calls, state, patches = self._baseline_switch(reload_fails=True)
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with patch('yaml.safe_load', return_value=config()), self.assertRaises(RuntimeError):
+                server.select_source('tidal')
+        self.assertEqual(state['path'], copy_path)
+        self.assertNotIn(('SetMute', False), calls)
+
     def test_source_and_output_failures_use_retryable_restore(self):
         for operation in ('source', 'output'):
             with self.subTest(operation=operation):

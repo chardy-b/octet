@@ -146,8 +146,6 @@ class BluetoothRoute(BaselineRoute):
                 raise RuntimeError('Bluetooth requires exact approved active baseline')
             # Validate the Tidal topology without claiming observed PCM or --check.
             routed(loaded, rate=48000, sample_format='S32_LE', channels=2)
-            if len(loaded.get('filters', {})) != 129:
-                raise RuntimeError('Bluetooth requires the 129-filter baseline')
             with self.server.DSP() as dsp:
                 if (dsp.call('GetConfigFilePath') != path
                         or json.loads(dsp.call('GetConfigJson')) != loaded

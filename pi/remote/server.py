@@ -519,6 +519,41 @@ def restore_channel_profile(previous):
     AIRPLAY_CONTROL.recover()
 
 
+def return_to_baseline(identifier, origin, previous_path, config):
+    global ACTIVE_CAPTURE_CHANNELS
+    import yaml
+    with DSP() as dsp:
+        baseline = json.loads(dsp.call('ReadConfigJson', json.dumps(yaml.safe_load(Path(origin).read_text()))))
+    if source_metadata(baseline)['id'] != identifier:
+        raise RuntimeError('The approved profile does not use that source')
+    INPUT_LEVELS.release()
+    with DSP() as dsp:
+        dsp.call('SetMute', True)
+    try:
+        mpd('pause 1')
+        with DSP() as dsp:
+            dsp.call('SetConfigFilePath', origin)
+            dsp.call('Reload')
+        for _ in range(60):
+            time.sleep(.1)
+            with DSP() as dsp:
+                loaded = json.loads(dsp.call('GetConfigJson'))
+                if (dsp.call('GetConfigFilePath') == origin
+                        and source_metadata(loaded)['id'] == identifier
+                        and dsp.call('GetState') == 'Running'):
+                    ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
+                    return  # Explicit Unmute/Play is required after a source change.
+        raise RuntimeError('The selected input did not start')
+    except Exception:
+        AIRPLAY_CONTROL.invalidate(manual=False)
+        with DSP() as dsp:
+            dsp.call('SetMute', True)
+            dsp.call('SetConfigFilePath', previous_path)
+            dsp.call('Reload')
+        ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
+        raise RuntimeError('Source change failed; the previous source was restored and output is muted')
+
+
 def select_source(identifier, defer_ready=False):
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
@@ -533,8 +568,16 @@ def select_source(identifier, defer_ready=False):
         if not profile:
             raise RuntimeError('Select a saved speaker profile on the DSP page before changing sources.')
         config = json.loads(dsp.call('GetConfigJson'))
-        if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
+        on_copy = bool(profile['tuning']) and previous_path not in (profile['origin_path'], str(CHANNEL_PROFILE))
+        if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running' and not (
+                on_copy and identifier == 'tidal' and not defer_ready):
             return (None, config) if defer_ready else None
+    origin = profile['origin_path']
+    if (identifier == 'tidal' and not defer_ready and profile['tuning']
+            and previous_path != origin and previous_path != str(CHANNEL_PROFILE)):
+        # AirPlay and Bluetooth only accept the approved baseline itself, so Tidal
+        # returns to it instead of staying on a source working copy.
+        return return_to_baseline(identifier, origin, previous_path, config)
     updated = source_config(config, source)
     with DSP() as dsp:
         updated = json.loads(dsp.call('ReadConfigJson', json.dumps(updated)))

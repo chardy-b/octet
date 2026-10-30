@@ -15,6 +15,7 @@ import time
 
 from airplay_baseline import BaselineRoute
 
+from source_profiles import SourceProfiles
 from audio_sources import loopback_available, source_metadata, meter_channels, pcm_fields, pcm_params_match
 
 SOCKET = '/run/octet-airplay/control.sock'
@@ -187,6 +188,13 @@ class AirPlayController:
                 check_deadline()
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
+                with self.server.DSP() as dsp:
+                    path = dsp.call('GetConfigFilePath')
+                if SourceProfiles(Path(self.server.CHANNEL_PROFILE).parent).origin(path):
+                    # On a source working copy (for example after a USB input): go back to the
+                    # approved profile rather than refusing the cast.
+                    self.server.select_source('tidal')
+                check_deadline()
                 with self.server.DSP() as dsp:
                     path = dsp.call('GetConfigFilePath')
                     if path != str(self.server.CHANNEL_PROFILE):

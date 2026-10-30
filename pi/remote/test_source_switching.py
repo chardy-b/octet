@@ -121,7 +121,8 @@ class SourceSwitching(unittest.TestCase):
             self.assert_tuning_available(dsp, tuning, 'tidal')
             for source in (usb()['id'], 'tidal'):
                 server.select_source(source)
-                self.assertEqual(dsp.path, str(target))
+                # Tidal returns to the approved profile itself so AirPlay and Bluetooth accept it.
+                self.assertEqual(dsp.path, str(origin if source == 'tidal' else target))
                 self.assertEqual(origin.read_bytes(), original_bytes)
                 self.assertEqual(audio_sources.source_config(dsp.document, audio_sources.TIDAL), baseline)
                 self.assertEqual(dsp.document['filters'], baseline['filters'])
@@ -149,8 +150,10 @@ class SourceSwitching(unittest.TestCase):
                 dsp.calls.clear()
                 mpd.reset_mock()
                 validation.returncode = 1
-                with self.assertRaisesRegex(RuntimeError, 'DSP rejected the source'):
-                    server.select_source('tidal' if existing else usb()['id'])
+                other = usb((2, 3), 'pair-2')
+                with patch.object(server, 'discover_sources', return_value=[audio_sources.TIDAL, usb(), other]), \
+                     self.assertRaisesRegex(RuntimeError, 'DSP rejected the source'):
+                    server.select_source(other['id'] if existing else usb()['id'])
                 self.assertEqual(dsp.path, previous_path)
                 self.assertEqual(dsp.document, previous_document)
                 self.assertEqual(origin.read_bytes(), original_bytes)

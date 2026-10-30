@@ -528,17 +528,20 @@ class PrepareTests(unittest.TestCase):
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
 
-    def test_unsupported_pcm_and_filter_count_never_switch(self):
+    def test_unsupported_pcm_never_switches(self):
         for rate, fmt in ((96000, 'S16_LE'), (True, 'S32_LE'), (48000, 'FLOAT_LE')):
             with self.assertRaises(ValueError):
                 self.control.route.prepare(rate, fmt)
+        self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+
+    def test_any_approved_filter_count_is_accepted(self):
+        # The approved digest, not a fixed filter count, identifies the baseline.
         self.config['filters'].pop(next(iter(self.config['filters'])))
         self.data = yaml.safe_dump(self.config).encode()
         self.path.write_bytes(self.data)
         self.state['config'] = copy.deepcopy(self.config)
-        with self.assertRaisesRegex(RuntimeError, '129-filter'):
-            self.load()
-        self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
+        self.load()
+        self.assertTrue(any(c[0] == 'SetConfigFilePath' for c in self.calls))
 
     def test_reload_exception_and_mute_drift_fail_muted(self):
         original_call = self.dsp.call.side_effect
