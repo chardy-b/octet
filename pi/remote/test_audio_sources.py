@@ -257,6 +257,8 @@ class AudioSources(unittest.TestCase):
                     return json.dumps(loaded)
                 if name == 'GetState':
                     return 'Running'
+                if name == 'ReadConfigJson':
+                    return args[0]
                 if name == 'Reload':
                     loaded = yaml.safe_load(profile.read_text())
                     loaded['devices']['capture']['labels'] = None

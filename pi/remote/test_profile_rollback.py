@@ -148,7 +148,8 @@ class ProfileRollbackTests(unittest.TestCase):
                     if name == 'Reload':
                         raise RuntimeError('reload failed')
                     return {'GetConfigFilePath': str(self.path), 'GetConfigJson': json.dumps(loaded),
-                            'GetState': 'Running', 'GetMute': False}.get(name)
+                            'GetState': 'Running', 'GetMute': False,
+                            'ReadConfigJson': args[0] if args else None}.get(name)
                 self.dsp.call.side_effect = call
                 with patch.object(server, 'discover_sources', return_value=[usb()]), \
                      patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \
