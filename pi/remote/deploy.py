@@ -88,7 +88,7 @@ def deploy_from_here(options):
         package = Path(scratch) / 'octet-deploy.tgz'
         build_package(revision, package)
         remote_dir = f"{STAGING}/{revision['commit']}"
-        ssh(options.host, f'rm -rf {remote_dir} && mkdir -p {remote_dir}', check=True)
+        ssh(options.host, f'sudo -n rm -rf {remote_dir} && mkdir -p {remote_dir}', check=True)
         subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', str(package), f'{options.host}:{remote_dir}/pkg.tgz'], check=True)
     flags = '--dry-run' if options.dry_run else ''
     command = (f'cd {remote_dir} && tar xzf pkg.tgz && rm pkg.tgz && '
@@ -156,7 +156,7 @@ def preflight(stage):
     elif current.get('playback') == 'play' and not current.get('muted'):
         problems.append('Music is playing; stop it first (the restart would cut it off)')
     for name in ('server.py', 'airplay_control.py', 'remote_manifest.py'):
-        compiled = run(sys.executable, '-m', 'py_compile', str(stage / name), check=False)
+        compiled = run(sys.executable, '-B', '-c', 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")', str(stage / name), check=False)
         if compiled.returncode:
             problems.append(f'{name} does not compile: {compiled.stderr.strip()[-200:]}')
     missing = sorted(import_closure(stage, 'server.py') - set(REMOTE_FILES))
