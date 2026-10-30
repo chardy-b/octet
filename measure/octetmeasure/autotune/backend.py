@@ -137,11 +137,12 @@ class Hardware:
         if signal.ndim != 2 or signal.shape[1] != (2 if loopback else 8) or not np.isfinite(signal).all():
             raise ValueError('Invalid output buffer.')
         if not loopback:
-            from .config import selected_pairs
+            from .config import active_drivers, measurement_ceiling
+            usable = {d['id'] for d in active_drivers(cfg)}
             for d in cfg['drivers']:
-                if d['role'] not in selected_pairs(cfg) and np.any(signal[:,d['output']-1]):
-                    raise ValueError(f"Deselected output must remain silent: {d['id']}.")
-                if np.max(abs(signal[:,d['output']-1])) > 10**(d['max_db']/20)*1.00001:
+                if d['id'] not in usable and np.any(signal[:,d['output']-1]):
+                    raise ValueError(f"Deselected or failed output must remain silent: {d['id']}.")
+                if np.max(abs(signal[:,d['output']-1])) > 10**(measurement_ceiling(cfg,d)/20)*1.00001:
                     raise ValueError(f"Output ceiling exceeded on {d['id']}.")
         input_dev = cfg['input_device']
         output_dev = cfg['camilla']['loopback_output'] if loopback else cfg['output_device']
@@ -233,7 +234,10 @@ class Simulated:
                 raise RuntimeError('No simulated configuration active.')
             rendered = []
             for index, side in enumerate(('L','R')):
-                y, scale = render_chain(cfg, side, self.applied['chosen'][side], self.applied['eq'], signal[:,index], self.applied['room'].get(side, []))
+                from .config import active_sides
+                if side not in active_sides(cfg):
+                    continue
+                y, scale = render_chain(cfg, side, self.applied['chosen'][side], self.applied['eq'], signal[:,index], self.applied['room'].get(side, []),self.applied.get('stereo'))
                 rendered.append(y*self.applied['preamp'][side]/scale)
             signal = sum(rendered)
         y = np.zeros(len(signal)+fs)

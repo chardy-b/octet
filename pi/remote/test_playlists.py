@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 import uuid
+from urllib.parse import urlparse
 import server
 
 
@@ -44,13 +45,20 @@ class Player:
         self.adds = 0
         self.fail_add = None
         self.fail_play = False
+        self.state = 'play'
 
     def __call__(self, *commands):
         results = []
         for command in commands:
             parts = shlex.split(command)
             name = parts[0]
-            if name == 'playlistinfo':
+            if name == 'status':
+                status = [('state', self.state)]
+                positions = [i for i, row in enumerate(self.queue) if row[0] == self.current]
+                if positions:
+                    status.extend([('song', str(positions[0])), ('songid', self.current)])
+                results.append(status)
+            elif name == 'playlistinfo':
                 results.append([pair for identifier, url in self.queue
                                 for pair in [('file', url), ('Id', identifier)]])
             elif name == 'addid':
@@ -59,7 +67,10 @@ class Player:
                     raise RuntimeError('Queue load failed')
                 identifier = str(self.next_id)
                 self.next_id += 1
-                self.queue.append((identifier, parts[1]))
+                if len(parts) > 2:
+                    self.queue.insert(int(parts[2]), (identifier, parts[1]))
+                else:
+                    self.queue.append((identifier, parts[1]))
                 results.append([('Id', identifier)])
             elif name == 'deleteid':
                 self.queue = [row for row in self.queue if row[0] != parts[1]]
@@ -68,6 +79,14 @@ class Player:
                 if self.fail_play:
                     raise RuntimeError('Player offline')
                 self.current = parts[1]
+                self.state = 'play'
+                results.append([])
+            elif name == 'next':
+                position = next(i for i, row in enumerate(self.queue) if row[0] == self.current) + 1
+                if position < len(self.queue):
+                    self.current = self.queue[position][0]
+                else:
+                    self.state = 'stop'
                 results.append([])
             elif name in self.modes:
                 self.modes[name] = parts[1]
@@ -121,7 +140,7 @@ class Playlists(unittest.TestCase):
         player, dsp = Player(), self.dsp()
         with tempfile.TemporaryDirectory() as tmp, patch.object(server, 'STATE', Path(tmp)), patch.object(server, 'CATALOG', {}), patch.object(server, 'playlist_contents', return_value=self.contents()), patch.object(server, 'mpd', side_effect=player), patch.object(server, 'DSP', return_value=dsp), patch.object(server, 'current_status', return_value={}):
             server.action('play-playlist', dict(id=PLAYLIST, position=1, track_id='2'))
-        self.assertEqual([url.rsplit('/', 1)[-1] for _, url in player.queue], ['1', '2', '3'])
+        self.assertEqual([urlparse(url).path.rsplit('/', 1)[-1] for _, url in player.queue], ['1', '2', '3'])
         self.assertEqual(player.current, player.queue[1][0])
         self.assertEqual(player.modes, dict(random='0', single='0', repeat='0', consume='0'))
         self.assertEqual(dsp.call.call_args.args, ('SetMute', False))

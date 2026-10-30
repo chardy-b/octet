@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -75,7 +76,19 @@ class Controller:
             self.write_preset(state['id'], state['cfg'].get('name', 'Auto Tune'),
                               self.root/state['id']/'camilladsp.yml', kind='tuned', chosen=state['chosen'],
                               verification=state.get('final_verification', {}), demo=self.demo,
-                              selected_pairs=config.selected_pairs(state['cfg']))
+                              selected_pairs=config.selected_pairs(state['cfg']),
+                              active_driver_ids=[d['id'] for d in config.active_drivers(state['cfg'])],
+                              failed_drivers=state.get('failed_drivers',{}),
+                              stereo_skipped=state.get('stereo_skipped'),
+                              stereo=state.get('stereo',{}),
+                              stereo_verification=state.get('stereo_verification'),
+                              active_stereo_verification=state.get('active_stereo_verification'),
+                              driver_polarity_report=state.get('driver_polarity_report'),
+                              measurement_repeats=state['cfg'].get('measurement_repeats',1),
+                              baseline_measured=state.get('baseline_measured',False),
+                              playback_max_db=state['cfg'].get('playback_max_db'),
+                              test_attenuation_db=state['cfg'].get('test_attenuation_db',0),
+                              preamp_db={side:20*math.log10(scale) for side,scale in state['preamp'].items()})
         record = json.loads(path.read_text())
         atomic(self.root/'active.json', json.dumps(record, indent=2))
         if not self.demo:
@@ -110,8 +123,26 @@ class Controller:
                     peak_db=self.meter, profiles=self.profiles(),
                     active=json.loads(active.read_text()) if active.exists() else None,
                     chosen=state.get('chosen'), verification=state.get('final_verification'),
+                    stereo=state.get('stereo'), stereo_verification=state.get('stereo_verification'),
                     levels=state.get('level_report', {}), tweeter_safety_hz=config.TWEETER_MIN_HZ,
-                    selected_pairs=self.selection())
+                    selected_pairs=self.selection(), test_attenuation_db=self.test_attenuation(),
+                    failed_drivers=state.get('failed_drivers',{}), last_error=state.get('last_error'))
+
+    def test_attenuation(self):
+        path = self.root/'test-level.json'
+        value = (json.loads(path.read_text())['test_attenuation_db'] if path.exists()
+                 else config.parse(self.runner.profile()).get('test_attenuation_db',0))
+        config.number(value,'test_attenuation_db',0,30)
+        return value
+
+    def set_test_attenuation(self, body):
+        with self.lock:
+            if self.runner.running:
+                raise ValueError('Stop tones before changing test attenuation.')
+            value = body.get('test_attenuation_db')
+            config.number(value,'test_attenuation_db',0,30)
+            atomic(self.root/'test-level.json',json.dumps(dict(test_attenuation_db=value)))
+            return dict(self.status(),message=f'Test attenuation saved: {value:g} dB. Used by the next Auto run; music levels are unchanged.')
 
     def selection(self):
         path = self.root/'selection.json'
@@ -142,12 +173,16 @@ class Controller:
             cfg = config.parse(self.runner.profile())
             name = str(body.get('name', '')).strip()[:80]
             cfg.update(automatic=True, auto_apply=True, room_positions=1,
+                       measurement_repeats=3, stereo_alignment=True, capture_baseline=True,
                        name=name or 'Auto · '+datetime.now().strftime('%b %d %H:%M'),
+                       test_attenuation_db=body.get('test_attenuation_db',self.test_attenuation()),
+                       excluded_drivers=[],
                        selected_pairs=body.get('selected_pairs', self.selection()))
             cfg = config.validate(cfg, hardware=not self.demo)
             self.snapshot(cfg)
             self.meter = None
             self.runner.start(profile=cfg)
+            atomic(self.root/'test-level.json',json.dumps(dict(test_attenuation_db=cfg['test_attenuation_db'])))
             atomic(self.root/'selection.json', json.dumps(cfg['selected_pairs']))
             return self.status()
 
@@ -172,6 +207,12 @@ class Controller:
                 self.runner.state = self.runner._load()
                 self.runner.state.update(audio_owned=False, status='idle', message='Saved profile applied at −36 dB, muted. Resume music when ready.')
                 self.runner.save()
+            return self.status()
+
+    def retry(self):
+        """Repeat the stopped stage using its original immutable run settings."""
+        with self.lock:
+            self.runner.start('resume')
             return self.status()
 
     def _activate_hardware(self, cfg, record, restore):
@@ -254,6 +295,10 @@ def create_app(root=None, demo=False):
                 return controller.status()
             if action == 'restore':
                 return controller.restore()
+            if action == 'retry':
+                return controller.retry()
+            if action == 'test-level':
+                return controller.set_test_attenuation(body)
             if action == 'select':
                 return controller.activate(body.get('id'))
             raise ValueError('Unknown Auto mode action.')

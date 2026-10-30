@@ -17,9 +17,14 @@ def main():
     home = Path(user.pw_dir)
     backup = Path('/var/backups/octet-visualizer') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(parents=True, mode=0o700)
-    files = ['server.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css',
+    files = ['server.py', 'network_access.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css',
              'visualizer.html', 'visualizer.js', 'visualizer-sync.js', 'visualizer-themes.js', 'visualizer-solar.js',
-             'visualizer-audio.js', 'visualizer.css', 'README.md', 'launch-visualizer.sh']
+             'visualizer-audio.js', 'visualizer.css', 'README.md', 'launch-visualizer.sh', 'visualizer_kiosk.py']
+    for name in [*files, 'octet-visualizer.service', 'octet-visualizer.desktop']:
+        if not (source / name).is_file():
+            raise SystemExit(f'Missing installation file: {source / name}')
+    if not (source / 'visualizer-media').is_dir():
+        raise SystemExit('Missing visualizer-media directory')
     # Back up all files before replacing any of the running application.
     for name in files:
         if (target / name).exists():

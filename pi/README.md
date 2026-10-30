@@ -50,3 +50,9 @@ The live output was disabled with `mpc disable 2`; no playback or DSP restart
 was needed. Keep this tap disabled during normal listening. Its prior enabled
 state can be selected manually for visualizer testing, which may reintroduce
 startup glitches. Audio quality, channel filters and listening levels are unchanged.
+
+## Wi-Fi now playing
+
+The [read-only song publisher](now-playing/README.md) shares AirPlay and Tidal song
+metadata with the Magic Mirror over wlan0 only. It also adds a standalone local
+song display linked from the music page.

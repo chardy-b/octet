@@ -1,0 +1,12 @@
+[Unit]
+Description=Octet read-only song feed on Wi-Fi only
+After=network-online.target
+Wants=network-online.target
+
+[Socket]
+ListenStream=0.0.0.0:8768
+BindToDevice=wlan0
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

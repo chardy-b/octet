@@ -105,6 +105,8 @@ class AudioSources(unittest.TestCase):
                         return str(profile)
                     if name == 'GetConfigJson':
                         return json.dumps(loaded)
+                    if name == 'ReadConfigJson':
+                        return args[0]
                     if name == 'GetState':
                         return 'Running'
                     if name == 'Reload' and outcome == 'success':
@@ -112,7 +114,9 @@ class AudioSources(unittest.TestCase):
                         loaded['devices']['capture']['labels'] = None  # CamillaDSP adds defaults.
 
                 dsp.call.side_effect = call
-                with patch.object(server, 'CHANNEL_PROFILE', profile), patch.object(server, 'DSP', return_value=dsp), \
+                with patch.object(server, 'CHANNEL_PROFILE', profile), \
+                     patch.dict(server.PROFILES, {str(profile): ('Output DSP controls', 'Eight outputs')}), \
+                     patch.object(server, 'DSP', return_value=dsp), \
                      patch.object(server, 'discover_sources', return_value=[audio_sources.TIDAL, usb()]), \
                      patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=int(outcome == 'reject'))), \
                      patch.object(server, 'mpd', side_effect=RuntimeError('offline') if outcome == 'pause-failed' else None) as mpd, \

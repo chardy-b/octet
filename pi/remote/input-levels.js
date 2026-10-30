@@ -4,6 +4,18 @@
     const root=document.getElementById(kind+'-meters');
     if(!root)return ()=>{};
     const message=document.getElementById(kind+'-meter-note'),reset=document.getElementById('reset-'+kind+'-clips');
+    const toggle=document.getElementById('toggle-'+kind+'-levels'),content=document.getElementById(kind+'-level-content');
+    const preference='octet:'+kind+'-levels-collapsed';
+    function collapse(collapsed){
+      toggle.setAttribute('aria-expanded',String(!collapsed));
+      content.hidden=collapsed;reset.hidden=collapsed;
+    }
+    try{collapse(localStorage.getItem(preference)==='true');}catch{/* Panels remain open when storage is unavailable. */}
+    toggle.onclick=()=>{
+      const collapsed=toggle.getAttribute('aria-expanded')==='true';
+      collapse(collapsed);
+      try{localStorage.setItem(preference,String(collapsed));}catch{/* Toggling still works without storage. */}
+    };
     const rows=new Map(),history=new Map();let layout='',lastFrame=null;
     const percentage=db=>Math.max(0,Math.min(100,(db+90)/90*100));
     const number=db=>db<=-120?'−∞':db.toFixed(1).replace('-','−');

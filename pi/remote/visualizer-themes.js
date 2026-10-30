@@ -20,6 +20,7 @@ const OctetThemes = (() => {
     'KN1VWCCXacyuHvSaGMmWXiADL6JoiX5CUwKKOqNoQNjKXnCEZHN7PY8Y9JV5X7sO',
     '0j1jUQ5xfIsaMMT0Xj6VEtuHEChjpt5VY6zVvYyaoTWvmEUgjc10QJdB9u4GLca7',
   ];
+  const themeIds={well:3,overlap:5,'turell 2':6,'turell 3':7,'turell 4':8,water:9,'turell 5':10,'turell lunar':11};
   const vertex = `attribute vec2 position; void main(){gl_Position=vec4(position,0.0,1.0);}`;
   const fragment = `
 precision highp float;
@@ -27,7 +28,7 @@ uniform vec2 resolution;
 uniform float time, energy, peak, seed;
 uniform vec4 spectrum;
 uniform vec3 fieldColor, haloColor, edgeColor;
-uniform float edgeLight, videoZoom;
+uniform float edgeLight, videoZoom, circleSize;
 uniform int theme;
 uniform sampler2D sky, water, stars, sun, lunar;
 float sat(float x){return clamp(x,0.0,1.0);}
@@ -182,8 +183,10 @@ vec3 scene(vec2 p){
   return color;
 }
 void main(){
-  float pixel=2.32/min(resolution.x,resolution.y);
-  vec2 p=(gl_FragCoord.xy*2.-resolution)/min(resolution.x,resolution.y)*1.16;
+  // Circular artwork spans the longer screen dimension; architecture keeps its framing.
+  float span=theme>=6?max(resolution.x,resolution.y)*circleSize:min(resolution.x,resolution.y);
+  float pixel=2.32/span;
+  vec2 p=(gl_FragCoord.xy*2.-resolution)/span*1.16;
   vec3 color;
   float radius=length(p)/1.16;
   if(theme>=6&&radius>1.+pixel){gl_FragColor=vec4(0.,0.,0.,1.);return;}
@@ -206,7 +209,7 @@ void main(){
   const solarFragment=`
 precision highp float;
 uniform vec2 resolution;
-uniform float time,energy,peak,edgeLight,videoZoom;
+uniform float time,energy,peak,edgeLight,videoZoom,circleSize;
 uniform vec3 fieldColor,haloColor,edgeColor;
 uniform vec4 spectrum;
 uniform sampler2D sun;
@@ -214,9 +217,10 @@ mat2 turn(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
 vec3 spinY(vec3 p,float a){p.xz=turn(a)*p.xz;return p;}
 ${OctetSolar.glsl}
 void main(){
-  vec2 p=(gl_FragCoord.xy*2.-resolution)/min(resolution.x,resolution.y);
+  float span=max(resolution.x,resolution.y)*circleSize;
+  vec2 p=(gl_FragCoord.xy*2.-resolution)/span;
   float r=length(p);if(r>1.){gl_FragColor=vec4(0.,0.,0.,1.);return;}
-  vec3 color=proceduralSolar(p)*(1.-smoothstep(1.-2./min(resolution.x,resolution.y),1.,r));
+  vec3 color=proceduralSolar(p)*(1.-smoothstep(1.-2./span,1.,r));
   if(max(max(color.r,color.g),color.b)>.001){
     float grain=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
     color+=(grain-.5)/255.;
@@ -224,7 +228,7 @@ void main(){
   gl_FragColor=vec4(clamp(color,0.,1.),1.);
 }`;
 
-  function create(canvas,report=()=>{},initialTheme='turell 1') {
+  function create(canvas,report=()=>{},initialTheme='turell 1',{maxPixels=16777216}={}) {
     const gl = canvas.getContext('webgl', {alpha:false, depth:false, antialias:false});
     if (!gl) return null;
     let program, uniforms, buffer, lost = false, programCache={};
@@ -255,15 +259,19 @@ void main(){
       gl.bindTexture(gl.TEXTURE_2D, textures[index]);
       if (images[index]?.complete && images[index].naturalWidth) {
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, images[index]);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, images[index]);
       }
     }
     function uploadVideo(index){
       const video=videos[index];
       if(video.seeking||video.readyState<2||(!dirty[index]&&(frameCallbacks[index]||lastTimes[index]===video.currentTime)))return;
+      const width=video.videoWidth,height=video.videoHeight;
+      if(!width||!height)return;
       gl.activeTexture(gl.TEXTURE0+index);gl.bindTexture(gl.TEXTURE_2D,textures[index]);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,video);
+      // Chromium's direct RGBA video upload is substantially faster on V3D
+      // than texSubImage2D, which takes a costly copy path on this platform.
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);
       dirty[index]=false;lastTimes[index]=frameTimes[index]>=0?frameTimes[index]:video.currentTime;
     }
     function setActive(name,hidden=false,reduced=false){
@@ -282,14 +290,18 @@ void main(){
         });
       });
     }
-    function activate(solar){
-      const key=solar?'solar':'base';let entry=programCache[key];
+    function activate(id){
+      const key=String(id);let entry=programCache[key];
       if(!entry){
-        const vs=compile(gl.VERTEX_SHADER,vertex),fs=compile(gl.FRAGMENT_SHADER,solar?solarFragment:fragment);
+        // A fixed theme lets the Pi's GPU compiler remove unused scenes before
+        // compiling their nested geometry and edge samples. A uniform branch
+        // retains every scene and can stall/crash Chromium's GPU process.
+        const source=id===10?solarFragment:fragment.replace('uniform int theme;',`const int theme = ${id};`);
+        const vs=compile(gl.VERTEX_SHADER,vertex),fs=compile(gl.FRAGMENT_SHADER,source);
         const compiled=gl.createProgram();gl.attachShader(compiled,vs);gl.attachShader(compiled,fs);
         gl.bindAttribLocation?.(compiled,0,'position');gl.linkProgram(compiled);gl.deleteShader(vs);gl.deleteShader(fs);
         if(!gl.getProgramParameter(compiled,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(compiled));
-        const names=['resolution','time','energy','peak','seed','theme','spectrum','eclipseMoon','eclipseLight','eclipseView','sunFrame','fieldColor','haloColor','edgeColor','edgeLight','videoZoom',...mediaNames];
+        const names=['resolution','time','energy','peak','seed','theme','spectrum','eclipseMoon','eclipseLight','eclipseView','sunFrame','fieldColor','haloColor','edgeColor','edgeLight','videoZoom','circleSize',...mediaNames];
         entry=programCache[key]={program:compiled,uniforms:Object.fromEntries(names.map(name=>[name,gl.getUniformLocation(compiled,name)])),position:gl.getAttribLocation(compiled,'position')};
       }
       if(program===entry.program)return;
@@ -301,10 +313,10 @@ void main(){
       programCache={};program=null;
       buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
       gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
-      activate(activeName==='turell 5');
+      activate(themeIds[activeName]||6);
       for (const [index,name] of mediaNames.entries()) {
         textures[index]=gl.createTexture(); gl.activeTexture(gl.TEXTURE0+index); gl.bindTexture(gl.TEXTURE_2D,textures[index]);
-        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,1,1,0,gl.RGB,gl.UNSIGNED_BYTE,new Uint8Array(index===2?[10,15,25]:[120,150,170]));
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array(index===2?[10,15,25,255]:[120,150,170,255]));
         gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
         gl.uniform1i(uniforms[name],index);
@@ -322,7 +334,10 @@ void main(){
         video.requestVideoFrameCallback(frame);
       }
       video.addEventListener('loadeddata',()=>{dirty[index]=true;});
-      video.addEventListener('seeked',()=>{dirty[index]=true;frameTimes[index]=video.currentTime;});
+      video.addEventListener('seeked',()=>{
+        dirty[index]=true;frameTimes[index]=video.currentTime;
+        if(heldVideos.has(index)||mediaPaused||mediaReduced||!activeMedia.includes(index))video.pause();
+      });
       video.addEventListener('error',()=>report('A nature video could not load. Showing its still reference frame.'));
     });
     canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();lost=true;videos.forEach(video=>video.pause());});
@@ -352,7 +367,7 @@ void main(){
         if(activeMedia.length!==1)return null;
         const index=activeMedia[0],video=videos[index];
         return {name:mediaNames[index],time:video.currentTime,duration:video.duration,
-          paused:video.paused,seeking:video.seeking,held:heldVideos.has(index),zoom:mediaZoom[index]};
+          paused:video.paused||heldVideos.has(index),seeking:video.seeking,held:heldVideos.has(index),zoom:mediaZoom[index]};
       },
       setMediaZoom(value){
         if(activeName==='turell 5'){if(Number.isFinite(value))solarZoom=Math.max(.5,Math.min(3,value));return;}
@@ -365,32 +380,41 @@ void main(){
         const index=activeMedia[0],video=videos[index];
         if(!Number.isFinite(video.duration)||video.duration<=0)return;
         // Keep the last decoded texture/crop together while the new frame loads.
+        const held=video.paused||heldVideos.has(index);
         video.currentTime=Math.max(0,Math.min(video.duration-.001,seconds));
+        // Some Chromium decoders defer a paused seek until playback resumes.
+        // Wake the muted decoder, then hold the requested decoded frame on
+        // seeked; the UI continues to report the user's paused state.
+        if(held&&!mediaPaused&&!mediaReduced){
+          heldVideos.add(index);
+          video.play().catch(()=>{});
+        }
       },
       toggleMedia(){
         if(activeName==='turell 5'){solarPaused=!solarPaused;setActive(activeName,mediaPaused,mediaReduced);return;}
         if(activeMedia.length!==1)return;
         const index=activeMedia[0],video=videos[index];
-        if(video.paused){heldVideos.delete(index);setActive(activeName,mediaPaused,mediaReduced);}
+        if(video.paused||heldVideos.has(index)){heldVideos.delete(index);setActive(activeName,mediaPaused,mediaReduced);}
         else{heldVideos.add(index);video.pause();}
       },
       resumeMedia(){setActive(activeName,document.hidden,mediaReduced);},
       resize(width,height) {
-        // Allow a complete UHD/4K projection, including high-density displays.
-        // Bound unusually large canvases to 16 megapixels / 8192 per axis.
-        const ratio=Math.min(devicePixelRatio||1,2,Math.sqrt(16777216/Math.max(1,width*height)),8192/Math.max(1,width),8192/Math.max(1,height));
+        // Desktop views allow 4K. The Pi supplies a smaller pixel budget for
+        // smooth rendering, upscaled to the same full-screen HDMI viewport.
+        const ratio=Math.min(devicePixelRatio||1,2,Math.sqrt(maxPixels/Math.max(1,width*height)),8192/Math.max(1,width),8192/Math.max(1,height));
         canvas.width=Math.max(1,Math.round(width*ratio));canvas.height=Math.max(1,Math.round(height*ratio));
         gl.viewport(0,0,canvas.width,canvas.height);
       },
       render(name,time,energy,peak,spectrum=[energy,energy,peak,.3],palette={field:[.56,.69,.14],halo:[1.,.82,.5],edge:[.7,.8,.3],edgeLight:.35}) {
         if(lost||gl.isContextLost())return;
-        const id={well:3,overlap:5,'turell 2':6,'turell 3':7,'turell 4':8,water:9,'turell 5':10,'turell lunar':11}[name];
+        const id=themeIds[name];
         if(!id)return;
-        activate(id===10);
+        activate(id);
         activeMedia.forEach(uploadVideo);
         gl.uniform2f(uniforms.resolution,canvas.width,canvas.height);
         gl.uniform1f(uniforms.time,time);gl.uniform1f(uniforms.energy,energy);gl.uniform1f(uniforms.peak,peak);
         gl.uniform1f(uniforms.videoZoom,id===10?solarZoom:activeMedia.length===1?mediaZoom[activeMedia[0]]:1);
+        gl.uniform1f(uniforms.circleSize,palette.circleSize??1);
         gl.uniform4f(uniforms.spectrum,...spectrum);
         if(id===10){
           const state=OctetSolar.at(solarClock,solarTone);

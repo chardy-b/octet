@@ -9,7 +9,7 @@ Frames sampled with yt-dlp and FFmpeg from the user's supplied references:
 - `stars.jpg`: https://www.youtube.com/watch?v=Bbp1-p2FoXU
   (sample begins at 00:00:30).
 
-All three nature videos use the highest resolution listed by YouTube on
+The three nature video masters use the highest resolution listed by YouTube on
 2026-10-19: **3840 × 2160**, without scaling or baked-in cropping. Original
 compressed video packets are copied into fast-start MP4 containers, with no
 additional lossy encoding, frame-rate conversion or slowed playback.
@@ -26,10 +26,22 @@ video frames. All source videos already contain YouTube's compression.
 Full-resolution JPEGs provide sharp still fallbacks while loading or when
 reduced motion is enabled. Inactive/hidden themes pause video decoding.
 The renderer retains the full video frame in its texture and crops only when
-fitting the circular aperture. Both canvases allow 16,777,216 pixels and 8192
-pixels per axis, so UHD/4K output is no longer downscaled by the old limit.
-Actual playback smoothness depends on the display refresh rate and the device's
-VP9/AV1 decoder and GPU. No YouTube connection is needed during playback.
+fitting the circular aperture. No YouTube connection is needed during playback.
+
+## Pi playback copies
+
+The app loads `sky-playback.mp4`, `water-playback.mp4`, `stars-playback.mp4` and
+`lunar-playback.mp4`: 1920 × 1080 H.264 derivatives of the retained masters.
+These use their original cadence and duration, without interpolation or slowed
+playback. They are encoded with libx264, fast preset, CRF 18, YUV420p, Lanczos
+scaling, a maximum 60-frame GOP and fast-start MP4 containers, with no audio.
+This is an additional lossy encode, chosen to reduce the Pi's decoding load;
+the original VP9/AV1 files above and the Lunar master below remain intact.
+
+The Pi projection's WebGL canvas renders up to 2,073,600 pixels and scales to
+the full HDMI viewport. A 4K HDMI signal therefore uses a 1080p WebGL backing
+surface. Canvas 2D and non-projection WebGL viewers retain a 16,777,216-pixel
+budget. Playback smoothness also depends on GPU load and thermal throttling.
 
 ## Hybrid Solar surface
 

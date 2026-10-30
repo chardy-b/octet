@@ -20,9 +20,9 @@
   </header>
   <main>
     <section class="visualizer-heading" aria-labelledby="theme-title">
-      <div><p class="eyebrow">LIGHT, LISTENING.</p><h1 id="theme-title">turell 1</h1></div>
+      <div><p class="eyebrow">LIGHT, LISTENING.</p><h1 id="theme-title">Visuals off</h1></div>
       <div class="visualizer-actions">
-        <label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select"><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label>
+        <label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select"><option value="off" selected>Off</option><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label>
         <label id="palette-control" class="theme-control" for="palette-select"><span>Palette</span><select id="palette-select"><option value="cycle">Slow color cycle</option><option value="scrub">Hold scrubbed color</option></select></label>
         <span id="signal-status" role="status" aria-live="polite">Connecting to audio…</span>
         <button id="simulate-music" class="quiet-button" aria-pressed="false">Simulate music</button>
@@ -35,13 +35,24 @@
       <div id="sample-response" class="sample-response" hidden aria-label="Sample frequency response"><label>Bass <meter id="sample-bass" min="0" max="1" value="0"></meter></label><label>Mid <meter id="sample-mid" min="0" max="1" value="0"></meter></label><label>High <meter id="sample-high" min="0" max="1" value="0"></meter></label></div>
       <p class="sample-credit"><span id="sample-credit-title">EDM Detection Mode</span> · Kevin MacLeod · <a href="https://incompetech.com" target="_blank" rel="noopener noreferrer">incompetech.com</a> · <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener noreferrer">CC BY 3.0</a></p>
     </section>
+    <div id="circle-sizing" class="circle-sizing">
+      <label for="circle-size">Circle size <output id="circle-size-value" for="circle-size">100%</output></label>
+      <input id="circle-size" type="range" min="25" max="200" step="1" value="100" aria-describedby="circle-size-help">
+      <span id="circle-size-help">100% fills the longer screen dimension. Drag smaller to show the full circle.</span>
+    </div>
     <div id="visualizer-workbench" class="visualizer-workbench">
     <section id="visualizer-stage" class="visualizer-stage" aria-label="turell 1 audiovisual theme">
+      <p id="visualizer-off-message" role="status">Visuals are off. Choose a theme to turn them on.</p>
       <canvas id="visualizer-canvas" role="img" aria-label="A blue circle with a sound-reactive warm halo inside a large field of colored light. Everything outside the outer circle is black."></canvas>
       <canvas id="scene-canvas" role="img" aria-label="Geometric audiovisual artwork" hidden></canvas>
+      <img id="hdmi-preview" alt="Live artwork from Octet's HDMI renderer" hidden>
       <div id="immersive-controls" class="immersive-controls">
-        <div class="immersive-selectors"><label class="theme-control immersive-theme" for="immersive-theme-select"><span class="sr-only">Fullscreen theme</span><select id="immersive-theme-select"><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label><label id="immersive-palette-control" class="theme-control" for="immersive-palette"><span class="sr-only">Fullscreen palette</span><select id="immersive-palette"><option value="cycle">Slow color cycle</option><option value="scrub">Hold scrubbed color</option></select></label></div>
+        <div class="immersive-selectors"><label class="theme-control immersive-theme" for="immersive-theme-select"><span class="sr-only">Fullscreen theme</span><select id="immersive-theme-select"><option value="off" selected>Off</option><option value="turell 1">turell 1</option><option value="turell 2">turell 2 · Sky</option><option value="turell 3">turell 3 · Night</option><option value="turell 4">turell 4 · Eclipse</option><option value="turell 5">turell 5 · Solar</option><option value="turell lunar">turell · Lunar</option><option value="well">Well</option><option value="overlap">Overlap</option><option value="water">Water · Underwater</option></select></label><label id="immersive-palette-control" class="theme-control" for="immersive-palette"><span class="sr-only">Fullscreen palette</span><select id="immersive-palette"><option value="cycle">Slow color cycle</option><option value="scrub">Hold scrubbed color</option></select></label></div>
         <div class="immersive-actions"><label class="theme-control" for="immersive-track"><span class="sr-only">Fullscreen sample track</span><select id="immersive-track"><option value="edm">Electronic</option><option value="classical">Classical piano</option></select></label><button id="immersive-pause" class="quiet-button" hidden>Pause music</button><button id="immersive-simulate" class="quiet-button" aria-pressed="false">Simulate music</button><button id="exit-fullscreen" class="quiet-button">Exit full screen <span aria-hidden="true">⤡</span></button></div>
+        <div id="immersive-circle-sizing" class="circle-sizing">
+          <label for="immersive-circle-size">Circle size <output id="immersive-circle-size-value" for="immersive-circle-size">100%</output></label>
+          <input id="immersive-circle-size" type="range" min="25" max="200" step="1" value="100">
+        </div>
         <div id="immersive-color-tools" class="immersive-color-tools">
           <section id="immersive-video-controls" class="video-controls" hidden aria-label="Fullscreen background video">
             <div class="video-controls-heading"><label id="immersive-video-position-label" for="immersive-video-scrub">Video position</label><button id="immersive-video-play" class="quiet-button">Pause video</button></div>
@@ -110,11 +121,11 @@
     <details class="performance-panel"><summary>Performance · <output id="render-fps">Measuring…</output></summary><p id="render-performance"></p></details>
   </main>
   <div id="nature-videos" hidden aria-hidden="true">
-    <video id="sky-video" muted loop playsinline preload="none" data-src="/visualizer-media/sky.mp4" poster="/visualizer-media/sky.jpg"></video>
-    <video id="water-video" muted loop playsinline preload="none" data-src="/visualizer-media/water.mp4" poster="/visualizer-media/water.jpg"></video>
-    <video id="stars-video" muted loop playsinline preload="none" data-src="/visualizer-media/stars.mp4" poster="/visualizer-media/stars.jpg"></video>
+    <video id="sky-video" muted loop playsinline preload="none" data-src="/visualizer-media/sky-playback.mp4" poster="/visualizer-media/sky.jpg"></video>
+    <video id="water-video" muted loop playsinline preload="none" data-src="/visualizer-media/water-playback.mp4" poster="/visualizer-media/water.jpg"></video>
+    <video id="stars-video" muted loop playsinline preload="none" data-src="/visualizer-media/stars-playback.mp4" poster="/visualizer-media/stars.jpg"></video>
     <video id="sun-video" muted loop playsinline preload="none" data-src="/visualizer-media/sun.mp4" poster="/visualizer-media/sun.jpg"></video>
-    <video id="lunar-video" muted loop playsinline preload="none" data-src="/visualizer-media/lunar.mp4" poster="/visualizer-media/lunar.jpg"></video>
+    <video id="lunar-video" muted loop playsinline preload="none" data-src="/visualizer-media/lunar-playback.mp4" poster="/visualizer-media/lunar.jpg"></video>
   </div>
 </body>
 </html>

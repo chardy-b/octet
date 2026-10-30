@@ -17,7 +17,7 @@ stage = Path(sys.argv[1]).resolve()
 remote = Path('/opt/octet-remote')
 engine = Path('/opt/octet-measure')
 data = Path('/var/lib/octet-autotune')
-names = ['server.py', 'dsp.js', 'dsp.html', 'style.css', 'auto.js', 'measurements.js', 'tuning_proxy.py']
+names = ['server.py', 'network_access.py', 'source_profiles.py', 'app.js', 'volume.js', 'index.html', 'dsp.js', 'dsp.html', 'style.css', 'auto.js', 'measurements.js', 'tuning_proxy.py']
 expected = json.loads((stage/'expected.json').read_text())
 for name, sha in expected.items():
     current = hashlib.sha256((remote/name).read_bytes()).hexdigest()
@@ -43,6 +43,10 @@ shutil.copytree(stage/'measure/octetmeasure', engine/'octetmeasure', dirs_exist_
 calibration = engine/'EMM-6_38327.txt'
 shutil.copy2(stage/'measure/emm6_38327.txt', calibration)
 subprocess.run(['install', '-d', '-m', '0750', '-o', 'octet', '-g', 'audio', str(data)], check=True)
+# Manual presets can be written outside the tuner service. Inherit the audio
+# group so the music service can read their bytes to verify the saved checksum.
+for directory in (data/'baselines', data/'presets'):
+    subprocess.run(['install', '-d', '-m', '2750', '-o', 'octet', '-g', 'audio', str(directory)], check=True)
 sys.path.insert(0, str(engine))
 from octetmeasure.autotune import config
 from octetmeasure.autotune.camilla import export

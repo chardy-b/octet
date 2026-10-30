@@ -35,7 +35,7 @@ const status = {profile:'Test output DSP',volume:-36,max_db:-18,sample_rate:4800
         return route.fulfill({json:{}});
       }
       const file=url.pathname==='/dsp'?'dsp.html':url.pathname.slice(1);
-      if(!['dsp.html','dsp.js','auto.js','measurements.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+      if(!['dsp.html','dsp.js','volume.js','auto.js','measurements.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
       return route.fulfill({body:fs.readFileSync(path.join(__dirname,file)),
         contentType:file.endsWith('.html')?'text/html':file.endsWith('.js')?'text/javascript':'text/css'});
     });

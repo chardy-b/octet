@@ -20,6 +20,15 @@ def main():
         raise SystemExit('Run this installer with sudo on Octet.')
     source = Path(__file__).resolve().parent
     preset = 'channel-dsp.yml'
+    files = ['server.py', 'network_access.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+                 'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']
+    media = ['sky.jpg', 'water.jpg', 'stars.jpg', 'solar.jpg', 'sun.jpg', 'lunar.jpg', 'sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'sky-playback.mp4', 'water-playback.mp4', 'stars-playback.mp4', 'lunar-playback.mp4', 'edm.mp3', 'classical.mp3', 'README.md']
+    # Fail before stopping playback if the staging tree is incomplete.
+    for path in [*(source / name for name in files),
+                 *(source / 'visualizer-media' / name for name in media),
+                 source / preset, source / 'octet-remote.service']:
+        if not path.is_file():
+            raise SystemExit(f'Missing installation file: {path}')
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(source / preset)], check=True)
     backup = Path('/var/backups/octet-remote') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(mode=0o700, parents=True)
@@ -30,12 +39,11 @@ def main():
             shutil.copy2(path, backup / path.name)
     target = Path('/opt/octet-remote')
     target.mkdir(mode=0o755, exist_ok=True)
-    for name in ['server.py', 'audio_sources.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
-                 'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']:
+    for name in files:
         shutil.copy2(source / name, target / name)
         os.chmod(target / name, 0o644)
     (target / 'visualizer-media').mkdir(mode=0o755, exist_ok=True)
-    for name in ['sky.jpg', 'water.jpg', 'stars.jpg', 'solar.jpg', 'sun.jpg', 'lunar.jpg', 'sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3', 'README.md']:
+    for name in media:
         shutil.copy2(source / 'visualizer-media' / name, target / 'visualizer-media' / name)
         os.chmod(target / 'visualizer-media' / name, 0o644)
     for name in ['exciter-audition.yml']:
@@ -72,7 +80,8 @@ def main():
     subprocess.run(['systemctl', 'enable', '--now', 'octet-remote'], check=True)
     subprocess.run(['systemctl', 'restart', 'octet-remote'], check=True)
     print('Installed, muted. Previous settings:', backup)
-    print('Open http://100.100.177.81:8767 on a device in your Tailscale network.')
+    print('On the same Wi-Fi/LAN, open http://octet.local:8767 — no sign-in required.')
+    print('Tailscale access: https://octet.tailf55458.ts.net/')
 
 
 if __name__ == '__main__':

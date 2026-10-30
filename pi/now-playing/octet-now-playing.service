@@ -1,0 +1,19 @@
+[Unit]
+Description=Octet now-playing metadata publisher
+Requires=octet-now-playing.socket
+After=octet-remote.service shairport-sync.service
+
+[Service]
+User=octet
+WorkingDirectory=/opt/octet-now-playing
+ExecStart=/usr/bin/python3 /opt/octet-now-playing/now_playing.py
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Expose only Shairport's artwork cache, read-only, inside the private namespace.
+BindReadOnlyPaths=-/tmp/shairport-sync:/run/octet-shairport
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+Restart=on-failure
+RestartSec=3

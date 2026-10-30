@@ -1,5 +1,18 @@
 .visualizer-page{background:#000;color:#eceee6}
+.visuals-off .simulation-panel,.visuals-off .circle-sizing{display:none}
+#visualizer-off-message{position:absolute;inset:0;margin:0;padding:28px;display:grid;place-content:center;text-align:center;color:#9eafa2;font-size:14px}
+#visualizer-off-message[hidden]{display:none}
+.circle-sizing{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:0 0 18px;color:#a3b0a6;font-size:11px}
+.circle-sizing label{display:flex;align-items:center;gap:12px;color:#e0e8dc;white-space:nowrap}
+.circle-sizing output{min-width:35px;font-variant-numeric:tabular-nums;color:#c7ed9d}
+.circle-sizing input[type=range]{width:220px;max-width:100%;accent-color:#c7ed9d;cursor:ew-resize}
+.circle-sizing>span{font-size:10px;color:#8c9c90}
+.visualizer-stage:fullscreen .immersive-controls,.visualizer-stage.immersive .immersive-controls{flex-wrap:wrap}
+#immersive-circle-sizing{flex-basis:100%;padding:0;justify-content:flex-end}
 #display-sync-status{font-size:10px;color:#9eafa2}
+#hdmi-preview{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none;z-index:1}
+.projection #hdmi-preview{display:none!important}
+.visualizer-stage .immersive-controls{z-index:2}
 .projection{margin:0;overflow:hidden;cursor:none}
 .projection>header,.projection main>:not(.visualizer-workbench),.projection .palette-panel,.projection .immersive-controls{display:none!important}
 .projection main{padding:0;max-width:none}

@@ -11,8 +11,9 @@ On the deployed Pi, open the music app’s **DSP** page and use **Auto mode**.
 Connect EMM-6 serial 38327 to Audient iD14 input 1 with phantom power, fix it at
 the listening position, enter a profile name, confirm microphone readiness and
 press **Start Auto mode**. The fixed-position workflow automatically runs levels,
-eight-driver measurements, crossover search, candidate measurements, one-position
-room EQ, final verification and active-path verification. Completed runs appear
+selected-driver measurements, a protected untuned baseline, crossover search,
+candidate measurements, one-position room EQ, stereo alignment, final verification
+and active-path verification. Completed runs appear
 in **Saved system profiles** and are applied muted at a main level of −36 dB.
 Unmute/start music deliberately after the result is ready.
 
@@ -21,25 +22,90 @@ Choose the connected **Channel pairs to measure** before starting: A / EX30
 selected. Only selected pairs play or participate in crossover and EQ fitting;
 unselected outputs remain silent and muted in the saved eight-output profile.
 With one exciter pair, tuning searches its crossovers to the selected sub and/or
-tweeter pairs. An included driver with insufficient signal still stops the run;
-deselect a disconnected pair deliberately instead of accepting a bad measurement.
+tweeter pairs. A driver with insufficient signal at the test ceiling is recorded
+as skipped; checks continue through the remaining outputs. Exclusion is per
+physical output, so a failed channel 3 does not discard a measurable channel 4.
+Only usable drivers enter EQ and crossover fitting. Skipped outputs remain
+unrouted and muted in the saved eight-output profile, with their reasons shown
+on the DSP page and retained in the run and profile records. A driver that loses
+signal in repeated measurements, or whose individual EQ fit fails, is also
+excluded. No usable drivers, a shared microphone/stream fault, or failed acoustic
+verification still prevents application. Every new run checks the selected
+outputs again; skipped drivers are not silently excluded from future runs.
 The last successful start remembers the pair selection. Existing saved profiles
 keep their original selection; profiles predating this option include all pairs.
 
+Auto mode takes **three captures per measurement stage** at the same microphone
+position: driver sweeps, the untuned baseline, every crossover candidate, room EQ,
+final responses, and active-path verification. Short level-setting checks are
+single pilots. Each driver repeat is aligned using its shared acoustic markers;
+complex responses are averaged coherently and magnitude responses are power averaged.
+Raw repeats and per-repeat signal checks remain in the saved run. A weak repeat
+cannot be hidden by averaging; an unusable driver is excluded. Three repeats improve repeatability; they do not
+replace spatial measurements or guarantee a particular acoustic SNR.
+
+After room EQ, the stereo pass records **left, right, and mono (L+R)** sweeps in
+one continuous capture with common midrange timing markers. It repeats this three
+times, estimates direct-arrival timing and relative acoustic polarity over
+300–3000 Hz, and checks level balance and actual mono summation. It delays the
+earlier speaker and attenuates the louder speaker, applying any confident overall
+polarity correction to the entire speaker. Driver-to-driver alignment is retained.
+Raw matching driver pairs also receive a relative polarity report; an opposite
+reading is not by itself proof of a wiring fault because crossover topology and
+acoustic response matter. Absolute electrical polarity cannot be established from
+one microphone measurement.
+
+The corrected stereo sequence is measured again before export, then repeated
+through active CamillaDSP before publishing the profile. Ambiguous polarity,
+inconsistent repeats, residual timing over 0.15 ms, level imbalance over 1 dB,
+or excessive mono cancellation stops automatic application. Active-path failure
+restores the previous configuration selection and stops playback. Saved reports
+include the before/after stereo metrics and the common speaker corrections.
+When the measurable driver roles differ between left and right, or either side
+has no usable midrange driver, whole-speaker stereo alignment is explicitly
+skipped. The available outputs still receive per-side acoustic verification;
+the profile does not claim verified stereo alignment. A side with no usable
+panel retains protected per-driver EQ without inventing a crossover to a
+missing driver. A wholly unmeasurable side remains muted.
+
+New runs measure **before tuning** with only mandatory driver protection active,
+and **after tuning** with the chosen crossovers, driver EQ, room EQ and stereo
+correction. They also verify the real active CamillaDSP path. Older runs contain
+only a before-room-EQ curve; the viewer labels that distinction explicitly.
+
 Automatic level checks reuse a compatible previous driver recording, including
-recordings from runs that stopped on a disconnected driver. They estimate a test
-level with six dB of margin above the configured signal-quality floor, then play
-a short protected check. The check stops once the signal has adequate margin;
-additional three-dB steps occur only when needed and never exceed the configured
-ceiling. With no usable recording the check starts at the configured quiet level.
+recordings from runs that stopped on a disconnected driver. They start at the
+last recorded level and play a short protected check, increasing in three-dB
+steps only until `target_snr_db` is reached (24 dB by default). The complete
+driver sequence also checks the target and repeats with increased levels only
+for weak drivers if needed. These are conservative signal-margin estimates,
+not calibrated band-by-band acoustic SNR. The target is separate from the
+minimum acceptance floor and from each driver's `max_db` measurement ceiling.
+At the ceiling, a driver meeting the minimum floor remains usable even if it
+misses the preferred target. Its level report records that the target was not
+reached; the configured minimum is never lowered automatically.
+With no usable recording the check starts at the configured quiet level.
 Crossover, room and active-path checks also respect these measured test levels.
+The **Test attenuation (dB)** control on the DSP page lowers every driver's test
+ceiling by 0–30 dB. For example, 9 dB attenuation changes a −15 dBFS measurement
+limit to −24 dBFS. **Save test level** remembers the choice without playing sound;
+the next Auto run uses it for level ramps, driver sweeps, summed measurements and
+active DSP verification. Stop a running test before changing the setting. Auto
+mode cannot increase past this reduced limit to chase its signal target; a weak
+measurement fails instead. The control does not alter music volume, exported
+playback gains or playback output ceilings. The selected amount is stored with
+the run and saved profile as `test_attenuation_db`; older runs default to zero.
 These are digital dBFS levels, not calibrated room SPL; changes in amplifier gain,
 microphone gain or background noise are checked again. The guided workflow still
 uses its manual ramp and review step.
 
-For the Oct 23 recording with B disconnected, the estimated repeat levels are
-about **−39 dBFS for A** and **−36 dBFS for subs and tweeters**, compared with
-the previous −30 dBFS. Short checks confirm or adjust these estimates.
+Music has an independent `playback_max_db` hard sample ceiling, currently
+**0 dBFS**, with no extra playback attenuation. Measurement ceilings are **−15 dBFS**; normal checks start at the
+much quieter previously recorded levels. Export reserves headroom for the
+playback ceiling and combined EQ response, never the measurement ceiling.
+Raising a measurement ceiling therefore does not change normal music gain.
+Legacy run profiles without `playback_max_db` retain their original combined
+ceiling; existing saved configurations are not silently rewritten.
 
 **Stop tones** interrupts direct playback. **Restore before tuning** recovers the
 saved pre-run configuration. Music and manual DSP changes are blocked while a run
@@ -131,7 +197,9 @@ Each driver's profile specifies `min_hz`, `max_hz`, LR protection order (4 or 8)
 `start_db`, `max_db`, `step_db`, `step_seconds` and `amp_group`. Output numbers are
 **1–8**; microphone input channel numbers are **zero-based**. The ramp always ends
 at or below `max_db`; it never searches for damage or distortion onset. Increasing
-the ceiling changes both permitted test output and the generated playback cap.
+the ceiling changes permitted test output. The independent `playback_max_db`
+setting controls generated music playback caps. Legacy profiles lacking that
+setting still use the historical combined ceiling until explicitly revised.
 
 The service user needs write access to its data directory and the configured
 CamillaDSP state file. It also needs narrowly scoped passwordless service control
@@ -226,7 +294,8 @@ are outside the software's capabilities.
 
 Select a saved profile on the DSP page and press **View measurements**. This is
 read-only and works independently of the active listening profile. Left/right
-system plots compare the measured response before room EQ with the final measured
+system plots compare the protected untuned response (or before-room-EQ response for
+older runs) with the final measured
 response and target shape. The output selector shows individual driver response,
 predicted response with DSP, measured/predicted phase, delay, polarity and relative
 attenuation. Hover or use arrow keys to read graph values. Levels are relative dB,

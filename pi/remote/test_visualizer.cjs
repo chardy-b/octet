@@ -53,18 +53,42 @@ run(scenesSource);
 run(source);
 const frame = data=>feeds.at(-1).onmessage({data:JSON.stringify(data)});
 (async()=>{
+  assert.equal(run('activeTheme'),'off');
+  assert.equal(feeds.length,0,'Opening the controller does not connect artwork audio');
+  assert.equal(scheduled,0,'Off schedules no animation frames');
+  assert.equal(element('visualizer-off-message').hidden,false);
+  run("setTheme('turell 1')");
   assert.equal(feeds[0].url,'/api/visualizer');
   run("responseMode='original'");
   frame({available:true,active:true,rms:[-12,-14],peak:[-3,-4]});
   assert.ok(run('targetEnergy')>0.6);
   assert.match(element('signal-status').textContent,/Reacting/);
   run('draw(1100); draw(1200);');
-  assert.equal(arcs[0][2],400); // Largest circle that fits 1200 × 800.
+  assert.equal(arcs[0][2],600); // Circle spans the full 1200px width, cropping vertically.
   const quietGlow = gradients.at(-2)[5];
   const fixedDisc = arcs.at(-1)[2];
   run('draw(1300);draw(1400);');
   assert.ok(gradients.at(-2)[5]>quietGlow);
   assert.equal(arcs.at(-1)[2],fixedDisc);
+
+  // Sizing updates both controls, scales the composition, and survives theme changes.
+  element('circle-size').oninput({target:{value:'50'}});
+  assert.equal(element('immersive-circle-size').value,'50');
+  assert.equal(element('circle-size-value').textContent,'50%');
+  assert.equal(storage.get('octet.visualizer.circle-size'),'0.5');
+  arcs.length=0;run('draw(1450)');
+  assert.equal(arcs[0][2],300);
+  assert.equal(arcs.at(-1)[2],fixedDisc*.5);
+  element('immersive-circle-size').oninput({target:{value:'125'}});
+  assert.equal(element('circle-size').value,'125');
+  assert.equal(run('shaderPalette.circleSize'),1.25);
+  run("setTheme('well')");assert.equal(element('circle-sizing').hidden,true);
+  run("setTheme('water')");assert.equal(element('circle-sizing').hidden,false);
+  assert.equal(run('circleSize'),1.25);
+  run("setCircleSize(NaN)");assert.equal(run('circleSize'),1.25);
+  run("setCircleSize(3)");assert.equal(run('circleSize'),2);
+  run("setCircleSize(0)");assert.equal(run('circleSize'),.25);
+  run("setCircleSize(1);setTheme('turell 1')");
 
 
   // Silence and pause settle, offline and stale messages stop effects.
@@ -198,5 +222,15 @@ const frame = data=>feeds.at(-1).onmessage({data:JSON.stringify(data)});
   await element('response-preview').onclick();assert.equal(element('simulation-audio').paused,true);
   assert.equal(element('response-preview').textContent,'Play preview music');
   const responseBefore=run('responseEnvelope.bass');run('draw(2500)');assert.ok(run('responseEnvelope.bass')<responseBefore);
-  console.log('Visualizer checks passed: fixed geometry, signal/audio lifecycle, fullscreen/Escape, nine themes, 12 palette previews, exact scrub/hold/resume, wrap, halo comparison, outer edge controls and persistence.');
+  run("setTheme('off')");
+  assert.equal(element('theme-select').value,'off');
+  assert.equal(element('immersive-theme-select').value,'off');
+  assert.equal(feeds.at(-1).closed,true);
+  assert.equal(element('visualizer-off-message').hidden,false);
+  const offFrames=scheduled;run('draw(2600)');listeners.get('visibilitychange')();
+  assert.equal(scheduled,offFrames,'Off stays idle after visibility changes');
+  assert.equal(run('feed'),null);
+  run("setTheme('water')");
+  assert.ok(scheduled>offFrames,'Explicit selection resumes rendering');
+  console.log('Visualizer checks passed: Off lifecycle, geometry, audio, fullscreen, themes, palette and persistence.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

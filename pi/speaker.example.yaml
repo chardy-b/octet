@@ -18,12 +18,21 @@ quiesce_services:
 clip_db: -3
 jump_db: 9
 min_snr_db: 15
+target_snr_db: 24
+playback_max_db: 0
+test_attenuation_db: 0
 room_positions: 5
 gate_ms: 8
 target_bass_db: 4
 target_tilt: -0.4
 verification_db: 4
 max_clock_ppm: 300
+measurement_repeats: 3
+capture_baseline: true
+stereo_alignment: true
+stereo_max_delay_ms: 20
+stereo_delay_tolerance_ms: 0.15
+stereo_level_tolerance_db: 1
 drivers:
 - id: L_sub
   side: L
@@ -34,7 +43,7 @@ drivers:
   max_hz: 700
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: sub
@@ -47,7 +56,7 @@ drivers:
   max_hz: 12000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: a
@@ -60,7 +69,7 @@ drivers:
   max_hz: 12000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: b
@@ -73,7 +82,7 @@ drivers:
   max_hz: 20000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: tweeter
@@ -86,7 +95,7 @@ drivers:
   max_hz: 700
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: sub
@@ -99,7 +108,7 @@ drivers:
   max_hz: 12000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: a
@@ -112,7 +121,7 @@ drivers:
   max_hz: 12000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: b
@@ -125,7 +134,7 @@ drivers:
   max_hz: 20000
   order: 4
   start_db: -48
-  max_db: -24
+  max_db: -15
   step_db: 3
   step_seconds: 1
   amp_group: tweeter

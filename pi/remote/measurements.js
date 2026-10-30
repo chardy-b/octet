@@ -48,7 +48,7 @@
     if(!d)return;
     el('measurement-settings').textContent=`Output ${d.output} · ${d.delay_ms.toFixed(2)} ms delay · ${d.polarity<0?'inverted':'normal'} polarity · ${d.attenuation_db.toFixed(1)} dB relative attenuation`;
     chart(root,'Driver frequency response',d.freq,[{label:'Measured driver',values:d.measured,color:'#bade85'},{label:'Predicted with DSP',values:d.predicted,color:'#81bddb'}]);
-    chart(root,'Driver phase',d.freq,[{label:'Measured driver',values:d.phase,color:'#bade85'},{label:'Predicted with DSP',values:d.predicted_phase,color:'#81bddb'}],true);
+    if(d.phase_available !== false) chart(root,'Driver phase',d.freq,[{label:'Measured driver',values:d.phase,color:'#bade85'},{label:'Predicted with DSP',values:d.predicted_phase,color:'#81bddb'}],true);
   }
   function render(data) {
     result=data;
@@ -58,9 +58,9 @@
     const systems=el('measurement-systems');systems.replaceChildren();
     for(const s of data.systems||[]){
       const pairs=s.crossover.active_pairs||['a','b','sub','tweeter'];
-      const crossovers=[pairs.includes('sub')?`${Math.round(s.crossover.low)} Hz sub / exciter`:null,pairs.includes('tweeter')?`${Math.round(s.crossover.high)} Hz exciter / tweeter`:null].filter(Boolean);
+      const crossovers=s.crossover.strategy==='protected'?['protected driver EQ']:[pairs.includes('sub')?`${Math.round(s.crossover.low)} Hz sub / exciter`:null,pairs.includes('tweeter')?`${Math.round(s.crossover.high)} Hz exciter / tweeter`:null].filter(Boolean);
       chart(systems,`${s.side==='L'?'Left':'Right'} system${crossovers.length?' · '+crossovers.join(' · '):' · exciter pair only'}`,s.freq,[
-      {label:'Before room EQ',values:s.before,color:'#9aab9e'},
+      {label:s.before_label || 'Before room EQ',values:s.before,color:'#9aab9e'},
       {label:'Final measured',values:s.after,color:'#bade85'},
       {label:'Target shape',values:s.target,color:'#d8b884',dash:'5 5'}]);}
     const select=el('measurement-driver');select.replaceChildren();

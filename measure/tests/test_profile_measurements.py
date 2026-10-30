@@ -56,6 +56,26 @@ def test_manual_backup_does_not_invent_measurement_data(tmp_path):
     assert 'manual' in data['message']
 
 
+def test_magnitude_recovery_preserves_missing_timing_and_verification(tmp_path):
+    identifier = 'c'*32
+    directory = tmp_path/identifier; directory.mkdir()
+    presets = tmp_path/'presets'; presets.mkdir()
+    driver = dict(id='R_a', output=2, freq=[300, 400], measured=[0, 1],
+                  predicted=[0, .5], phase_available=False)
+    (directory/'recovery-report.json').write_text(json.dumps(dict(driver_graphs=[driver])))
+    record = dict(id=identifier, name='Recovered', created='2026-10-24', kind='recovered',
+                  measurement_mode='magnitude_only_recovery', failed_drivers={'L_a': {'output': 1}}, demo=True)
+    (presets/f'{identifier}.json').write_text(json.dumps(record))
+    data = Controller(tmp_path, demo=True).measurements(identifier)
+    assert data['available'] and data['drivers'] == [driver]
+    assert data['systems'] == []
+    assert not data['timing_reliable'] and not data['acoustically_verified']
+    assert data['failed_drivers'] == record['failed_drivers']
+    assert 'not been acoustically verified' in data['notes']
+    (directory/'recovery-report.json').unlink()
+    assert not Controller(tmp_path, demo=True).measurements(identifier)['available']
+
+
 def test_profile_record_cannot_escape_measurement_directory(tmp_path):
     presets = tmp_path/'presets';presets.mkdir()
     (presets/'bad.json').write_text(json.dumps(dict(id='../elsewhere', name='Invalid', created='2026-10-20', kind='tuned', demo=True)))
@@ -64,3 +84,18 @@ def test_profile_record_cannot_escape_measurement_directory(tmp_path):
     import pytest
     with pytest.raises(ValueError, match='valid'):
         Controller(tmp_path, demo=True).measurements('../elsewhere')
+
+
+def test_gain_revision_keeps_original_measurements_without_claiming_new_recording(tmp_path):
+    original = saved_run(tmp_path, 'a'*32)
+    revision = dict(original, id='b'*32, name='Playback -10', measurement_run_id=original['id'])
+    (tmp_path/'presets'/('b'*32+'.json')).write_text(json.dumps(revision))
+    data = Controller(tmp_path, demo=True).measurements(revision['id'])
+    assert data['available'] and len(data['systems'])==2 and len(data['drivers'])==8
+    assert data['profile']['id']==revision['id']
+    assert 'revised afterward' in data['notes']
+    revision['measurement_run_id']='../elsewhere'
+    (tmp_path/'presets'/('b'*32+'.json')).write_text(json.dumps(revision))
+    import pytest
+    with pytest.raises(ValueError, match='valid'):
+        Controller(tmp_path, demo=True).measurements(revision['id'])

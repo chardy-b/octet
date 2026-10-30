@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tailscale-only music controls for Octet. No browser-side Tidal credentials."""
+"""LAN and Tailscale music controls for Octet. No browser-side Tidal credentials."""
 import base64
 import hashlib
 import json
@@ -22,9 +22,12 @@ from visualizer_state import VisualizerState
 from audio_sources import discover_sources, source_config, source_metadata, meter_channels
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
+from network_access import NetworkAccess
+from source_profiles import SourceProfiles
 
-BIND = os.environ.get('OCTET_BIND', '100.100.177.81')
+BIND = os.environ.get('OCTET_BIND', '0.0.0.0')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
+NETWORK = NetworkAccess()
 ROOT = Path(__file__).parent
 STATE = Path(os.environ.get('STATE_DIRECTORY', '/var/lib/octet-remote'))
 VISUALIZER = VisualizerState(STATE / 'visualizer.json')
@@ -97,17 +100,20 @@ class DSP:
     """Small synchronous RFC6455 client for the local CamillaDSP control socket."""
     def __enter__(self):
         self.sock = socket.create_connection(('127.0.0.1', 1234), timeout=4)
-        key = base64.b64encode(os.urandom(16)).decode()
-        request = ('GET / HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nUpgrade: websocket\r\n'
-                   'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\nSec-WebSocket-Version: 13\r\n\r\n')
-        self.sock.sendall(request.encode())
-        response = bytearray()
-        while not response.endswith(b'\r\n\r\n') and len(response) < 8192:
-            response.extend(read_exact(self.sock, 1))
-        expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
-        if not response.startswith(b'HTTP/1.1 101 ') or expected not in response:
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            request = ('GET / HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nUpgrade: websocket\r\n'
+                       'Connection: Upgrade\r\nSec-WebSocket-Key: ' + key + '\r\nSec-WebSocket-Version: 13\r\n\r\n')
+            self.sock.sendall(request.encode())
+            response = bytearray()
+            while not response.endswith(b'\r\n\r\n') and len(response) < 8192:
+                response.extend(read_exact(self.sock, 1))
+            expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
+            if not response.startswith(b'HTTP/1.1 101 ') or expected not in response:
+                raise RuntimeError('DSP connection failed')
+        except Exception:
             self.sock.close()
-            raise RuntimeError('DSP connection failed')
+            raise
         return self
 
     def __exit__(self, *args):
@@ -116,7 +122,12 @@ class DSP:
     def send_frame(self, data, opcode=1):
         mask = os.urandom(4)
         length = len(data)
-        header = bytes([0x80 | opcode, 0x80 | length]) if length < 126 else bytes([0x80 | opcode, 0xfe]) + struct.pack('!H', length)
+        if length < 126:
+            header = bytes([0x80 | opcode, 0x80 | length])
+        elif length < 65536:
+            header = bytes([0x80 | opcode, 0xfe]) + struct.pack('!H', length)
+        else:
+            header = bytes([0x80 | opcode, 0xff]) + struct.pack('!Q', length)
         self.sock.sendall(header + mask + bytes(v ^ mask[i % 4] for i, v in enumerate(data)))
 
     def call(self, name, value=None):
@@ -278,15 +289,92 @@ def play_playlist(data):
         raise ValueError('Invalid playlist position')
     if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
         raise RuntimeError('The playlist changed. Reopen it before selecting a track.')
-    commands = ['addid ' + quote(f'http://{BIND}:{PORT}/stream/{track_id(row["id"])}') for row in rows]
+    return play_context(rows, position, dict(kind='playlist', id=identifier,
+                                            title=contents['playlist'].get('title', 'Playlist')))
+
+
+def album_contents(identifier):
+    identifier = track_id(identifier)
+    with TIDAL_LOCK:
+        album = tidal().album(int(identifier))
+        rows, offset = [], 0
+        while True:
+            page = album.tracks(limit=100, offset=offset)
+            if not page:
+                break
+            rows.extend(remember(track) for track in page if getattr(track, 'available', True) is not False)
+            offset += len(page)
+            if offset > MAX_PLAYLIST_TRACKS:
+                raise ValueError('This album exceeds the 10,000-track limit')
+            if album.num_tracks and offset >= album.num_tracks:
+                break
+        return dict(tracks=rows, album=dict(id=identifier, title=album.name))
+
+
+def play_album(data):
+    contents = album_contents(data.get('id'))
+    rows = contents['tracks']
+    if not rows:
+        raise RuntimeError('This album has no available tracks')
+    position = data.get('position', 0)
+    if isinstance(position, bool) or not isinstance(position, int) or not 0 <= position < len(rows):
+        raise ValueError('Invalid album position')
+    if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
+        raise RuntimeError('The album changed. Reopen it before selecting a track.')
+    return play_context(rows, position, dict(kind='album', **contents['album']))
+
+
+def queue_context():
+    try:
+        value = json.loads((STATE / 'queue-context.json').read_text())
+        if (isinstance(value, dict) and isinstance(value.get('source'), dict)
+                and all(isinstance(value.get(key), dict)
+                        and all(isinstance(url, str) for url in value[key].values())
+                        for key in ('manual', 'autoplay'))):
+            return value
+    except (OSError, ValueError):
+        pass
+    return dict(manual={}, autoplay={}, source={})
+
+
+def save_queue_context(context):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = STATE / 'queue-context.tmp'
+    temp.write_text(json.dumps(context))
+    temp.replace(STATE / 'queue-context.json')
+
+
+def player_queue():
+    status, playlist = mpd('status', 'playlistinfo')
+    context = queue_context()
+    rows = []
+    for key, value in playlist:
+        if key == 'file':
+            rows.append(dict(file=value, position=len(rows)))
+        elif key == 'Id' and rows:
+            rows[-1]['song_id'] = str(int(value))
+    manual_urls = set(context['manual'].values())
+    for row in rows:
+        row['origin'] = 'queue' if row['file'] in manual_urls else 'autoplay'
+    status = dict(status)
+    position = int(status.get('song', -1))
+    pending = [row for row in rows if row['position'] > position and row['origin'] == 'queue']
+    return status, rows, pending, context
+
+
+def play_context(rows, position, source):
+    """Stage a new context, retaining pending user requests ahead of its remaining tracks."""
+    urls = [queue_url(row['id']) for row in rows]
     with LOCK, DSP() as dsp:
         approved(dsp)
         require_tidal(dsp)
         STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
         with TIDAL_LOCK:
             (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
-        old = mpd('playlistinfo')[0]
-        old_ids = [str(int(value)) for key, value in old if key == 'Id']
+        _, old, pending, _ = player_queue()
+        old_ids = [row['song_id'] for row in old]
+        staged_urls = urls[:position + 1] + [row['file'] for row in pending] + urls[position + 1:]
+        commands = ['addid ' + quote(url) for url in staged_urls]
         # Append first: a Tidal or queue-loading error must not erase current music.
         try:
             added = mpd(*commands)
@@ -299,17 +387,59 @@ def play_playlist(data):
                     mpd(*['deleteid ' + value for value in staged])
             except Exception:
                 pass
-            raise RuntimeError('Could not queue the playlist. Your previous queue was retained.')
+            raise RuntimeError('Could not load the music. Your previous queue was retained.')
         dsp.call('SetMute', True)
         try:
             mpd('random 0', 'single 0', 'repeat 0', 'consume 0', 'playid ' + ids[position])
             if old_ids:
                 mpd(*['deleteid ' + value for value in old_ids])
+            manual = set(ids[position + 1:position + 1 + len(pending)])
+            save_queue_context(dict(source=source,
+                                    manual={sid: url for sid, url in zip(ids, staged_urls) if sid in manual},
+                                    autoplay={sid: url for sid, url in zip(ids, staged_urls) if sid not in manual}))
             dsp.call('SetMute', False)
         except Exception:
             dsp.call('SetMute', True)
-            raise RuntimeError('Could not start the playlist. Playback was muted; please retry.')
+            raise RuntimeError('Could not start the music. Playback was muted; please retry.')
     return current_status()
+
+
+def enqueue_track(identifier, placement):
+    if placement not in ('next', 'end'):
+        raise ValueError('Choose next or end for the queue position')
+    status, rows, pending, context = player_queue()
+    position = int(status.get('song', -1))
+    insert = position + 1 if placement == 'next' or not pending else pending[-1]['position'] + 1
+    url = queue_url(identifier)
+    # MPD itself advances through this order, even when no remote browser is open.
+    mpd('random 0', 'single 0', 'repeat 0', 'consume 0')
+    added = mpd('addid ' + quote(url) + ' ' + str(insert))
+    sid = str(int(dict(added[0])['Id']))
+    context['manual'] = {row['song_id']: row['file'] for row in rows if row['origin'] == 'queue'}
+    context['manual'][sid] = url
+    save_queue_context(context)
+
+
+def clear_manual_queue(song_id=None):
+    _, _, pending, context = player_queue()
+    if song_id is not None:
+        if not isinstance(song_id, str) or not re.fullmatch(r'[0-9]+', song_id):
+            raise ValueError('Invalid queued song')
+        pending = [row for row in pending if row['song_id'] == song_id]
+        if not pending:
+            raise ValueError('This song is no longer in your queue')
+    if pending:
+        mpd(*['deleteid ' + row['song_id'] for row in pending])
+        removed = {row['file'] for row in pending}
+        context['manual'] = {sid: url for sid, url in context['manual'].items() if url not in removed}
+        save_queue_context(context)
+
+
+def queue_url(identifier):
+    # MPD IDs change on reboot. A unique resolver URL keeps duplicate entries
+    # distinguishable in its saved playlist and our saved queue membership.
+    host = NETWORK.stream_host(BIND)
+    return f'http://{host}:{PORT}/stream/{track_id(identifier)}?entry={uuid.uuid4().hex}'
 
 
 def stream_url(identifier):
@@ -326,9 +456,27 @@ def stream_url(identifier):
         return ('redirect', manifest.urls[0])
 
 
+def original_profile(path):
+    if path in PROFILES:
+        label, description = PROFILES[path]
+        return dict(label=label, description=description, tuning=None, origin_path=path)
+    tuned = TUNING.active(path)
+    if tuned:
+        return dict(label=tuned['name'], description='Saved system tuning · tweeter safety high-pass active',
+                    tuning=tuned, origin_path=path)
+    return None
+
+
+def listening_profile(path):
+    profile = original_profile(path)
+    if profile:
+        return profile
+    working = SourceProfiles(CHANNEL_PROFILE.parent).read(path, original_profile)
+    return working['origin_approval'] if working else None
+
+
 def approved(dsp):
-    path = dsp.call('GetConfigFilePath')
-    if path not in PROFILES and not TUNING.active(path):
+    if not listening_profile(dsp.call('GetConfigFilePath')):
         raise RuntimeError('Select an approved exciter DSP preset before playback')
 
 
@@ -346,14 +494,24 @@ def select_source(identifier):
     if source is None:
         raise ValueError('That input is no longer connected. Refresh the available sources.')
     with DSP() as dsp:
-        if dsp.call('GetConfigFilePath') != str(CHANNEL_PROFILE):
-            raise RuntimeError('Source selection requires the Output DSP controls preset')
+        previous_path = dsp.call('GetConfigFilePath')
+        profile = listening_profile(previous_path)
+        if not profile:
+            raise RuntimeError('Select a saved speaker profile on the DSP page before changing sources.')
         config = json.loads(dsp.call('GetConfigJson'))
         if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running':
             return
     updated = source_config(config, source)
-    candidate = CHANNEL_PROFILE.with_name('channel-dsp-source-candidate.yml')
-    previous = CHANNEL_PROFILE.read_bytes()
+    with DSP() as dsp:
+        updated = json.loads(dsp.call('ReadConfigJson', json.dumps(updated)))
+    profiles = SourceProfiles(CHANNEL_PROFILE.parent)
+    # Saved tuning is immutable. Change capture on a verified listening copy,
+    # retaining its original profile identity and every speaker setting.
+    target = CHANNEL_PROFILE if previous_path == str(CHANNEL_PROFILE) else profiles.target(profile['origin_path'])
+    manifest = profiles.manifest_path(target) if target != CHANNEL_PROFILE else None
+    candidate = target.with_suffix('.source-candidate.yml')
+    previous = target.read_bytes() if target.exists() else None
+    previous_manifest = manifest.read_bytes() if manifest and manifest.exists() else None
     try:
         candidate.write_text(yaml.safe_dump(updated, sort_keys=False))
         candidate.chmod(0o640)
@@ -366,14 +524,19 @@ def select_source(identifier):
         try:
             # Retain the queue and its position, but never play Tidal in the background.
             mpd('pause 1')
-            candidate.replace(CHANNEL_PROFILE)
+            candidate.replace(target)
+            if manifest:
+                profiles.save(target, profile['origin_path'])
             with DSP() as dsp:
+                if str(target) != previous_path:
+                    dsp.call('SetConfigFilePath', str(target))
                 dsp.call('Reload')
             for _ in range(60):
                 time.sleep(.1)
                 with DSP() as dsp:
                     loaded = json.loads(dsp.call('GetConfigJson'))
-                    if (source_metadata(loaded)['id'] == identifier
+                    if (dsp.call('GetConfigFilePath') == str(target)
+                            and source_metadata(loaded)['id'] == identifier
                             and all(loaded['devices']['capture'].get(key) == value
                                     for key, value in updated['devices']['capture'].items())
                             and dsp.call('GetState') == 'Running'):
@@ -381,11 +544,22 @@ def select_source(identifier):
                         return  # Explicit Unmute/Play is required after a source change.
             raise RuntimeError('The selected input did not start')
         except Exception:
-            candidate.write_bytes(previous)
-            candidate.chmod(0o640)
-            candidate.replace(CHANNEL_PROFILE)
+            if previous is not None:
+                candidate.write_bytes(previous)
+                candidate.chmod(0o640)
+                candidate.replace(target)
+            else:
+                target.unlink(missing_ok=True)
+            if manifest:
+                if previous_manifest is None:
+                    manifest.unlink(missing_ok=True)
+                else:
+                    manifest.write_bytes(previous_manifest)
+                    manifest.chmod(0o640)
             with DSP() as dsp:
                 dsp.call('SetMute', True)
+                if str(target) != previous_path:
+                    dsp.call('SetConfigFilePath', previous_path)
                 dsp.call('Reload')
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
             raise RuntimeError('Source change failed; the previous source was restored and output is muted')
@@ -674,7 +848,8 @@ def dsp_status():
                       muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
                       min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
         result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
-    tuned = TUNING.active(path) if path != str(CHANNEL_PROFILE) else None
+    profile = listening_profile(path)
+    tuned = profile['tuning'] if profile else None
     if tuned:
         result.update(auto_tuned=True, tuning=tuned, profile=tuned['name'])
         return result
@@ -713,21 +888,27 @@ def current_status():
                   profile_description='Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent',
                   min_db=MIN_DB, max_db=volume_ceiling(), level_unlocked=LEVELS_UNLOCKED,
                   queue=[], playback='stop', elapsed=0, duration=0,
-                  sources=discover_sources(), source='unknown', source_label='Source unavailable')
+                  sources=discover_sources(), source='unknown', source_label='Source unavailable',
+                  source_switching_available=False,
+                  source_switching_reason='Connect to the speaker DSP to change sources.')
     try:
-        status, song, playlist = mpd('status', 'currentsong', 'playlistinfo')
-        status, song = dict(status), dict(song)
+        with LOCK:
+            status, playlist, pending, context = player_queue()
         result.update(playback=status.get('state', 'stop'), elapsed=float(status.get('elapsed', 0)),
                       duration=float(status.get('duration', 0)), song_position=int(status.get('song', -1)))
         rows = []
-        for key, value in playlist:
-            if key == 'file':
-                match = re.search(r'/stream/([0-9]+)$', value)
-                identifier = match.group(1) if match else ''
-                rows.append(dict(CATALOG.get(identifier, dict(id=identifier, title='Tidal track', artist='', album='', cover='')), position=len(rows)))
+        for entry in playlist:
+            match = re.search(r'/stream/([0-9]+)$', urlparse(entry['file']).path)
+            identifier = match.group(1) if match else ''
+            rows.append(dict(CATALOG.get(identifier, dict(id=identifier, title='Tidal track', artist='', album='', cover='')),
+                             position=entry['position'], song_id=entry.get('song_id'), origin=entry['origin']))
         result['queue'] = rows
         position = result.get('song_position', -1)
         result['current'] = rows[position] if 0 <= position < len(rows) else None
+        result['manual_queue'] = [row for row in rows if row['position'] > position and row['origin'] == 'queue']
+        result['autoplay'] = [row for row in rows if row['position'] > position and row['origin'] == 'autoplay']
+        autoplay_urls = set(context['autoplay'].values())
+        result['autoplay_source'] = context['source'] if any(row['file'] in autoplay_urls for row in playlist) else {}
     except (OSError, RuntimeError, ValueError):
         result['player_error'] = 'Music player is offline'
     try:
@@ -741,12 +922,15 @@ def current_status():
                 result['sources'].append(dict(id=source['id'], label=source['label'] + ' · disconnected',
                                               available=False, group='Unavailable', description='Reconnect the interface or choose Tidal.'))
             result.update(source=source['id'], source_label=source['label'])
-            tuned = TUNING.active(profile)
-            label, description = PROFILES.get(profile, (tuned['name'], 'Saved system tuning · tweeter safety high-pass active') if tuned else ('Other DSP preset', 'Playback controls require an approved exciter preset'))
+            details = listening_profile(profile)
+            label, description = ((details['label'], details['description']) if details else
+                                  ('Other DSP preset', 'Playback controls require an approved exciter preset'))
             result.update(volume=dsp.call('GetVolume'), muted=dsp.call('GetMute'),
-                          dsp_state=dsp.call('GetState'), ready=(profile in PROFILES or bool(tuned)) and selected is not None,
+                          dsp_state=dsp.call('GetState'), ready=bool(details) and selected is not None,
                           profile=label, profile_description=description)
-            result['source_switching_available'] = profile == str(CHANNEL_PROFILE)
+            result['source_switching_available'] = bool(details) and source['id'] != 'unknown'
+            result['source_switching_reason'] = ('' if result['source_switching_available'] else
+                'Select a saved speaker profile on the DSP page before changing sources.')
     except (OSError, RuntimeError, ValueError):
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
     return result
@@ -771,6 +955,8 @@ def _action(name, data):
         raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before using music or manual DSP controls.')
     if name == 'play-playlist':
         return play_playlist(data)
+    if name == 'play-album':
+        return play_album(data)
     with LOCK:
         if name == 'source':
             select_source(data.get('id'))
@@ -819,31 +1005,34 @@ def _action(name, data):
             if identifier not in CATALOG:
                 with TIDAL_LOCK:
                     remember(tidal().track(int(identifier)))
+            if name == 'play':
+                return play_context([CATALOG[identifier]], 0, dict(kind='track', id=identifier, title=''))
             STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-            (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
+            with TIDAL_LOCK:
+                (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
             with DSP() as dsp:
                 approved(dsp)
-                if name == 'play':
-                    require_tidal(dsp)
-                result = mpd('addid ' + quote(f'http://{BIND}:{PORT}/stream/{identifier}'))
-                songid = dict(result[0])['Id']
-                if name == 'play':
-                    dsp.call('SetMute', False)
-                    try:
-                        mpd('playid ' + songid)
-                    except Exception:
-                        dsp.call('SetMute', True)
-                        raise
+                enqueue_track(identifier, data.get('placement', 'end'))
+        elif name in ('clear-queue', 'remove-queued'):
+            if name == 'remove-queued' and data.get('song_id') is None:
+                raise ValueError('Invalid queued song')
+            clear_manual_queue(data.get('song_id') if name == 'remove-queued' else None)
         elif name in ('resume', 'next', 'previous', 'position'):
             with DSP() as dsp:
                 approved(dsp)
                 require_tidal(dsp)
                 command = {'resume': 'play', 'next': 'next', 'previous': 'previous'}.get(name)
                 if name == 'position':
-                    position = int(data['position'])
-                    if position < 0:
-                        raise ValueError('Invalid queue position')
-                    command = 'play ' + str(position)
+                    sid = data.get('song_id')
+                    if sid is not None:
+                        if not isinstance(sid, str) or not re.fullmatch(r'[0-9]+', sid):
+                            raise ValueError('Invalid queued song')
+                        command = 'playid ' + sid
+                    else:
+                        position = int(data['position'])
+                        if position < 0:
+                            raise ValueError('Invalid queue position')
+                        command = 'play ' + str(position)
                 mpd(command)
                 dsp.call('SetMute', False)
         elif name == 'pause':
@@ -853,6 +1042,7 @@ def _action(name, data):
                 if source_metadata(json.loads(dsp.call('GetConfigJson')))['id'] == 'tidal':
                     dsp.call('SetMute', True)
             mpd('clear')
+            save_queue_context(dict(manual={}, autoplay={}, source={}))
         elif name == 'seek':
             seconds = float(data['seconds'])
             if not math.isfinite(seconds) or seconds < 0 or seconds > 86400:
@@ -878,6 +1068,11 @@ def visualizer_frame(dsp):
                 for value in [values[channel]]] if isinstance(values, list) else []
 
     rms, peak = channels('capture_rms'), channels('capture_peak')
+    if running and (not rms or not peak):
+        # A short history window can be empty even while the latest capture
+        # chunk has live audio. Keep its paired RMS/peak values together.
+        levels = dsp.call('GetSignalLevels')
+        rms, peak = channels('capture_rms'), channels('capture_peak')
     return dict(available=True, active=running and bool(rms) and bool(peak),
                 rms=rms if running else [], peak=peak if running else [])
 
@@ -888,7 +1083,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, value, status=200, content_type='application/json'):
+    def send(self, value, status=200, content_type='application/json', headers=None):
         body = json.dumps(value, allow_nan=False).encode() if content_type == 'application/json' else value
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -896,12 +1091,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' https://resources.tidal.com; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: https://resources.tidal.com; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         self.wfile.write(body)
 
     def valid_host(self):
-        return self.headers.get('Host', '').lower() in {f'{BIND}:{PORT}', f'octet:{PORT}', f'octet.tailf55458.ts.net:{PORT}'}
+        if not NETWORK.allowed_peer(self.client_address[0], BIND):
+            return False
+        host = self.headers.get('Host', '').lower()
+        return host in NETWORK.hosts(PORT, BIND) or (
+            self.https_proxy() and host in {'octet.tailf55458.ts.net', 'octet.tailf55458.ts.net:443'})
+
+    def https_proxy(self):
+        # Tailscale Serve overwrites these headers. Only trust the local proxy,
+        # never forwarded headers supplied directly by another tailnet device.
+        return (NETWORK.local_peer(self.client_address[0], BIND)
+                and self.headers.get('X-Forwarded-Proto') == 'https'
+                and self.headers.get('X-Forwarded-Host', '').lower() in {
+                    'octet.tailf55458.ts.net', 'octet.tailf55458.ts.net:443'})
+
+    def request_origin(self):
+        if self.https_proxy():
+            return 'https://' + self.headers['X-Forwarded-Host']
+        return 'http://' + self.headers.get('Host', '')
 
     def serve_media(self, name, head_only=False):
         """Bounded local media delivery with byte ranges for seeking/looping."""
@@ -957,7 +1171,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         name = urlparse(self.path).path.removeprefix('/visualizer-media/')
-        if self.path.startswith('/visualizer-media/') and name in ('sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3'):
+        if self.path.startswith('/visualizer-media/') and name in ('sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'sky-playback.mp4', 'water-playback.mp4', 'stars-playback.mp4', 'lunar-playback.mp4', 'edm.mp3', 'classical.mp3'):
             return self.serve_media(name, head_only=True)
         self.send_error(404)
 
@@ -1054,13 +1268,20 @@ class Handler(BaseHTTPRequestHandler):
                         view = None
                     VISUALIZER.heartbeat(query.get('revision', [''])[0], view)
                 return self.send(VISUALIZER.read())
-            if parsed.path in ('/', '/dsp', '/visualizer', '/app.js', '/dsp.js', '/visualizer.js', '/visualizer-themes.js', '/visualizer-solar.js', '/visualizer-audio.js', '/style.css', '/visualizer.css'):
-                name = {'/': 'index.html', '/dsp': 'dsp.html', '/visualizer': 'visualizer.html', '/app.js': 'app.js', '/dsp.js': 'dsp.js', '/visualizer.js': 'visualizer.js', '/visualizer-themes.js': 'visualizer-themes.js', '/visualizer-solar.js': 'visualizer-solar.js', '/visualizer-audio.js': 'visualizer-audio.js', '/style.css': 'style.css', '/visualizer.css': 'visualizer.css'}[parsed.path]
+            if parsed.path == '/api/visualizer/frame':
+                after = int(parse_qs(parsed.query).get('after', ['0'])[0])
+                frame = VISUALIZER.preview_frame(after)
+                if frame is None:
+                    return self.send({'error': 'HDMI frame unavailable'}, 503)
+                frame_id, data = frame
+                return self.send(data or b'', 200 if data else 204, 'image/jpeg', {'X-Octet-Frame': frame_id})
+            if parsed.path in ('/', '/dsp', '/visualizer', '/app.js', '/dsp.js', '/volume.js', '/visualizer.js', '/visualizer-themes.js', '/visualizer-solar.js', '/visualizer-audio.js', '/style.css', '/visualizer.css'):
+                name = {'/': 'index.html', '/dsp': 'dsp.html', '/visualizer': 'visualizer.html', '/app.js': 'app.js', '/dsp.js': 'dsp.js', '/volume.js': 'volume.js', '/visualizer.js': 'visualizer.js', '/visualizer-themes.js': 'visualizer-themes.js', '/visualizer-solar.js': 'visualizer-solar.js', '/visualizer-audio.js': 'visualizer-audio.js', '/style.css': 'style.css', '/visualizer.css': 'visualizer.css'}[parsed.path]
                 kind = ('text/html' if name.endswith('.html') else 'text/javascript' if name.endswith('.js') else 'text/css') + '; charset=utf-8'
                 return self.send((ROOT / name).read_bytes(), content_type=kind)
             if parsed.path in ('/visualizer-media/sky.jpg', '/visualizer-media/water.jpg', '/visualizer-media/stars.jpg', '/visualizer-media/solar.jpg', '/visualizer-media/sun.jpg', '/visualizer-media/lunar.jpg'):
                 return self.send((ROOT / parsed.path.lstrip('/')).read_bytes(), content_type='image/jpeg')
-            if parsed.path in ('/visualizer-media/sky.mp4', '/visualizer-media/water.mp4', '/visualizer-media/stars.mp4', '/visualizer-media/solar.mp4', '/visualizer-media/sun.mp4', '/visualizer-media/lunar.mp4', '/visualizer-media/edm.mp3', '/visualizer-media/classical.mp3'):
+            if parsed.path in ('/visualizer-media/sky.mp4', '/visualizer-media/water.mp4', '/visualizer-media/stars.mp4', '/visualizer-media/solar.mp4', '/visualizer-media/sun.mp4', '/visualizer-media/lunar.mp4', '/visualizer-media/sky-playback.mp4', '/visualizer-media/water-playback.mp4', '/visualizer-media/stars-playback.mp4', '/visualizer-media/lunar-playback.mp4', '/visualizer-media/edm.mp3', '/visualizer-media/classical.mp3'):
                 return self.serve_media(parsed.path.rsplit('/', 1)[1])
             if parsed.path == '/api/visualizer':
                 return self.stream_visualizer()
@@ -1088,7 +1309,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send({'tracks': [remember(t) for t in results.get('tracks', [])], 'albums': albums})
                     elif parsed.path == '/api/album':
                         identifier = track_id(parse_qs(parsed.query).get('id', [''])[0])
-                        tracks = session.album(int(identifier)).tracks()
+                        return self.send(album_contents(identifier))
                     else:
                         tracks = session.user.favorites.tracks(limit=30)
                     return self.send({'tracks': [remember(t) for t in tracks]})
@@ -1108,8 +1329,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         origin = self.headers.get('Origin')
-        if not self.valid_host() or (origin and origin != 'http://' + self.headers.get('Host', '')):
+        if not self.valid_host() or (origin and origin != self.request_origin()):
             return self.send({'error': 'Request blocked'}, 403)
+        if urlparse(self.path).path == '/api/control/visualizer-frame':
+            try:
+                # Only the Pi's own kiosk may supply the HDMI image. A remote
+                # browser opening /visualizer/display must not replace it.
+                if (not NETWORK.local_peer(self.client_address[0], BIND)
+                        or self.headers.get('X-Forwarded-For')
+                        or self.headers.get('X-Forwarded-Proto')):
+                    return self.send({'error': 'Local display required'}, 403)
+                if self.headers.get('Content-Type') != 'image/jpeg':
+                    return self.send({'error': 'Expected JPEG'}, 415)
+                length = int(self.headers.get('Content-Length', 0))
+                if not 4 <= length <= 524288:
+                    raise ValueError('Invalid frame size')
+                revision = parse_qs(urlparse(self.path).query).get('revision', [''])[0]
+                accepted = VISUALIZER.publish_frame(revision, self.rfile.read(length))
+                return self.send({'accepted': accepted}, 200 if accepted else 409)
+            except ValueError as error:
+                return self.send({'error': str(error)}, 400)
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.send({'error': 'Expected JSON'}, 415)
         try:

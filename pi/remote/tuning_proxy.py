@@ -12,7 +12,7 @@ class TuningProxy:
         self.root, self.url = Path(root), url
 
     def request(self, action=None, body=None):
-        if action not in (None, 'start', 'stop', 'restore', 'select'):
+        if action not in (None, 'start', 'stop', 'restore', 'select', 'test-level'):
             raise ValueError('Unknown Auto mode action')
         request = Request(self.url+'/api/auto'+('/'+action if action else ''),
                           data=json.dumps(body or {}).encode() if action else None,

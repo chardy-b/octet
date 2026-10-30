@@ -10,7 +10,7 @@ const sources = [
   {id:'usb:iD14:mono-2',label:'Audient iD14 · Input 2 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
 ];
 const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switching_available:true,
-  ready:true,muted:false,volume:-31,min_db:-60,max_db:-18,level_unlocked:false,profile:'Output DSP controls',profile_description:'Eight outputs',
+  ready:true,muted:false,volume:-31,min_db:-60,max_db:-18,level_unlocked:false,profile:'Living room tuning',profile_description:'Saved system tuning',
   playback:'pause',duration:90,elapsed:20,song_position:0,current:{title:'Saved song',artist:'Saved artist'},
   queue:[{position:0,title:'Saved song',artist:'Saved artist'}]});
 (async()=>{
@@ -36,6 +36,8 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.goto('http://octet.test/');
     await page.waitForFunction(()=>document.getElementById('source-choice').options.length===4);
     assert.equal(await page.locator('#source-choice').inputValue(),'tidal');
+    assert.equal(await page.locator('#source-choice').isEnabled(),true);
+    assert.equal(await page.locator('#dsp-profile-name').textContent(),'Living room tuning');
     assert.equal(await page.locator('#source-apply').isDisabled(),true);
     await page.selectOption('#source-choice','usb:iD14:mono-1');
     // A status poll must not discard a source selection that has not been applied.
@@ -48,8 +50,9 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),true);
     assert.equal(await page.locator('#mute').textContent(),'Unmute');
     assert.match(await page.locator('#source-status').textContent(),/muted/);
-    assert.equal(await page.locator('#volume').inputValue(),'-31');
-    assert.equal(await page.locator('#queue-count').textContent(),'1');
+    assert.equal(await page.locator('#volume').getAttribute('aria-valuetext'),'-31 dB');
+    assert.equal(await page.locator('#dsp-profile-name').textContent(),'Living room tuning');
+    assert.equal(await page.locator('#queue-count').textContent(),'0'); // The current song is not upcoming.
     await page.screenshot({path:path.resolve(__dirname,'../../out/music-source-desktop.png'),fullPage:true});
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
@@ -62,8 +65,18 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('.transport').isVisible(),true);
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),false);
     assert.equal(await page.locator('#song-title').textContent(),'Saved song');
+    assert.equal(await page.locator('#dsp-profile-name').textContent(),'Living room tuning');
+    state={...state,ready:false,source_switching_available:false,source_switching_reason:'The current speaker configuration is not approved for playback.'};
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#source-choice').isDisabled(),true);
+    assert.equal(await page.locator('#source-apply').isDisabled(),true);
+    assert.equal(await page.locator('#source-status').textContent(),state.source_switching_reason);
+    delete state.source_switching_reason;
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#source-status').textContent(),'Connect to the speaker DSP to change sources.');
+    assert.doesNotMatch(await page.locator('#source-status').textContent(),/Output DSP controls/);
     assert.deepEqual(writes,[{id:'usb:iD14:mono-1'},{id:'tidal'},{id:'tidal'}]);
     assert.deepEqual(errors,[]);
-    console.log('Browser source flow passed: selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, mobile layout.');
+    console.log('Browser source flow passed: saved tuning retained, selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, unavailable reasons, mobile layout.');
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

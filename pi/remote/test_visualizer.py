@@ -33,6 +33,33 @@ class Visualizer(unittest.TestCase):
             self.assertEqual(frame['rms'], [])
             self.assertEqual(frame['peak'], [])
 
+    def test_empty_history_window_uses_latest_capture_chunk(self):
+        dsp = MagicMock()
+        replies = {'GetState': 'Running',
+                   'GetSignalLevelsSince': dict(capture_rms=[], capture_peak=[]),
+                   'GetSignalLevels': dict(capture_rms=[-20, -22], capture_peak=[-8, -10])}
+        dsp.call.side_effect = lambda name, *args: replies[name]
+        self.assertEqual(server.visualizer_frame(dsp),
+                         dict(available=True, active=True, rms=[-20, -22], peak=[-8, -10]))
+        self.assertEqual([call.args for call in dsp.call.call_args_list],
+                         [('GetSignalLevelsSince', 0.1), ('GetState',), ('GetSignalLevels',)])
+
+    def test_latest_chunk_does_not_restore_stale_audio_when_not_running(self):
+        for state in ['Paused', 'Inactive', 'Stalled', 'Starting']:
+            dsp = self.dsp(dict(capture_rms=[], capture_peak=[]), state)
+            self.assertFalse(server.visualizer_frame(dsp)['active'])
+            self.assertNotIn(('GetSignalLevels',), [call.args for call in dsp.call.call_args_list])
+
+    def test_latest_chunk_fallback_preserves_selected_mono_input(self):
+        dsp = MagicMock()
+        dsp.call.side_effect = lambda name, *args: {
+            'GetState': 'Running', 'GetSignalLevelsSince': {},
+            'GetSignalLevels': dict(capture_rms=[-10, -45], capture_peak=[-1, -30])}[name]
+        with patch.object(server, 'ACTIVE_CAPTURE_CHANNELS', (1, 1)):
+            frame = server.visualizer_frame(dsp)
+        self.assertEqual(frame['rms'], [-45, -45])
+        self.assertEqual(frame['peak'], [-30, -30])
+
     def test_missing_nonfinite_and_out_of_range_levels_remain_json_safe(self):
         frame = server.visualizer_frame(self.dsp(dict(capture_rms=[float('nan'), None],
                                                       capture_peak=[5, -200, -1])))

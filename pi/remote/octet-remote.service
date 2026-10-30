@@ -1,5 +1,5 @@
 [Unit]
-Description=Octet music web controls over Tailscale
+Description=Octet music web controls over LAN and Tailscale
 After=network-online.target tailscaled.service mpd.service camilladsp.service
 Wants=network-online.target tailscaled.service mpd.service camilladsp.service
 
@@ -10,7 +10,7 @@ SupplementaryGroups=audio
 WorkingDirectory=/opt/octet-remote
 ExecStart=/usr/bin/python3 /opt/octet-remote/server.py
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=OCTET_BIND=100.100.177.81
+Environment=OCTET_BIND=0.0.0.0
 Environment=OCTET_PORT=8767
 StateDirectory=octet-remote
 StateDirectoryMode=0700
@@ -22,7 +22,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/octet-dsp
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

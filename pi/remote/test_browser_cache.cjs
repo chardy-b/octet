@@ -7,9 +7,10 @@ const source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 const CACHE = 'octet.tidal.library.v1', VIEW = 'octet.tidal.view.v1';
 class Element {
   constructor() { this.children=[];this.dataset={};this.style={};this.hidden=false;this.textContent='';this.classList={toggle(){},add(){},remove(){}};this.attributes={}; }
-  append(...children) { this.children.push(...children); }
-  prepend(...children) { this.children.unshift(...children); }
-  replaceChildren(...children) { this.children=children; }
+  addEventListener() {}
+  append(...children) { this.children.push(...children.flatMap(child=>child.fragment?child.children:[child])); }
+  prepend(...children) { this.children.unshift(...children.flatMap(child=>child.fragment?child.children:[child])); }
+  replaceChildren(...children) { this.children=children.flatMap(child=>child.fragment?child.children:[child]); }
   setAttribute(key,value) { this.attributes[key]=value; }
   getAttribute(key) { return this.attributes[key]; }
 }
@@ -17,10 +18,12 @@ function boot(cache, view, blocked=false) {
   const elements=new Map(), storage=new Map(), requests=[];
   if(cache)storage.set(CACHE,JSON.stringify(cache));
   if(view)storage.set(VIEW,JSON.stringify(view));
-  const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(){return new Element();},createDocumentFragment(){return new Element();},querySelectorAll(){return [];}};
-  const context=vm.createContext({document,console,setInterval(){},localStorage:{getItem(key){if(blocked)throw Error('blocked');return storage.get(key)||null;},setItem(key,value){if(blocked)throw Error('quota');storage.set(key,value);}},fetch(url){return new Promise((resolve,reject)=>requests.push({url,resolve(value){resolve({ok:true,json:async()=>value});},reject}));}});
+  const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(){return new Element();},createDocumentFragment(){const fragment=new Element();fragment.fragment=true;return fragment;},querySelectorAll(){return [];}};
+  const window={scrollY:0,scrollTo({top}){this.scrollY=top;}};
+  const context=vm.createContext({document,window,console,setInterval(){},localStorage:{getItem(key){if(blocked)throw Error('blocked');return storage.get(key)||null;},setItem(key,value){if(blocked)throw Error('quota');storage.set(key,value);}},fetch(url){return new Promise((resolve,reject)=>requests.push({url,resolve(value){resolve({ok:true,json:async()=>value});},reject}));}});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'volume.js'),'utf8'),context);
   vm.runInContext(source,context);
-  return {elements,storage,requests,run(code){return vm.runInContext(code,context);}};
+  return {elements,storage,requests,window,run(code){return vm.runInContext(code,context);}};
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const playlist=id=>({id,title:'Playlist '+id,creator:'Listener',tracks:1});
@@ -66,5 +69,51 @@ const titles=app=>app.elements.get('tracks').children.map(row=>row.children[1].c
   blocked.requests.find(r=>r.url.startsWith('/api/playlists?')).resolve({playlists:[playlist('a')],has_more:false,next_offset:1});
   await loading;
   assert.deepEqual(titles(blocked),['Playlist a']);
-  console.log('6 browser cache checks passed: cached reverse order, full pagination, restored playlist without playback, offline fallback, forced refresh, unavailable storage.');
+
+  // Back restores list position immediately, without Tidal requests or playback.
+  const navCache=freshCache();navCache.contents.a={data:tracks('a'),updatedAt:Date.now()};
+  const nav=boot(navCache,{view:'playlists'});
+  assert.equal(nav.elements.get('library-back').disabled,true);
+  nav.window.scrollY=420;
+  await nav.run("loadPlaylist('a')");
+  assert.equal(nav.elements.get('library-back').disabled,false);
+  await nav.elements.get('library-back').onclick();
+  assert.deepEqual(titles(nav),['Playlist b','Playlist a']);
+  assert.equal(nav.window.scrollY,420);
+  assert.equal(nav.elements.get('playlist-header').hidden,true);
+  assert.equal(nav.elements.get('library-back').disabled,true);
+  assert.equal(nav.requests.filter(r=>r.url!=='/api/status').length,0);
+
+  // A playlist restored on page load also has a parent, even with an empty cache.
+  await restored.elements.get('library-back').onclick();
+  assert.deepEqual(titles(restored),['Playlist b','Playlist a']);
+  assert.equal(restored.elements.get('library-back').disabled,true);
+
+  // Search -> album -> search -> playlists retains query/results/scroll offline.
+  const search=nav.run("loadTracks('old query')");
+  nav.requests.find(r=>r.url==='/api/search?q=old%20query').resolve({tracks:[],albums:[{id:'album',title:'Test album',artist:'Artist',tracks:1}]});
+  await search;nav.window.scrollY=640;
+  const album=nav.run("loadAlbum('album','Test album')");
+  nav.requests.find(r=>r.url==='/api/album?id=album').resolve({tracks:tracks('a').tracks});
+  await album;
+  assert.equal(nav.elements.get('play-album').hidden,false);
+  nav.elements.get('search').value='unfinished edit';
+  const count=nav.requests.length;
+  await nav.elements.get('library-back').onclick();
+  assert.equal(nav.elements.get('search').value,'old query');
+  assert.deepEqual(titles(nav),['Test album']);
+  assert.equal(nav.window.scrollY,640);
+  assert.equal(nav.elements.get('play-album').hidden,true);
+  await nav.elements.get('library-back').onclick();
+  assert.deepEqual(titles(nav),['Playlist b','Playlist a']);
+  assert.equal(nav.requests.length,count);
+
+  // Going back during a request prevents its late response/error replacing the view.
+  const pending=nav.run("loadAlbum('slow','Slow album')");
+  await nav.elements.get('library-back').onclick();
+  nav.requests.find(r=>r.url==='/api/album?id=slow').reject(Error('late error'));
+  await pending;
+  assert.deepEqual(titles(nav),['Playlist b','Playlist a']);
+  assert.equal(nav.elements.get('notice').textContent,'');
+  console.log('Browser cache and navigation checks passed: cache, pagination, offline fallback, refresh, playlist parents, search/album back, scroll restoration and late requests.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

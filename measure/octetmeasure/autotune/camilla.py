@@ -39,12 +39,13 @@ def atomic(path, text):
     os.replace(tmp, path)
 
 
-def export(cfg, chosen, eq, room):
-    from .config import validate, active_drivers, selected_pairs
+def export(cfg, chosen, eq, room, stereo=None):
+    from .config import validate, active_drivers, playback_ceiling
     validate(cfg)
     fs = cfg['fs']
     filters, pipeline, mapping, scales = {}, [], [], {}
     grid = np.geomspace(10, fs*.499, 4096)
+    usable = {d['id'] for d in active_drivers(cfg)}
     for side in ('L','R'):
         peak = 0.
         for d in active_drivers(cfg):
@@ -54,19 +55,19 @@ def export(cfg, chosen, eq, room):
             if room.get(side):
                 sections = np.vstack([peq.sos_for([peq.Peq(**p) for p in room[side]],fs),sections])
             _, h = sosfreqz(sections, worN=grid, fs=fs)
-            peak = max(peak, float(20*np.log10(max(abs(h))))+chosen[side]['gains'][d['role']]-d['max_db'])
+            peak = max(peak, float(20*np.log10(max(abs(h))))+chosen[side]['gains'][d['role']]-playback_ceiling(cfg,d))
         # Extra transient headroom; per-output limiter enforces the final sample ceiling.
         scales[side] = 10**(-(max(0.,peak)+3)/20)
     for d in cfg['drivers']:
         key, side, channel = d['id'], d['side'], d['output']-1
-        if d['role'] not in selected_pairs(cfg):
+        if key not in usable:
             # Keep the DAC map fixed. No source feeds an excluded output, and a
             # muted gain also prevents signal if a saved config is inspected/edited.
             mapping.append(dict(dest=channel, sources=[]))
             filters[f'{key}_safety_hp'] = dict(type='BiquadCombo', parameters=dict(
                 type='LinkwitzRileyHighpass', freq=d['min_hz'], order=d['order']))
             filters[f'{key}_gain'] = dict(type='Gain', parameters=dict(gain=0., inverted=False, mute=True))
-            filters[f'{key}_limit'] = dict(type='Limiter', parameters=dict(clip_limit=d['max_db'], soft_clip=False))
+            filters[f'{key}_limit'] = dict(type='Limiter', parameters=dict(clip_limit=playback_ceiling(cfg,d), soft_clip=False))
             pipeline.append(dict(type='Filter', channels=[channel], names=[
                 f'{key}_safety_hp', f'{key}_gain', f'{key}_limit']))
             continue
@@ -93,14 +94,29 @@ def export(cfg, chosen, eq, room):
         # Match the measurement renderer exactly instead of Camilla's different
         # allpass approximation for subsample delays.
         filters[f'{key}_fractional'] = dict(type='Conv',parameters=dict(type='Values',values=[1-fraction,fraction]))
-        filters[f'{key}_limit'] = dict(type='Limiter',parameters=dict(clip_limit=d['max_db'],soft_clip=False))
+        filters[f'{key}_limit'] = dict(type='Limiter',parameters=dict(clip_limit=playback_ceiling(cfg,d),soft_clip=False))
         names += [f'{key}_gain',f'{key}_delay',f'{key}_fractional',f'{key}_limit']
         pipeline.append(dict(type='Filter',channels=[channel],names=names))
+    stereo_pipeline = []
+    for side,setting in (stereo or {}).items():
+        if (side not in ('L','R') or not np.isfinite([setting.get('gain_db',0),setting.get('delay_ms',0)]).all()
+                or setting.get('gain_db',0)>0 or not 0<=setting.get('delay_ms',0)<=cfg.get('stereo_max_delay_ms',20)
+                or setting.get('polarity',1) not in (-1,1)):
+            raise ValueError('Stereo corrections require nonnegative delay, attenuation only, and valid polarity.')
+        samples = float(setting.get('delay_ms',0))*fs/1000
+        whole, fraction = int(np.floor(samples)), samples-np.floor(samples)
+        prefix = f'stereo_{side}'
+        filters[prefix+'_gain'] = dict(type='Gain',parameters=dict(gain=float(setting.get('gain_db',0)),
+            inverted=setting.get('polarity',1)<0,mute=False))
+        filters[prefix+'_delay'] = dict(type='Delay',parameters=dict(delay=whole,unit='samples',subsample=False))
+        filters[prefix+'_fractional'] = dict(type='Conv',parameters=dict(type='Values',values=[1-float(fraction),float(fraction)]))
+        stereo_pipeline.append(dict(type='Filter',channels=[0 if side=='L' else 1],
+            names=[prefix+'_gain',prefix+'_delay',prefix+'_fractional']))
     document = dict(title='Octet Auto Tune',devices=dict(samplerate=fs,chunksize=1024,
                     capture=dict(type='Alsa',channels=2,device=cfg['camilla']['capture'],format='S32_LE'),
                     playback=dict(type='Alsa',channels=8,device=cfg['camilla']['playback'],format='S32_LE')),
                     mixers=dict(drivers=dict(channels={'in':2,'out':8},mapping=mapping)),filters=filters,
-                    pipeline=[dict(type='Mixer',name='drivers'),*pipeline])
+                    pipeline=[*stereo_pipeline,dict(type='Mixer',name='drivers'),*pipeline])
     return document, scales
 
 

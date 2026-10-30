@@ -8,7 +8,13 @@ from scipy.signal import butter, correlate, correlation_lags, sosfilt, sosfreqz
 
 from .. import peq
 from ..sweep import make_sweep
-from .config import TWEETER_MIN_HZ, active_drivers, selected_pairs
+from .config import TWEETER_MIN_HZ, active_drivers, active_roles, measurement_driver, measurement_ceiling
+
+
+class DriverError(ValueError):
+    def __init__(self, driver_id, message):
+        self.driver_id = driver_id
+        super().__init__(message)
 
 
 def lr(freq, kind, order, fs):
@@ -24,7 +30,8 @@ def protection(d, fs):
 
 
 def protected_sweep(d, cfg, level, duration=None):
-    if not d['start_db'] <= level <= d['max_db']:
+    limits = measurement_driver(cfg, d)
+    if not limits['start_db'] <= level <= limits['max_db']:
         raise ValueError('Requested level exceeds driver ramp limits.')
     sw = make_sweep(cfg['fs'], duration or cfg['duration'], d['min_hz'], d['max_hz'], 0)
     x = sosfilt(protection(d, cfg['fs']), np.pad(sw.signal, (0, int(.15 * cfg['fs']))))
@@ -36,7 +43,9 @@ def sequence(cfg, levels):
     """One DAC buffer; identical protected acoustic markers bracket the eight sweeps."""
     fs, gap = cfg['fs'], int(cfg['gap_seconds'] * cfg['fs'])
     drivers = active_drivers(cfg)
-    pilot_driver = next(d for d in drivers if d['side'] == 'L' and d['role'] in ('a', 'b'))
+    if not drivers:
+        raise ValueError('No usable drivers remain for measurement.')
+    pilot_driver = next((d for d in drivers if d['role'] in ('a', 'b')), drivers[0])
     pilot = protected_sweep(pilot_driver, cfg, levels[pilot_driver['id']], duration=1)
     chunks, slots, cursor = [np.zeros((gap, 8))], [], gap
     items = [(pilot_driver, pilot, 'pilot_start')]
@@ -131,10 +140,13 @@ def flatten(cfg, f, responses):
         r = responses[d['id']]
         lo, hi = d['min_hz']*1.2, d['max_hz']/1.2
         if lo >= hi:
-            raise ValueError(f"Usable band too narrow for {d['id']}.")
-        filters, _ = peq.fit_peq(f, 20*np.log10(np.maximum(r['flatten'], 1e-12)), np.zeros(len(f)),
-                                cfg['fs'], cfg['peq_bands'], lo, hi, cfg['max_boost_db'],
-                                cfg['max_cut_db'], 2, ref_band=(lo, hi), smooth=3)
+            raise DriverError(d['id'],f"Usable band too narrow for {d['id']}.")
+        try:
+            filters, _ = peq.fit_peq(f, 20*np.log10(np.maximum(r['flatten'], 1e-12)), np.zeros(len(f)),
+                                    cfg['fs'], cfg['peq_bands'], lo, hi, cfg['max_boost_db'],
+                                    cfg['max_cut_db'], 2, ref_band=(lo, hi), smooth=3)
+        except (ValueError,RuntimeError) as error:
+            raise DriverError(d['id'],f'Driver EQ could not be fitted: {error}') from error
         out[d['id']] = [asdict(p) for p in filters]
     return out
 
@@ -156,14 +168,16 @@ def branch_sos(cfg, d, candidate, eq):
     sos = [protection(d, fs)]
     low, high, split = candidate['low'], candidate['high'], candidate['split']
     order, role = candidate['order'], d['role']
-    if role == 'sub':
+    if candidate['strategy'] == 'protected':
+        pass  # No usable panel on this side: retain each driver's own protected band.
+    elif role == 'sub':
         sos.append(lr(low, 'lowpass', order, fs))
     elif role == 'tweeter':
         sos.append(lr(high, 'highpass', order, fs))
     else:
-        if 'sub' in selected_pairs(cfg):
+        if 'sub' in active_roles(cfg,d['side']):
             sos.append(lr(low, 'highpass', order, fs))
-        if 'tweeter' in selected_pairs(cfg):
+        if 'tweeter' in active_roles(cfg,d['side']):
             sos.append(lr(high, 'lowpass', order, fs))
         if candidate['strategy'] == 'split':
             sos.append(lr(split, 'lowpass' if role == 'a' else 'highpass', order, fs))
@@ -199,6 +213,14 @@ def search(cfg, f, responses, eq, side, cancel=None):
     drivers = [d for d in active_drivers(cfg) if d['side'] == side]
     byrole = {d['role']: d for d in drivers}
     panels = [d for d in drivers if d['role'] in ('a', 'b')]
+    if not drivers:
+        raise ValueError(f'{side}: no usable drivers remain.')
+    if not panels:
+        roles = list(byrole)
+        return [dict(strategy='protected',order=4,low=min(d['min_hz'] for d in drivers),
+                     high=max(d['max_hz'] for d in drivers),split=1000.,active_pairs=roles,
+                     gains=dict.fromkeys(roles,0.),delays=dict.fromkeys(roles,0.),
+                     polarity=dict.fromkeys(roles,1),score=0.)]
     low_bounds = ((max(150, *[d['min_hz'] for d in panels]),
                    min(cfg.get('sub_crossover_max', 500), byrole['sub']['max_hz']/1.2))
                   if 'sub' in byrole else None)
@@ -273,7 +295,29 @@ def search(cfg, f, responses, eq, side, cancel=None):
     return sorted(candidates, key=lambda c: c['score'])[:3]
 
 
-def render_chain(cfg, side, candidate, eq, stimulus, room=()):
+def apply_stereo(signal, setting, fs):
+    if not setting:
+        return signal
+    delay = setting.get('delay_ms',0)*fs/1000
+    indices = np.arange(len(signal))
+    gain = 10**(setting.get('gain_db',0)/20)*setting.get('polarity',1)
+    if signal.ndim==1:
+        return np.interp(indices-delay,indices,signal,left=0,right=0)*gain
+    return np.column_stack([np.interp(indices-delay,indices,channel,left=0,right=0)*gain for channel in signal.T])
+
+
+def render_safety(cfg, side, stimulus):
+    """Untuned baseline with each driver's mandatory band protection retained."""
+    out = np.zeros((len(stimulus)+int(.1*cfg['fs']),8))
+    for d in active_drivers(cfg):
+        if d['side']==side:
+            out[:,d['output']-1] = sosfilt(protection(d,cfg['fs']),np.pad(stimulus,(0,int(.1*cfg['fs']))))
+    scale = min([1., *[10**(measurement_ceiling(cfg,d)/20)/max(np.max(abs(out[:,d['output']-1])),1e-12)
+                      for d in active_drivers(cfg) if d['side']==side]])
+    return out*scale,scale
+
+
+def render_chain(cfg, side, candidate, eq, stimulus, room=(), stereo=None):
     fs = cfg['fs']
     x = sosfilt(peq.sos_for([peq.Peq(**p) for p in room], fs), stimulus) if room else stimulus
     out = np.zeros((len(x)+int(.1*fs), 8))
@@ -284,9 +328,9 @@ def render_chain(cfg, side, candidate, eq, stimulus, room=()):
         delay = candidate['delays'][d['role']]*fs/1000
         y = np.interp(np.arange(len(y))-delay, np.arange(len(y)), y, left=0, right=0)
         out[:,d['output']-1] = y*10**(candidate['gains'][d['role']]/20)*candidate['polarity'][d['role']]
-    scale = min(1., *[10**(d['max_db']/20)/max(np.max(abs(out[:,d['output']-1])), 1e-12)
-                      for d in active_drivers(cfg) if d['side'] == side])
-    return out*scale, scale
+    scale = min([1., *[10**(measurement_ceiling(cfg,d)/20)/max(np.max(abs(out[:,d['output']-1])), 1e-12)
+                      for d in active_drivers(cfg) if d['side'] == side]])
+    return apply_stereo(out*scale,(stereo or {}).get(side),fs), scale
 
 
 def decay_weights(impulses, fs, freq):

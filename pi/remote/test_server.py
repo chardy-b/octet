@@ -34,11 +34,14 @@ class PlaybackGuards(unittest.TestCase):
         dsp.call.assert_called_once_with('SetMute', True)
 
     def test_failed_play_mutes_again(self):
+        from test_playlists import Player
         dsp = self.dsp()
+        player = Player()
+        player.fail_play = True
         with tempfile.TemporaryDirectory() as tmp, patch.object(server, 'STATE', Path(tmp)), \
              patch.object(server, 'CATALOG', {'123': {'id': '123'}}), \
              patch.object(server, 'DSP', return_value=dsp), \
-             patch.object(server, 'mpd', side_effect=[[[('Id', '9')]], RuntimeError('offline')]):
+             patch.object(server, 'mpd', side_effect=player):
             with self.assertRaises(RuntimeError):
                 server.action('play', {'id': '123'})
         self.assertEqual(dsp.call.call_args.args, ('SetMute', True))

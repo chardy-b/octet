@@ -102,7 +102,7 @@ def test_export_maps_all_outputs_and_retains_limits():
         stage = next(s for s in doc['pipeline'] if s.get('channels') == [expected[d['id']] - 1])
         assert d['id'] + '_gain' in stage['names']
     for d in cfg['drivers']:
-        assert doc['filters'][d['id']+'_limit']['parameters']['clip_limit']==d['max_db']
+        assert doc['filters'][d['id']+'_limit']['parameters']['clip_limit']==cfg['playback_max_db']
         assert doc['filters'][d['id']+'_gain']['parameters']['gain']<0
     assert all(0<v<1 for v in scales.values())
 

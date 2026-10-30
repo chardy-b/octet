@@ -15,7 +15,32 @@ def selected_pairs(cfg):
 
 
 def active_drivers(cfg):
-    return [d for d in cfg['drivers'] if d['role'] in selected_pairs(cfg)]
+    excluded = cfg.get('excluded_drivers', [])
+    return [d for d in cfg['drivers'] if d['role'] in selected_pairs(cfg) and d['id'] not in excluded]
+
+
+def active_roles(cfg, side):
+    return [role for role in PAIRS if any(d['role'] == role and d['side'] == side for d in active_drivers(cfg))]
+
+
+def active_sides(cfg):
+    return [side for side in ('L','R') if any(d['side'] == side for d in active_drivers(cfg))]
+
+
+def playback_ceiling(cfg, driver):
+    # Legacy run profiles keep their original ceiling unless explicitly revised.
+    return cfg.get('playback_max_db', driver['max_db'])
+
+
+def measurement_driver(cfg, driver):
+    """Apply the test control to ramp limits without editing playback limits."""
+    attenuation = cfg.get('test_attenuation_db', 0)
+    return dict(driver, start_db=driver['start_db']-attenuation,
+                max_db=measurement_ceiling(cfg, driver))
+
+
+def measurement_ceiling(cfg, driver):
+    return driver['max_db'] - cfg.get('test_attenuation_db', 0)
 
 
 def example():
@@ -27,15 +52,18 @@ def example():
         for role, low, high in [('sub', 30, 700), ('a', 150, 12000), ('b', 150, 12000), ('tweeter', TWEETER_MIN_HZ, 20000)]:
             drivers.append(dict(id=f'{side}_{role}', side=side, role=role, output=outputs[role][0 if side == 'L' else 1],
                                 model=models[role],
-                                min_hz=low, max_hz=high, order=4, start_db=-48, max_db=-24,
+                                min_hz=low, max_hz=high, order=4, start_db=-48, max_db=-15,
                                 step_db=3, step_seconds=1, amp_group=role))
     return dict(version=1, hardware_confirmed=False, fs=48000, duration=2, gap_seconds=1,
                 input_device='', output_device='', input_channels=2, mic_channel=0,
                 calibration='', max_boost_db=3, max_cut_db=9, peq_bands=4, quiesce_services=['upmpdcli','mpd'],
-                clip_db=-3, jump_db=9, min_snr_db=15, room_positions=5,
+                clip_db=-3, jump_db=9, min_snr_db=15, target_snr_db=24, playback_max_db=0,
+                test_attenuation_db=0, room_positions=5,
                 gate_ms=8, target_bass_db=4, target_tilt=-0.4,
                 verification_db=4, max_clock_ppm=300, drivers=drivers,
                 automatic=False, auto_apply=False, sub_crossover_max=500, selected_pairs=list(PAIRS),
+                measurement_repeats=3, stereo_alignment=True, capture_baseline=True,
+                stereo_max_delay_ms=20, stereo_delay_tolerance_ms=.15, stereo_level_tolerance_db=1,
                 camilla=dict(binary='/opt/camilladsp/camilladsp', service='camilladsp',
                              statefile='/opt/camilladsp/statefile.yml',
                              capture='hw:Loopback,1,0', playback='hw:sndrpihifiberry,0',
@@ -53,18 +81,27 @@ def validate(raw, hardware=False):
     cfg = copy.deepcopy(raw)
     defaults = example()
     for key, value in defaults.items():
+        if key == 'playback_max_db' and key not in raw:
+            continue
         cfg.setdefault(key, value)
     for key, lo, hi in [('fs', 44100, 96000), ('duration', 1, 10), ('gap_seconds', 0.5, 5),
                         ('max_boost_db', 0, 3), ('max_cut_db', 0, 18), ('peq_bands', 0, 8),
                         ('clip_db', -18, -0.5), ('jump_db', 3, 18), ('min_snr_db', 6, 60),
                         ('room_positions', 1, 9), ('gate_ms', 2, 50), ('verification_db', 1, 8),
                         ('max_clock_ppm', 10, 1000), ('target_bass_db', 0, 8), ('target_tilt', -2, 0),
-                        ('input_channels', 1, 8), ('mic_channel', 0, 7), ('sub_crossover_max', 200, 500)]:
+                        ('input_channels', 1, 8), ('mic_channel', 0, 7), ('sub_crossover_max', 200, 500),
+                        ('test_attenuation_db', 0, 30)]:
         number(cfg[key], key, lo, hi)
-    for key in ('fs', 'peq_bands', 'room_positions', 'input_channels', 'mic_channel'):
+    for key,lo,hi in [('measurement_repeats',1,5),('stereo_max_delay_ms',1,30),
+                      ('stereo_delay_tolerance_ms',.02,1),('stereo_level_tolerance_db',.2,3)]:
+        number(cfg[key],key,lo,hi)
+    for key in ('fs', 'peq_bands', 'room_positions', 'input_channels', 'mic_channel', 'measurement_repeats'):
         if int(cfg[key]) != cfg[key]:
             raise ValueError(f'{key} must be an integer.')
         cfg[key] = int(cfg[key])
+    number(cfg['target_snr_db'], 'target_snr_db', cfg['min_snr_db'], 60)
+    if 'playback_max_db' in cfg:
+        number(cfg['playback_max_db'], 'playback_max_db', -60, 0)
     if cfg['mic_channel'] >= cfg['input_channels']:
         raise ValueError('Microphone channel is outside the capture channels (zero-based).')
     drivers = cfg['drivers']
@@ -75,7 +112,7 @@ def validate(raw, hardware=False):
     if not {'a', 'b'}.intersection(pairs):
         raise ValueError('Select at least one exciter pair: A (1/2) or B (3/4).')
     cfg['selected_pairs'] = [p for p in PAIRS if p in pairs]
-    for key in ('automatic', 'auto_apply'):
+    for key in ('automatic', 'auto_apply', 'stereo_alignment', 'capture_baseline'):
         if type(cfg[key]) is not bool:
             raise ValueError(f'{key} must be a boolean.')
     if cfg['automatic'] and cfg['room_positions'] != 1:
@@ -88,6 +125,10 @@ def validate(raw, hardware=False):
         raise ValueError('Each physical output 1 through 8 must occur exactly once.')
     if {d.get('id') for d in drivers} != {f'{s}_{r}' for s in ('L', 'R') for r in ('sub', 'a', 'b', 'tweeter')}:
         raise ValueError('Driver IDs must be L_sub, L_a, L_b, L_tweeter and their R equivalents.')
+    excluded = cfg.get('excluded_drivers', [])
+    if (not isinstance(excluded,list) or any(not isinstance(key,str) for key in excluded)
+            or len(set(excluded)) != len(excluded) or not set(excluded).issubset({d['id'] for d in drivers})):
+        raise ValueError('excluded_drivers must contain unique, known driver IDs.')
     for d in drivers:
         if type(d['output']) is not int:
             raise ValueError('Output numbers must be integers.')

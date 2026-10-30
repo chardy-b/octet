@@ -1,6 +1,37 @@
 # Octet remote music controls
 
-Runs on the Pi at **http://100.100.177.81:8767**, bound only to its Tailscale address.
+On the same Wi-Fi/local network as Octet, open **http://octet.local:8767**.
+No account, password or Tailscale installation is required. If `.local` names
+are unavailable on your device, use `http://<Octet's Wi-Fi IP>:8767` instead.
+The router must allow devices to communicate; guest Wi-Fi/client isolation can
+prevent access even when devices use the same Wi-Fi name.
+
+The web service accepts local clients only from the private IPv4 subnet assigned
+to Octet's active physical Wi-Fi/Ethernet interfaces, refreshing after DHCP changes.
+Other private networks, public clients and arbitrary Host headers are rejected.
+Devices on that LAN can use all web controls without signing in. Existing
+Tailscale access remains available through its private network.
+
+To enable LAN access on an existing installation without changing playback or
+DSP settings, copy `enable-lan.py` and `network_access.py` to a staging directory
+on the Pi and run `sudo python3 enable-lan.py` there. It backs up the affected
+files, patches only the network guards, installs a systemd bind override and
+restarts only `octet-remote`. Fresh installs enable LAN access by default.
+
+For remote access, open **https://octet.tailf55458.ts.net/** on a device connected to Tailscale.
+Tailscale Serve provides a trusted HTTPS certificate and proxies to the app at
+`http://100.100.177.81:8767`. The local Wi-Fi URL uses HTTP; the Tailscale HTTPS
+hostname provides a trusted secure connection for remote browser access.
+
+Enable the persistent private HTTPS endpoint on the Pi with:
+
+```
+sudo tailscale serve --bg --https=443 http://100.100.177.81:8767
+```
+
+The server accepts HTTPS host/origin headers only from the local proxy, keeps
+cross-origin controls blocked, and rejects proxied HDMI frame uploads. The
+local kiosk and MPD continue to use their existing HTTP endpoint.
 
 ### HDMI projection and remote selection
 
@@ -15,12 +46,45 @@ whether the artwork fills that viewport, and the count of visible controls.
 This verifies the kiosk browser even when HDMI is unplugged; it does not verify
 a physical projector image.
 
+Choose **Off** in the Theme dropdown to close Chromium and stop artwork rendering.
+Off is the default for a new installation and is saved across service restarts and
+reboots. Selecting any artwork in the web UI starts Chromium again; simply opening
+the controller or changing another setting never enables it. The same Off option
+is available in the fullscreen selector. While off, only the lightweight kiosk
+supervisor polls the settings every two seconds; the browser and its renderer/GPU
+processes are stopped, and the web preview stops requesting frames and audio.
+
+When HDMI is connected, the controller's artwork area shows a **Live HDMI
+preview** sent by the Pi renderer, rather than a second independent rendering.
+Frames contain only the artwork canvas, preserve the full HDMI framing,
+and stay in bounded memory. Capture runs at up to about four 480-pixel
+JPEG snapshots per second while a preview is open; stale frames expire. This
+remote preview has a lower cadence than the physical projection. Local sample simulation uses the browser's local rendering
+and is labeled **Local sample preview**. An unavailable HDMI preview falls back
+to local rendering while the display reconnects.
+
+The preview and HDMI viewer use the Pi's shared elapsed-time clock for the color
+cycle and geometric motion. Slow frames do not slow that clock. The physical
+projection applies video positions when controls change, then lets the decoder
+run without repeated correction seeks. Local controller rendering checks playing
+positions continuously; an unfinished seek completes before another correction.
+
 `/visualizer/display` is the artwork-only view: a full viewport with black
-surroundings, no navigation, controls, cursor or playback overlays. The Pi's
+surroundings, no navigation, controls, cursor or playback overlays.
+The **Circle size** slider adjusts all circular themes from 25% to 200% in both
+the main UI and fullscreen controls. At 100%, the diameter spans the longer
+viewport dimension; smaller values reveal the full circle. Size is saved and
+shared with the HDMI display independently of video zoom. The Pi's
 existing auto-login desktop starts `octet-visualizer.service` through the XDG
 autostart entry. Chromium runs in Wayland kiosk mode with a dedicated profile;
 the launcher waits for both the compositor and web service and restarts after
-a browser failure. Plug the projector/display into either active HDMI output.
+a browser failure. A supervisor also watches the HDMI page heartbeat: if a
+crashed or unresponsive page stops reporting for 30 seconds, it restarts the
+kiosk even when Chromium itself remains running. Initial loading gets 60 seconds;
+web-service outages do not trigger browser restarts. Plug the projector/display
+into either active HDMI output.
+The kiosk uses software rasterization for Canvas 2D to avoid V3D diagonal seams
+in the 4K gradients. WebGL remains enabled for the video/geometric themes.
 
 For visualizer-only updates, copy this directory to a staging folder on Octet
 and run `sudo python3 install-visualizer.py` there. It backs up replaced files,
@@ -34,6 +98,10 @@ No external web hosting or browser plugins are needed. The server uses Python 3
 and the existing `tidalapi` package. The installer also uses the existing PyYAML.
 
 ## Audio sources
+
+Click the **Input levels** or **Speaker output levels** heading to collapse or
+reopen that panel. Each choice is remembered in this browser. Collapsing hides
+the meters and reset control; level sampling and clip tracking continue.
 
 The **Speaker output levels** panel shows all eight digital playback channels
 after speaker DSP, with output numbers and the configured labels (or Octet's
@@ -74,21 +142,25 @@ The same crossover, EQ, polarity, output mutes and master level apply to all
 sources. Track transport is hidden while a physical input is selected; browsing
 and adding tracks to the Tidal queue remain available.
 
-Source switching requires the **Output DSP controls** preset. It adds a source
-mixer before the existing stereo-to-eight-output pipeline and captures all ten
-iD14 channels in the hardware's native format. USB inputs use asynchronous
-resampling and rate adjustment to follow the DAC8x clock. Returning to Tidal
-restores its original capture and clock settings. The source is saved in the
-existing DSP preset and survives service restarts; boot remains muted. Each
-candidate is checked by CamillaDSP before activation. A failed activation restores
-the previous preset and stays muted. A disconnected source is shown as unavailable.
+Source switching keeps the current approved speaker preset, including saved Auto
+Tune profiles. A source mixer feeds the existing stereo speaker pipeline and
+captures all ten iD14 channels in the hardware's native format. USB inputs use
+asynchronous resampling and rate adjustment to follow the DAC8x clock. Returning
+to Tidal restores its original capture and clock settings. Saved tuning files stay
+unchanged: source changes use a working copy that retains the tuning's identity
+and speaker settings. The selected source survives service restarts; boot remains
+muted. Each candidate is checked by CamillaDSP before activation. A failed
+activation restores the previous source and stays muted. A disconnected source is
+shown as unavailable.
 
 The initial `exciter-audition.yml` preset routes left/right to outputs 1/2
 (EX30HESF2-4) and 3/4 (EX32VBDS-4). Outputs 5–8 receive digital silence. Both
 exciter types play a temporary 500 Hz–3.5 kHz band with LR4 filters. There is no
 fixed audition attenuation. The standard main-fader range is -60…-18 dB. An explicit **Unlock
 higher levels** button extends it to 0 dB, without changing the current volume.
-Relocking clamps a higher current setting to -18 dB. These are provisional
+Relocking clamps a higher current setting to -18 dB. Both listening-level sliders
+give more travel to the louder part of the range while displaying the actual dB
+level. Arrow keys adjust 1 dB; Page Up and Page Down adjust 5 dB. These are provisional
 audition settings, not measured crossover or power limits. Physical L/R and
 polarity remain to be confirmed. The app permits the audition preset and the
 independent output preset described below. Other configurations block playback
@@ -111,9 +183,9 @@ The same selector is available in fullscreen, and the choice is remembered on
 this browser. Switching themes keeps the live audio connection or simulation
 running. These themes use WebGL with analytic 3D intersections, beveled
 edges, soft fill/rim lighting, subtle parallax and slow independent movement.
-Sky, water and stars are actual muted 4K video textures at their native frame
-rates: 29.97, 60 and 30 fps. Source frames are remuxed without another lossy
-encode. Solar's surface texture uses an unobscured 1080p/30 section of the
+Sky, water and stars use muted 1080p H.264 playback copies at their original
+frame rates: 29.97, 60 and 30 fps. The original remuxed 4K VP9/AV1 masters are
+retained alongside these easier-to-decode derivatives. Solar's surface texture uses an unobscured 1080p/30 section of the
 broadcast; the Moon and corona update at the renderer's cadence.
 Only the videos used by the visible theme play; hidden pages pause them.
 Reduced-motion preferences freeze the video and geometric motion. Devices
@@ -124,8 +196,11 @@ without the Fullscreen API use a view that fills the browser window instead.
 
 The same-origin `/api/visualizer` event stream supplies live pre-DSP input RMS
 and peak levels at up to 15 Hz, using CamillaDSP's read-only
-`GetSignalLevelsSince` and `GetState` commands. Source energy expands the halo,
-peaks brighten it, and accumulated energy gently affects color-cycle speed.
+`GetSignalLevelsSince` and `GetState` commands. `GetSignalLevels` supplies the
+latest capture chunk when the short history window is empty while DSP is running.
+Source energy expands the halo,
+peaks brighten it. The shared color cycle keeps the preview and HDMI in phase;
+standalone/offline previews retain their gentle energy-dependent cycle speed.
 This is envelope-based visualization, not frequency spectrum analysis. It works
 with whatever audio reaches CamillaDSP, independently of listening volume or
 output EQ; the source can still animate while the output is muted.
@@ -155,8 +230,11 @@ and does not claim to supply frequency bands. Local music needs no Pi connection
 The inner disc stays fixed in size. Two-stage envelope smoothing gives the halo
 gentle inertia, with layered atmospheric light and a tighter corona. OKLab
 palette interpolation and subtle static dithering keep long color transitions
-smooth. Both canvas backing surfaces allow 16 megapixels and 8192 pixels per
-axis, supporting a full UHD/4K projection without the previous downscaling.
+smooth. Canvas 2D retains a 16-megapixel backing-surface budget. On the Pi's
+projection page, WebGL uses a 2,073,600-pixel budget (1920 × 1080 on a 4K display)
+and scales to the full viewport; the HDMI signal remains UHD/4K. Other WebGL
+viewers retain the 16-megapixel budget. Direct RGBA video texture uploads avoid
+the slower texture-subimage path measured on the Pi's V3D driver.
 
 **Color cycle** shows all twelve color relationships as clickable circular
 previews, including saturated magenta/periwinkle, magenta/ultraviolet and
@@ -289,7 +367,7 @@ slow halo. The Pi feed currently carries overall RMS/peak dynamics, so live Pi
 responses use those envelopes; separate bass/treble behavior requires local sample
 playback. The interface explains this distinction.
 
-Turell Lunar plays a locally stored 4K, 25 fps lunar-phase simulation from Solid
+Turell Lunar plays a locally stored 1080p H.264, 25 fps playback copy of a 4K lunar-phase simulation from Solid
 Screen. A fixed square crop fits the lunar disc to the circular aperture. The
 source video audio is muted; Octet music drives the surrounding light.
 
@@ -321,12 +399,34 @@ both created and favorited Tidal playlists, with **Load more playlists** for
 libraries larger than 50. Each playlist has **Play all**; its title opens the
 complete track list, including playlists longer than 100 tracks.
 
-Selecting a playlist track loads the whole playlist and starts at that track.
-Subsequent songs play in order automatically. **Play all** starts at the first
+**← Back** beside “Find your next listen” returns through library views, including
+playlists, albums and search results. It restores the previous results, search
+text and scroll position without changing playback. A playlist restored after a
+reload can return to the playlist library. Back is disabled at the first view.
+
+Selecting a playlist or album track starts there and uses the remaining tracks
+as **Autoplay**. Subsequent songs play in order automatically. **Play all** starts at the first
 available track. Unavailable tracks are omitted with a count shown in the
 playlist details. The queue uses fresh stream resolution for each track.
 
-Playlist playback replaces the current queue only after Tidal metadata has
+Each track's **⋯** menu offers **Play next** and **Add to queue**. Play next inserts
+immediately after the current song; Add to queue appends after other pending
+requests in **Queued by you**. Both play before Autoplay, which then resumes at
+the next unplayed playlist or album track. For example, playlist A → B → C with
+X and Y queued plays A → X → Y → B → C. Queueing Z with Play next changes that
+to A → Z → X → Y → B → C.
+
+**Up next** separates the current song, Queued by you, and Autoplay. **Clear**
+removes pending user requests; each request also has a remove button. Neither
+action interrupts the current song or removes playlist/album autoplay. Starting
+another playlist, album, or single track plays the selected song immediately,
+retains pending user requests, and replaces the previous autoplay context.
+MPD holds the complete playback order, so this works with the browser closed.
+Unique resolver URLs distinguish repeated copies of a song even after MPD
+reassigns its entry IDs on restart. Queue membership and context are saved in
+`queue-context.json` alongside MPD's existing saved playlist.
+
+Playlist and album playback replace the current context only after Tidal metadata has
 loaded and MPD has accepted the new entries. It turns shuffle, single-track,
 repeat and consume modes off for ordered playback. Existing per-channel mute,
 EQ, polarity and listening volume are preserved; master mute is released when
@@ -336,7 +436,32 @@ playback starts. Browsing playlists alone does not affect current music.
 loads all tracks. `POST /api/control/play-playlist` accepts `id`, optional zero-based
 `position`, and optional `track_id` to detect a changed playlist. Metadata is
 cached briefly for consistent selection. Playlists up to 10,000 tracks are
-supported. Tidal credentials remain on the Pi.
+supported. `POST /api/control/play-album` accepts the same selection fields with
+an album ID, and `/api/album` retrieves all track pages. `enqueue` accepts a track
+`id` and `placement` (`next` or `end`, default `end`). `clear-queue` removes all
+pending requests; `remove-queued` accepts the MPD `song_id` returned in status.
+Status includes `manual_queue`, `autoplay`, and `autoplay_source`, while `queue`
+continues to expose the whole MPD playlist. Tidal credentials remain on the Pi.
+
+### Tidal recommendations: available, not enabled yet
+
+Tidal supplies recommendations, so song-based autoplay does not require our own
+recommendation engine. Its current [official API specification](https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json)
+exposes `GET /v2/tracks/{id}/relationships/radio` at the `THIRD_PARTY` access tier
+(including `radio.items`), accepting client-credentials or user PKCE authorization.
+Tidal also [announced similar-track recommendation APIs](https://github.com/orgs/tidal-music/discussions/23).
+The `tidalapi` library already installed for Octet includes
+`Track.get_track_radio(limit=100)`, which calls the legacy `tracks/{id}/radio`
+endpoint, and `Track.get_radio_mix()`.
+
+This change leaves single-song radio autoplay disabled pending the feature
+decision. Enabling it would require fetching a batch from Tidal, excluding the
+seed/recently played/unavailable tracks, and refilling the autoplay tail without
+displacing explicit requests. This is playback orchestration, rather than a
+recommendation algorithm. Track radio is not a guarantee of the exact same
+personalized sequence as Tidal's own app, and some tracks have no radio result.
+API/library support was checked; a live request with Octet's login has not yet
+been tested.
 
 ## Measurements and output controls
 
@@ -475,12 +600,34 @@ final CamillaDSP path. One fixed microphone position is used in this mode.
 A successful run is named, saved and applied at −36 dB with master mute enabled.
 Starting music and unmuting remain deliberate listening actions.
 
+**Test attenuation (dB)** sets an additional 0–30 dB reduction of measurement
+output limits. Higher values make test tones quieter. Save the setting without
+playing tones, then start Auto mode; it applies to level checks, all measurement
+sweeps and active DSP verification. Stop tones before changing it. Auto mode
+cannot ramp above this reduced ceiling. Music volume and saved playback gains
+are unaffected.
+
+Auto mode continues after a driver cannot produce a usable microphone response
+within the test limit, or its individual EQ cannot be fitted. Skips are per
+output; the opposite channel is still measured. Skipped outputs and reasons are
+shown in Auto mode and saved with the resulting profile. Their playback routes
+stay empty and muted; only usable outputs receive DSP. A later measurement can
+exclude a driver that loses signal. Missing drivers are retried on the next new
+run. Shared microphone/stream faults and failed final verification still stop
+application. With different measurable left/right driver roles, stereo alignment
+is explicitly skipped while the available sides are verified independently.
+
 The independent 3.5 kHz tweeter safety high-pass cannot be lowered by Auto mode or
 the manual frequency editor. Stop tones cancels direct DAC playback; Restore
 before tuning recovers pre-run settings. While the tuner owns the audio devices,
 music, source switching and manual DSP mutations are blocked. Saved profile
 recall verifies the stored checksum and protective filters without playing tones.
 The current manual configuration is also saved in the dropdown before each run.
+Saved preset files must be readable by the `audio` group: the music service
+verifies their checksums before allowing playback or volume changes. The installer
+sets group inheritance on `baselines/` and `presets/`. Manual preset tools must
+retain that group when assigning ownership; an unreadable file appears as
+**Other DSP preset** even when its checksum is correct.
 See [Auto Tune operating guide](../../measure/docs/AUTO_TUNE.md) for deployment
 paths, guided multi-position tuning and recovery.
 

@@ -19,7 +19,7 @@ const {chromium}=require('playwright');
    if(p.startsWith('/api/control/')){writes.push(p);return route.fulfill({json:{}});}
    if(p.startsWith('/api/auto/profiles/')){const id=p.split('/')[4];reads.push(id);return route.fulfill({json:id===manual?{profile:{id,name:'Before tuning'},available:false,message:'This is a manual settings backup. No acoustic measurements were recorded for it.',systems:[],drivers:[]}:response(id)});}
    const file=p==='/dsp'?'dsp.html':p.slice(1);
-   if(!['dsp.html','dsp.js','auto.js','measurements.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
+   if(!['dsp.html','dsp.js','volume.js','auto.js','measurements.js','style.css'].includes(file))return route.fulfill({status:404,body:''});
    return route.fulfill({body:fs.readFileSync(path.join(__dirname,file)),contentType:file.endsWith('html')?'text/html':file.endsWith('js')?'text/javascript':'text/css'});
   });
   await page.goto('http://octet.test/dsp');await page.waitForFunction(()=>document.getElementById('auto-profiles').options.length===3);
@@ -33,6 +33,15 @@ const {chromium}=require('playwright');
   const graph=page.locator('.measurement-chart>svg').last();await graph.focus();await page.keyboard.press('ArrowRight');
   assert((await page.locator('.measurement-reading').last().textContent()).includes('80 Hz'));
   await page.screenshot({path:'build/auto-release/measurement-graphs.png',fullPage:true});
+  await page.route('http://octet.test/api/auto/profiles/'+b+'/measurements',async route=>{
+   const recovered=response(b);recovered.systems=[];recovered.drivers=[{...recovered.drivers[0],phase_available:false,phase:[],predicted_phase:[]}];
+   recovered.message='Recovered magnitude only; timing unavailable.';
+   return route.fulfill({json:recovered});
+  });
+  await page.getByRole('button',{name:'View measurements',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.measurement-chart').length===1);
+  assert.equal(await page.getByText('Driver phase',{exact:true}).count(),0);
+  assert((await page.locator('#measurement-status').textContent()).includes('timing unavailable'));
   await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await page.selectOption('#auto-profiles',manual);
   await page.waitForFunction(()=>document.getElementById('measurement-status').textContent.includes('manual settings backup'));

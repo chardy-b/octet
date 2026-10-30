@@ -96,27 +96,54 @@ def test_automatic_subset_reuses_levels_and_verifies_without_b(tmp_path, monkeyp
             if not kwargs.get('loopback'):
                 assert not np.any(signal[:, 2:4])
                 buffers.append(np.max(abs(signal), axis=0))
-            return super().capture(signal, cancel, meter, **kwargs)
+            else:
+                rendered=[]
+                for i,side in enumerate(('L','R')):
+                    out,scale=dsp.render_chain(self.cfg,side,self.applied['chosen'][side],self.applied['eq'],
+                        signal[:,i],self.applied['room'][side],self.applied.get('stereo'))
+                    rendered.append(out*self.applied['preamp'][side]/scale)
+                signal=sum(rendered)
+            # A complete physical right speaker is 2 ms later, 4 dB louder,
+            # and wired with the opposite overall acoustic polarity.
+            signal=signal.copy()
+            for index in (1,3,5,7):
+                signal[:,index]=dsp.apply_stereo(signal[:,index],dict(delay_ms=2,gain_db=4,polarity=-1),self.cfg['fs'])
+            return super().capture(signal,cancel,meter)
     controller = Controller(tmp_path, demo=True)
     controller.runner.set_profile(yaml.safe_dump(cfg))
     controller.runner.backend_factory = DisconnectedB
     controller.start(dict(microphone_ready=True, selected_pairs=['a', 'sub', 'tweeter'], name='No B'))
-    controller.runner.thread.join(90)
+    controller.runner.thread.join(180)
     state = controller.runner.status()
     assert not controller.runner.running
     assert state['status'] == 'applied', state['message']
+    assert state['cfg']['measurement_repeats']==3
+    assert len(state['driver_repeat_reports'])==3
+    assert state['baseline_measured']
+    assert state['stereo_before']['relative_polarity']==-1
+    assert state['stereo']['L']['delay_ms']==pytest.approx(2,abs=.15)
+    assert state['stereo']['R']['gain_db']==pytest.approx(-4,abs=.4)
+    assert state['stereo']['R']['polarity']==-1
+    assert state['active_stereo_verification']['passed']
+    assert all(row['repeats']==3 for row in state['measurement_manifest'])
+    for row in state['measurement_manifest']:
+        assert len(list(controller.runner.directory.glob(f"measurement-{row['batch']}-*.npz")))==3
     assert state['level_reference'] == old.name
     assert set(state['levels']) == set(report)
     for d in config.active_drivers(state['cfg']):
         reading = state['level_report'][d['id']]
         assert reading['checks'] == 1 and reading['reused_recording']
-        expected = -39 if d['role']=='a' else -36
+        expected = -30
         assert reading['output_db'] == expected
         assert max(b[d['output']-1] for b in buffers) <= 10**(expected/20)*1.00001
     saved = controller.status()['profiles'][0]
     assert saved['selected_pairs'] == ['a', 'sub', 'tweeter']
     assert controller.status()['selected_pairs'] == ['a', 'sub', 'tweeter']
     assert len(controller.measurements(saved['id'])['drivers']) == 6
+    curves=controller.measurements(saved['id'])
+    assert curves['measurement_repeats']==3
+    assert curves['systems'][0]['before_label']=='Before tuning (driver protection active)'
+    assert curves['active_stereo_verification']['passed']
     controller.activate(saved['id'])
     assert controller.status()['active']['selected_pairs'] == ['a', 'sub', 'tweeter']
 

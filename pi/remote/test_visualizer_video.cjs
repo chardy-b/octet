@@ -1,9 +1,9 @@
 const assert=require('node:assert/strict');
 const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-const videos=new Map(),imageSources=[];let uploads=0,draws=0,solarLight,solarView,videoZoom,compilations=0;
+const videos=new Map(),imageSources=[],shaderSources=[];let uploads=0,draws=0,solarLight,solarView,videoZoom,circleSize,compilations=0;
 for(const name of ['sky','water','stars','sun','lunar']){
   const listeners=new Map();
-  videos.set(name+'-video',{id:name+'-video',dataset:{src:'/visualizer-media/'+name+'.mp4'},paused:true,readyState:0,currentTime:0,duration:name==='sun'?18:90,seeking:false,
+  videos.set(name+'-video',{id:name+'-video',dataset:{src:'/visualizer-media/'+name+'.mp4'},paused:true,readyState:0,currentTime:0,duration:name==='sun'?18:90,seeking:false,videoWidth:3840,videoHeight:2160,
     addEventListener:(event,fn)=>listeners.set(event,fn),getAttribute(name){return this[name]||null;},
     load(){this.readyState=4;this.playbackRate=this.defaultPlaybackRate;listeners.get('loadeddata')?.();},
     play(){this.paused=false;return Promise.resolve();},pause(){this.paused=true;},
@@ -20,9 +20,10 @@ const gl={
   drawArrays(){draws++;},
 };
 for(const method of ['shaderSource','compileShader','attachShader','linkProgram','deleteShader','useProgram','bindBuffer','bufferData','enableVertexAttribArray','vertexAttribPointer','activeTexture','bindTexture','pixelStorei','texParameteri','uniform1i','uniform1f','uniform2f','uniform3f','uniform4f','viewport'])gl[method]=()=>{};
+gl.shaderSource=(_shader,source)=>shaderSources.push(source);
 gl.uniform4f=(name,...values)=>{if(name==='eclipseLight')solarLight=values;};
 gl.uniform2f=(name,...values)=>{if(name==='eclipseView')solarView=values;};
-gl.uniform1f=(name,value)=>{if(name==='videoZoom')videoZoom=value;};
+gl.uniform1f=(name,value)=>{if(name==='videoZoom')videoZoom=value;if(name==='circleSize')circleSize=value;};
 gl.compileShader=()=>compilations++;
 const listeners=new Map();
 const canvas={getContext:()=>gl,addEventListener:(name,fn)=>listeners.set(name,fn)};
@@ -49,12 +50,16 @@ assert.deepEqual(imageSources,['/visualizer-media/sky.jpg']);
 assert.equal(videos.get('sky-video').paused,false);assert.equal(videos.get('water-video').paused,true);
 assert.equal(videos.get('sky-video').playbackRate,1);
 renderer.render('turell 2',1,.5,.6);const initial=uploads;
+assert.equal(circleSize,1);
+const sizedPalette={field:[.5,.6,.7],halo:[1,.8,.5],edge:[.7,.8,.3],edgeLight:.35,circleSize:.65};
+renderer.render('turell 2',1,.5,.6,[0,0,0,.3],sizedPalette);assert.equal(circleSize,.65);
 renderer.render('turell 2',2,.5,.6);assert.equal(uploads,initial);
 videos.get('sky-video').advance();renderer.render('turell 2',3,.5,.6);assert.equal(uploads,initial+1);
 renderer.setActive('turell 3');assert.equal(videos.get('sky-video').paused,true);assert.equal(videos.get('stars-video').paused,false);
 renderer.setActive('turell 4');assert.ok([...videos.values()].every(video=>video.paused));
 renderer.setActive('turell 5');assert.equal(videos.get('sun-video').paused,false);assert.equal(videos.get('stars-video').paused,true);
 renderer.render('turell 5',3.5,.5,.6);
+renderer.render('turell 5',3.5,.5,.6,[0,0,0,.3],sizedPalette);assert.equal(circleSize,.65);
 assert.equal(compilations,4); // Solar compiles separately, once.
 assert.equal(videoZoom,1);
 renderer.setMediaZoom(2);renderer.render('turell 5',3.5,.5,.6);
@@ -111,4 +116,30 @@ renderer.setActive('turell 2');listeners.get('webglcontextlost')({preventDefault
 assert.ok([...videos.values()].every(video=>video.paused));
 const count=draws;renderer.render('turell 2',4,.5,.5);assert.equal(draws,count);
 listeners.get('webglcontextrestored')();assert.equal(videos.get('sky-video').paused,false);
+// Each scene must reach the driver with a constant theme, so unused expensive
+// geometry can be removed before native compilation on the Pi's V3D GPU.
+for(const [name,id] of Object.entries({well:3,overlap:5,'turell 2':6,'turell 3':7,'turell 4':8,water:9,'turell lunar':11})){
+  renderer.setActive(name);renderer.render(name,5,.5,.5);
+  assert.ok(shaderSources.some(source=>source.includes(`const int theme = ${id};`)),name);
+}
+assert.ok(shaderSources.every(source=>!source.includes('uniform int theme;')));
+const compiledThemes=compilations;
+for(const name of ['well','overlap','turell 2','turell 3','turell 4','water','turell lunar']){
+  renderer.setActive(name);renderer.render(name,6,.5,.5);
+}
+assert.equal(compilations,compiledThemes,'Switching back reuses each specialized program');
+renderer.setActive('turell 2');renderer.toggleMedia();
+const heldSky=videos.get('sky-video');assert.equal(heldSky.paused,true);
+renderer.seekMedia(24);
+assert.equal(heldSky.paused,false,'Wake a paused decoder to produce the requested frame');
+assert.equal(renderer.mediaState().paused,true,'The requested playback state stays paused');
+heldSky.finishSeek();assert.equal(heldSky.paused,true);
+assert.equal(renderer.mediaState().time,24);
+const heldUploads=uploads;renderer.render('turell 2',7,.5,.5);
+assert.equal(uploads,heldUploads+1,'Upload the decoded held frame');
+const performanceCanvas={getContext:()=>gl,addEventListener(){}};
+context.performanceCanvas=performanceCanvas;
+const performanceRenderer=vm.runInContext('OctetThemes.create(performanceCanvas,()=>{},"turell 2",{maxPixels:2073600})',context);
+performanceRenderer.resize(3840,2160);
+assert.equal(performanceCanvas.width,1920);assert.equal(performanceCanvas.height,1080);
 console.log('Video checks passed: native cadence/4K, decoded-frame uploads, hybrid clock/seek/speed/color, independent corona animation, bounded seeks, persistent pause/resume, theme/visibility/reduced-motion pause, and context recovery.');

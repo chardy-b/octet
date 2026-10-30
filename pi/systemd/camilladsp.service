@@ -6,7 +6,7 @@ Wants=sound.target
 [Service]
 User=octet
 Group=audio
-ExecStart=/opt/camilladsp/camilladsp -p 1234 -a 0.0.0.0 -s /opt/camilladsp/statefile.yml -o /opt/camilladsp/camilladsp.log -w
+ExecStart=/opt/camilladsp/camilladsp -p 1234 -a 0.0.0.0 -s /opt/camilladsp/statefile.yml -o /opt/camilladsp/camilladsp.log -w --mute --gain=-36
 Restart=always
 RestartSec=3
 LimitRTPRIO=99

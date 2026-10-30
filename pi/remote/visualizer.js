@@ -54,10 +54,15 @@ const localSimulation = OctetSimulation.create(sampleAudio, sampleState, message
   statusLabel.textContent='Sample music unavailable';
   targetEnergy=targetPeak=0;
 });
-let activeTheme = 'turell 1', sceneRenderer = null, rendererAttempted = false, artworkTime = 0;
+let activeTheme = 'off', sceneRenderer = null, rendererAttempted = false, artworkTime = 0;
+// Installed by visualizer-sync.js while linked to the Pi. Audio envelopes use
+// bounded frame steps, but shared color/motion clocks follow elapsed real time.
+let sharedTimeline = null;
+let projectionFrameSink = null;
+let hdmiPreviewActive = false;
 const sceneCanvas = document.getElementById('scene-canvas');
-const themeDetails = OctetThemes.descriptions;
-try { const saved = localStorage.getItem('octet.visualizer.theme'); if (Object.hasOwn(themeDetails, saved)) activeTheme = saved; } catch { /* Optional preference storage. */ }
+const themeDetails = {off:['Visuals off','Choose a theme to turn on HDMI visuals.'],...OctetThemes.descriptions};
+// The Pi owns the selection. A stale local preference must never turn it on.
 
 // Blend in OKLab to keep slowly changing light perceptually even.
 function toLab(rgb) {
@@ -108,7 +113,30 @@ const paletteDefinitions=[
 });
 const colorRoles=['field','inner','halo','edge','core'];
 const currentColors=Object.fromEntries(colorRoles.map(key=>[key,paletteDefinitions[0][key+'Lab'].slice()]));
-const shaderPalette={field:[],halo:[],edge:[],edgeLight};
+let circleSize=1;
+try{
+  const saved=localStorage.getItem('octet.visualizer.circle-size');
+  if(saved!==null&&Number.isFinite(Number(saved)))circleSize=clamp(Number(saved),.25,2);
+}catch{/* Optional framing preference. */}
+const shaderPalette={field:[],halo:[],edge:[],edgeLight,circleSize};
+function syncCircleControls(){
+  const percent=String(Math.round(circleSize*100)),circular=!['well','overlap'].includes(activeTheme);
+  for(const prefix of ['','immersive-']){
+    document.getElementById(prefix+'circle-sizing').hidden=!circular;
+    document.getElementById(prefix+'circle-size').value=percent;
+    document.getElementById(prefix+'circle-size-value').textContent=percent+'%';
+  }
+}
+function setCircleSize(value){
+  if(!Number.isFinite(value))return;
+  circleSize=clamp(value,.25,2);shaderPalette.circleSize=circleSize;
+  try{localStorage.setItem('octet.visualizer.circle-size',String(circleSize));}catch{/* Optional preference. */}
+  syncCircleControls();
+}
+for(const prefix of ['','immersive-'])document.getElementById(prefix+'circle-size').oninput=event=>{
+  setCircleSize(Number(event.target.value)/100);showControls();
+};
+syncCircleControls();
 try{
   const saved=localStorage.getItem('octet.visualizer.palette');
   if(['cycle','scrub'].includes(saved)||paletteDefinitions.some(spec=>spec.id===saved))paletteMode=saved;
@@ -240,7 +268,8 @@ if (typeof OffscreenCanvas !== 'undefined') {
 // Themes receive source envelopes; future themes can use the same audio feed.
 const themes = {
   'turell 1': (dt) => {
-    const radius = Math.min(width, height) / 2;
+    // Fill the longer screen dimension, cropping the circle at the other edges.
+    const radius = Math.max(width, height) / 2 * circleSize;
     const x = width / 2, y = height / 2;
     const motion = reducedMotion.matches ? 0.18 : 1;
     const response=responseProfile();
@@ -336,7 +365,8 @@ const themes = {
 function drawSimpleTheme() {
   context.fillStyle='#000';context.fillRect(0,0,width,height);
   context.save();context.translate(width/2,height/2);
-  const unit=Math.min(width,height)*.36;context.scale(unit,unit);
+  const circular=!['well','overlap'].includes(activeTheme);
+  const unit=(circular?Math.max(width,height)*circleSize:Math.min(width,height))*.36;context.scale(unit,unit);
   if(activeTheme==='well'){
     for(let i=0;i<5;i++){const size=1.12-i*.2;context.fillStyle=['#bfc4a6','#a9b095','#929b82','#7b856f','#080e19'][i];context.fillRect(-size,-size,size*2,size*2);}
   }else if(activeTheme==='turell 4'){
@@ -359,9 +389,15 @@ function drawSimpleTheme() {
 function setTheme(name, remember=true) {
   if(!Object.hasOwn(themeDetails,name))return;
   activeTheme=name;
-  if(name!=='turell 1'&&!rendererAttempted){
+  const off=name==='off';
+  document.body.classList.toggle('visuals-off',off);
+  document.getElementById('visualizer-off-message').hidden=!off;
+  document.getElementById('enter-fullscreen').disabled=off;
+  syncCircleControls();
+  if(!off&&name!=='turell 1'&&!rendererAttempted){
     rendererAttempted=true;
-    try {sceneRenderer=OctetThemes.create(sceneCanvas,message=>{notice.textContent=message;},name);}catch{sceneRenderer=null;}
+    try {sceneRenderer=OctetThemes.create(sceneCanvas,message=>{notice.textContent=message;},name,
+      {maxPixels:document.body.classList.contains('projection')?2073600:16777216});}catch{sceneRenderer=null;}
     sceneRenderer?.resize(width,height);
   }
   const [title,description]=themeDetails[name];
@@ -372,8 +408,8 @@ function setTheme(name, remember=true) {
   stage.setAttribute('aria-label',title+' audiovisual theme');
   sceneCanvas.setAttribute('aria-label',description);
   canvas.setAttribute('aria-label',name==='turell 1'?'A fixed colored circle surrounded by a sound-reactive halo inside a large circular light field.':description);
-  canvas.hidden=name!=='turell 1'&&Boolean(sceneRenderer);
-  sceneCanvas.hidden=name==='turell 1'||!sceneRenderer;
+  canvas.hidden=off||(name!=='turell 1'&&Boolean(sceneRenderer));
+  sceneCanvas.hidden=off||name==='turell 1'||!sceneRenderer;
   const pairedColors=['turell 1','turell 2','turell 3','turell 5','turell lunar'].includes(name);
   for(const id of ['palette-control','immersive-palette-control','palette-caption','palette-panel','immersive-color-tools'])document.getElementById(id).hidden=!pairedColors;
   document.getElementById('visualizer-workbench').classList.toggle('colors-hidden',!pairedColors);
@@ -382,15 +418,28 @@ function setTheme(name, remember=true) {
   document.getElementById('solar-credit').hidden=name!=='turell 5';
   document.getElementById('lunar-credit').hidden=name!=='turell lunar';
   for(const id of ['response-panel','immersive-response-controls'])document.getElementById(id).hidden=name!=='turell 1';
-  sceneRenderer?.setActive(name,document.hidden,reducedMotion.matches);
+  sceneRenderer?.setActive(name,off||document.hidden,reducedMotion.matches);
   sceneRenderer?.setSolarOptions(solarOptions);
   sceneRenderer?.setMediaZoom(videoZooms[name]||1);
   syncVideoControls();
-  notice.textContent=name!=='turell 1'&&!sceneRenderer?'This device is showing a simplified version of the artwork.':'';
+  notice.textContent=!off&&name!=='turell 1'&&!sceneRenderer?'This device is showing a simplified version of the artwork.':'';
   if(remember){try{localStorage.setItem('octet.visualizer.theme',name);}catch{/* Rendering works without storage. */}}
-  if(name==='turell 1')themes[name](0);
+  if(off){
+    localSimulation.pause();setSimulationMode(false);
+    feed?.close();feed=null;
+    document.getElementById('hdmi-preview').hidden=true;hdmiPreviewActive=false;
+    statusLabel.textContent='Visuals off';
+    document.getElementById('render-fps').textContent='Off';
+  }
+  else if(name==='turell 1')themes[name](0);
   else if(sceneRenderer)sceneRenderer.render(name,artworkTime,haloEnergy,haloPeak,spectrum,shaderPalette);
   else drawSimpleTheme();
+  resumeVisuals();
+}
+
+function resumeVisuals(){
+  cancelAnimationFrame(animation);previousTime=0;
+  if(activeTheme!=='off'&&!document.hidden){connect();animation=requestAnimationFrame(draw);}
 }
 document.getElementById('theme-select').onchange=event=>setTheme(event.target.value);
 document.getElementById('immersive-theme-select').onchange=event=>{setTheme(event.target.value);showControls();};
@@ -478,6 +527,11 @@ new ResizeObserver(resize).observe(stage);
 
 let perfStart=0,perfLast=0,perfIntervals=[],perfFrames=0,perfVideoFrames={};
 function measurePerformance(now){
+  if(hdmiPreviewActive){
+    document.getElementById('render-fps').textContent='Live HDMI preview';
+    document.getElementById('render-performance').textContent='The artwork image is received from the Pi. Render and video cadence are measured on the HDMI renderer.';
+    perfStart=now;perfLast=now;perfIntervals=[];perfFrames=0;return;
+  }
   if(!perfStart){perfStart=now;perfLast=now;return;}
   const interval=now-perfLast;perfLast=now;
   if(interval>500){perfStart=now;perfIntervals=[];perfFrames=0;perfVideoFrames={};return;}
@@ -497,10 +551,12 @@ function measurePerformance(now){
 }
 
 function draw(now) {
+  if(activeTheme==='off')return;
   measurePerformance(now);
-  const dt = Math.min((now - (previousTime || now)) / 1000, 0.1);
+  const elapsed = Math.max(0, (now - (previousTime || now)) / 1000);
+  const dt = Math.min(elapsed, 0.1);
   previousTime = now;
-  sceneRenderer?.advance(dt);
+  sceneRenderer?.advance(elapsed);
   if (simulating) {
     const sample=localSimulation.sample();
     targetEnergy=sample.energy;targetPeak=sample.peak;
@@ -529,11 +585,21 @@ function draw(now) {
   peak += (targetPeak - peak) * (1 - Math.exp(-dt / (targetPeak > peak ? 0.10 : 0.55)));
   haloEnergy += (energy - haloEnergy) * (1 - Math.exp(-dt / 0.24));
   haloPeak += (peak - haloPeak) * (1 - Math.exp(-dt / 0.16));
-  updatePalette(dt);
-  artworkTime += dt * (reducedMotion.matches ? 0 : .7 + haloEnergy * .3);
-  if(activeTheme==='turell 1')themes[activeTheme](dt);
-  else if(sceneRenderer)sceneRenderer.render(activeTheme,artworkTime,haloEnergy*(reducedMotion.matches?.18:1),haloPeak*(reducedMotion.matches?.18:1),simulating?spectrum:[haloEnergy,haloEnergy,haloPeak,.3],shaderPalette);
-  else drawSimpleTheme();
+  if(sharedTimeline){
+    const shared=sharedTimeline();
+    if(paletteMode==='cycle'&&!reducedMotion.matches)paletteClock=shared.paletteClock;
+    if(!reducedMotion.matches)artworkTime=shared.artworkTime;
+    updatePalette(0);
+  }else{
+    updatePalette(elapsed);
+    artworkTime += elapsed * (reducedMotion.matches ? 0 : .7 + haloEnergy * .3);
+  }
+  if(!hdmiPreviewActive||simulating){
+    if(activeTheme==='turell 1')themes[activeTheme](dt);
+    else if(sceneRenderer)sceneRenderer.render(activeTheme,artworkTime,haloEnergy*(reducedMotion.matches?.18:1),haloPeak*(reducedMotion.matches?.18:1),simulating?spectrum:[haloEnergy,haloEnergy,haloPeak,.3],shaderPalette);
+    else drawSimpleTheme();
+  }
+  projectionFrameSink?.(activeTheme==='turell 1'||!sceneRenderer?canvas:sceneCanvas);
   if(now-lastVideoUi>100){syncVideoControls();lastVideoUi=now;}
   animation = requestAnimationFrame(draw);
 }
@@ -546,7 +612,7 @@ function envelope(values) {
 }
 
 function connect() {
-  if (feed || document.hidden || simulating) return;
+  if (activeTheme==='off' || feed || document.hidden || simulating) return;
   feed = new EventSource('/api/visualizer');
   feed.onmessage = event => {
     if (simulating) return;
@@ -699,13 +765,11 @@ document.addEventListener('visibilitychange', () => {
     previousTime = 0;
     for(const key of Object.keys(responseEnvelope))responseEnvelope[key]=0;
   } else {
-    connect();
-    animation = requestAnimationFrame(draw);
+    resumeVisuals();
   }
 });
 window.addEventListener('pagehide', () => {rememberPalette();feed?.close();localSimulation.pause();sceneRenderer?.setActive(activeTheme,true,reducedMotion.matches);cancelAnimationFrame(animation);});
 window.addEventListener('pageshow', event => {
-  if (event.persisted) {feed = null;connect();sceneRenderer?.setActive(activeTheme,document.hidden,reducedMotion.matches);cancelAnimationFrame(animation); animation = requestAnimationFrame(draw);}
+  if (event.persisted) {feed = null;sceneRenderer?.setActive(activeTheme,document.hidden,reducedMotion.matches);resumeVisuals();}
 });
-resize();updatePalette(0);setTheme(activeTheme,false);connect();
-animation = requestAnimationFrame(draw);
+resize();updatePalette(0);setTheme(activeTheme,false);
