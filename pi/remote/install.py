@@ -20,7 +20,7 @@ def main():
         raise SystemExit('Run this installer with sudo on Octet.')
     source = Path(__file__).resolve().parent
     preset = 'channel-dsp.yml'
-    files = ['server.py', 'network_access.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
+    files = ['server.py', 'network_access.py', 'now_playing_bridge.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
                  'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']
     media = ['sky.jpg', 'water.jpg', 'stars.jpg', 'solar.jpg', 'sun.jpg', 'lunar.jpg', 'sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'sky-playback.mp4', 'water-playback.mp4', 'stars-playback.mp4', 'lunar-playback.mp4', 'edm.mp3', 'classical.mp3', 'README.md']
     # Fail before stopping playback if the staging tree is incomplete.

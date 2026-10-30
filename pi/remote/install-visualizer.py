@@ -17,7 +17,7 @@ def main():
     home = Path(user.pw_dir)
     backup = Path('/var/backups/octet-visualizer') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(parents=True, mode=0o700)
-    files = ['server.py', 'network_access.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css',
+    files = ['server.py', 'network_access.py', 'now_playing_bridge.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css',
              'visualizer.html', 'visualizer.js', 'visualizer-sync.js', 'visualizer-themes.js', 'visualizer-solar.js',
              'visualizer-audio.js', 'visualizer.css', 'README.md', 'launch-visualizer.sh', 'visualizer_kiosk.py']
     for name in [*files, 'octet-visualizer.service', 'octet-visualizer.desktop']:
