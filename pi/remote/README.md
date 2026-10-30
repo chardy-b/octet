@@ -647,3 +647,217 @@ predicted response with DSP, measured/predicted phase, delay, polarity and relat
 attenuation. Hover or use arrow keys to read graph values. Levels are relative dB,
 not calibrated SPL. Manual settings backups show an explicit no-measurements
 message; they do not fabricate an acoustic result.
+
+## Classic AirPlay (WIL-248)
+
+Select **Octet** in an iPhone/Mac's AirPlay audio picker on the same LAN. A cast
+pauses MPD without clearing its queue or position, selects the protected speaker
+DSP, sets master to **−18 dB**, and unmutes only after both loopback endpoints
+are RUNNING at 44100 Hz / S32_LE / stereo, capture application and hardware
+pointers advance, and DSP readiness checks pass. Phone volume is Shairport software attenuation; 100% phone
+volume does not raise the DSP master. Deliberate remote volume changes remain
+available. Output pair mutes, crossover, protection filters and EQ are preserved.
+Ending playback mutes; Tidal never resumes itself. With the classic channel profile,
+AirPlay stays selected: choose Tidal explicitly and press Play to resume the queue.
+With an approved Auto Tune baseline, the original baseline path and exact config
+are restored on stop or failure, still muted.
+
+The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
+Manual source selection stays muted. Auto Tune excludes automatic playback;
+a missing receiver, loopback, unsupported preset or failed reload stays muted.
+Manual source selection still requires the **Output DSP controls** preset. Automatic
+AirPlay also supports a SHA-verified `TUNING.active(path)` baseline directly under
+`/var/lib/octet-autotune/baselines`, provided its loaded JSON exactly equals the
+baseline YAML and it uses stereo Tidal loopback at a 48 kHz DSP rate. Unsupported
+configs fail closed; there is no fallback to the 37-filter channel preset.
+
+Baseline AirPlay uses `/var/lib/octet-dsp/airplay-baseline.yml` (0640), copied from
+the exact loaded config with only capture/clock routing changes. The original
+baseline is never written: all 129 filters in the verified baseline, pipeline,
+mixers, gains, output protections and playback device remain unchanged. The
+candidate must pass CamillaDSP `--check`. A bounded 0600 `airplay-recovery.json`
+journal records the original path and SHA-256, with fdatasync and directory fsync
+completed before `SetConfigFilePath(candidate)` followed by `Reload`. Readiness
+requires exact candidate config/path, unchanged approved baseline digest, running
+DSP and advancing capture PCM before setting −18 dB and unmuting.
+
+Stop/failure/restart mutes and restores using `SetConfigFilePath(original)` then
+`Reload`; cleanup follows verification of original path, exact config, running
+DSP and baseline digest. Failed recovery retains the journal and mute/retry latch.
+Manual controls end baseline AirPlay and complete recovery under the shared lock
+before proceeding; this deliberately narrow version does not edit baseline files
+or expose ephemeral profiles as general editable presets. Auto Tune handoff uses
+the same recovery gate. If Auto Tune already owns audio or has selected another
+path, mute and retain recovery evidence without overwriting its configuration.
+Recovery requires ownership to be released and a recognized path plus the original
+approval/digest; unknown, changed, malformed or oversized state blocks playback.
+An Auto Tune stop request remains available while recovery is blocked. Never delete
+the journal to bypass a failed restore. Remote initialization recovers before
+allowing AirPlay; a persisted route never implies a live cast.
+Boot and remote restart mute; receiver loss is monitored, and remote service
+exit has a mute hook. These are software safeguards: if DSP control itself is
+unreachable, a mute command cannot be guaranteed until connectivity returns.
+
+### Install or upgrade on the Pi
+
+These commands are deployment instructions, not commands to run on a build host.
+First provision Debian's classic-only `shairport-sync`, `avahi-daemon` and
+`alsa-utils` packages through the normal OS maintenance process. The AirPlay
+installer never installs packages. AirPlay 2 builds are deliberately rejected
+pending separate capability verification; no NQPTP is needed.
+
+Upgrade the remote from this checkout with `sudo python3 pi/remote/install.py`,
+then run `sudo python3 pi/remote/install_airplay.py`. The remote installer preserves
+an existing channel DSP file, including output mutes. The AirPlay installer checks
+ALSA/Avahi binary capabilities using `shairport-sync -V`, resolves the Loopback
+card index and `snd_aloop` driver, and verifies both directions on subdevice 1.
+Open endpoints must have matching negotiated parameters; closed endpoints are
+opened nonblocking in bounded helpers to negotiate the exact format without
+playing or recording samples. It validates a candidate against the Pi's CamillaDSP
+binary, atomically installs the reviewed receiver config and service overrides,
+and restarts the remote muted. It enables disabled receiver/Avahi units, preserves
+static/indirect/alias/linked enable states, starts the services, and checks each
+service individually plus socket readiness. A failed activation
+restores its backed-up files and service state. No MPD or DSP service configuration
+is changed by the AirPlay installer.
+
+MPD owns `hw:Loopback,0,0` → `hw:Loopback,1,0`. Shairport owns
+`hw:Loopback,0,1` → `hw:Loopback,1,1`, **44100 Hz / S32_LE / stereo**. Existing
+`snd-aloop pcm_substreams=2` is required; there is no `plughw`, DAC or MPD fallback.
+Camilla's asynchronous input resampler converts to the 48000 Hz speaker pipeline.
+Confirm the installed Shairport version honors the supplied options and reports
+this PCM format during a real cast. Package/version checks and negotiation probes
+are not substitutes for that acceptance test. Configuration follows the
+[upstream Shairport sample](https://github.com/mikebrady/shairport-sync/blob/master/scripts/shairport-sync.conf).
+
+`/run/octet-airplay/control.sock` is accessible only through the dedicated
+`octet-airplay` group and verifies Linux peer credentials against the
+`shairport-sync` UID. It accepts only `start`/`stop`; there is no HTTP hook,
+password, client metadata or sudo grant. The service user can trigger the bounded
+startup level but cannot submit arbitrary commands. The before-play hook prepares
+the route muted and returns, allowing PCM to begin; the monitor then verifies
+capture and applies the startup level. Waiting for live PCM inside the blocking
+hook would deadlock playback. Hook preparation has a 20-second response deadline;
+a timeout cancels automatic unmute even if a blocked preparation operation later
+returns. Only one preparation worker can run at a time. Unmute also requires a
+successfully acknowledged hook response.
+
+Shairport's hooks contain no session generation. Stop events are debounced for
+one second and checked against running subdevice-1 playback and progressing capture. A stop/start pair resets
+the startup level; a stale stop while PCM is running is ignored. Manual override
+suppresses duplicate starts until PCM goes idle. This deliberately favors staying
+muted if a very rapid replacement cast cannot be distinguished from the overridden
+cast: stop casting, wait a second, and cast again. Missing hooks/crashes are caught
+by service and PCM monitoring; initial readiness has a ten-second deadline.
+Manual controls, hook changes and Auto Tune requests use the same control lock.
+
+### Network, rollback and acceptance
+
+Discovery uses Avahi/mDNS on the LAN, not Tailscale discovery. Permit mDNS UDP 5353,
+classic RTSP TCP 5000 and receiver UDP 6001–6010 on trusted LAN interfaces only;
+do not forward these ports to the internet. AirPlay video and AirPlay 2 are out of
+scope. The existing remote remains on its configured Tailscale address.
+
+`sudo python3 pi/remote/install_airplay.py --rollback` stops the receiver and
+restores managed config/overrides and enabled/active service states saved at the
+**first** installation in `/var/backups/octet-airplay`. Repeated installs keep that
+original rollback point. Backups and restoration preserve file ownership and mode.
+Rollback verifies restored files and service states, continues independent recovery
+steps after errors, and retains backups for an idempotent retry. If recovery is
+incomplete it reports all failures and does not restart the receiver. It leaves
+the inert system group and OS packages in place.
+Keep the matching checkout to run rollback. Remote-code downgrade uses the normal
+remote deployment backup separately; roll AirPlay back before removing its helper.
+Review prior receiver configuration before restoring any older deployment that
+may have routed audio directly to hardware.
+
+Physical acceptance is still required: verify the actual ALSA pairing and binary
+options; discover Octet from an iPhone/Mac; cast and inspect both DSP input meters;
+confirm audible left/right output through protected filters; check MPD queue and
+position retention, −18 dB startup at maximum phone volume, output pair mute
+retention, source round trips, tuning exclusion, stop/start and service failure.
+Do not claim end-to-end playback from mocked tests alone.
+
+## Bluetooth A2DP manual receiver (WIL-249)
+
+**Not yet hardware-validated. Disabled by default.** No phone has played through
+this path on the Pi. The Pi's loopback sub2 has been provisioned and tested
+(operator-reported; not re-observed from the software sessions). See the
+[manual receiver notes](../../docs/superpowers/specs/2026-10-27-bluetooth-manual-receiver.md)
+for exactly what is and is not verified.
+
+`python3 pi/remote/bluetooth_preflight.py` performs a read-only prerequisite check
+and prints JSON (exit 0 for prerequisites present, 1 for blockers). It requires
+working BlueALSA daemon/player binaries and idle, exact snd_aloop subdevice-2
+playback/capture endpoints. MPD keeps subdevice 0 and AirPlay keeps subdevice 1.
+A two-substream `snd-aloop` intentionally fails this check. The Pi now has the
+third substream, but `install/setup.sh` still writes `pcm_substreams=2`; do not
+re-run it on the Pi until that is reconciled.
+
+`sudo python3 install_bluetooth.py` is a dry run; `--apply` refuses on any preflight
+blocker. It installs only a **disabled** `/etc/octet/bluetooth.json`
+(root:octet-bluetooth 0640, never overwritten), an octet-remote drop-in for the
+root-only `/run/octet-bluetooth/control.sock`, and `octet-bluealsa.service`. That
+unit is an A2DP-sink-only daemon with no `[Install]` section, so it cannot be
+enabled and never starts at boot. Unit enable/active state is recorded before and
+re-read after; any change is reported, never altered. It never restarts
+octet-remote, enables, starts, stops or masks any unit, enables discoverability or
+changes audio. `--rollback` restores the backed-up files and likewise leaves unit
+state alone; it refuses while octet-bluealsa is running. This describes a
+disabled installation only, **not** an authorization to activate the receiver.
+
+**BLOCKED — Bluetooth playback, pending attended physical acceptance:** On the
+first phone connection, BlueALSA transport churn coincided with WirePlumber
+link failures. PipeWire opened Loopback playback sub0 (reserved for MPD);
+CamillaDSP then logged ALSA capture errno 77 and became Inactive. No Bluetooth
+bridge was started or unmuted. This correlation is **not** proof of the capture
+failure's cause.
+
+An initial muted trial of `pi/install/wireplumber-bluealsa.conf` lost PipeWire's
+Loopback and DAC nodes when WirePlumber restarted while MPD and CamillaDSP held
+their ALSA devices. Removing the exact fragment and restarting WirePlumber
+**did not** restore those nodes. A subsequent controlled recovery paused MPD,
+stopped the muted CamillaDSP, verified all three reserved PCM endpoints had no
+owners, and restarted the `octet` user WirePlumber with the fragment absent.
+Loopback sink/source and DAC nodes returned; CamillaDSP restarted Running and
+muted on the approved baseline with the Tidal queue intact. This supports an
+ownership-sensitive WirePlumber enumeration boundary, not proof that the
+Bluetooth collision has been fixed.
+
+The same owner-free sequence was then used for a **revised configuration trial**:
+the exact hash-checked fragment disabling only WirePlumber's `monitor.bluez` was
+published with no pre-existing destination (no-replace); `octet` WirePlumber restarted
+with MPD paused and CamillaDSP stopped. Loopback sink/source and DAC nodes
+remained present, and CamillaDSP restarted Running/muted with the baseline
+semantically identical to its approved YAML. Manual `octet-bluealsa.service`
+registered its A2DP sink while policy remained disabled, without losing the
+PipeWire graph, then was stopped. The fragment remains installed; Bluetooth
+policy is disabled/empty and the phone untrusted/disconnected. **No phone audio
+or physical speaker output was tested in this trial.**
+
+Any future WirePlumber restart or fragment rollback must be a separately
+approved muted maintenance operation: preserve the queue and baseline, pause
+MPD until Loopback playback sub0 is released, stop muted CamillaDSP until its
+Loopback capture and DAC playback are released, then restart the *octet user*
+WirePlumber. Verify the named Loopback and DAC PipeWire nodes **before** starting
+CamillaDSP with startup mute; read back DSP Running/muted and the original queue.
+On failure, keep Bluetooth disabled, stop BlueALSA, remove only the exact trial
+fragment **only after** verifying it is a root-owned regular 0644 file with the
+reviewed SHA-256 `07bea466e0ed9f1b582a32faf57f7ee638cc6adf987b4a17bbc0464c77af1c71`.
+If its identity or hash differs, refuse deletion and investigate; there is no
+pre-existing fragment to restore because publication refused any destination.
+Repeat the owner-free WirePlumber restart and graph checks; never retry blindly
+or unmute to test. No pairing, trust, receiver start, or playback
+is authorized until a new attended speaker check is approved. Passing a
+no-phone service/graph trial is not end-to-end Bluetooth acceptance.
+
+The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
+mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
+`0600` file is refused everywhere, because octet-remote (`upmpdcli`) could not read
+it and `start` would be impossible after a successful pairing.
+
+The unvalidated controller design preserves the MPD queue, uses only the dedicated
+Loopback sub2 pair and an approved Auto Tune baseline, and fails muted on source
+or ownership drift. It does not make a non-cooperative CamillaDSP websocket
+writer safe. The desktop graph and DSP-writer exclusion remain prerequisites
+for any future physical acceptance; passing software tests does not waive them.

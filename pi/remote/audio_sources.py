@@ -1,5 +1,8 @@
 """Discover USB capture sources and feed an unchanged stereo speaker pipeline."""
 import copy
+import ctypes
+import subprocess
+import sys
 import json
 from pathlib import Path
 import re
@@ -10,10 +13,101 @@ CLOCK_KEYS = ('resampler', 'enable_rate_adjust', 'capture_samplerate', 'target_l
 TIDAL = dict(id='tidal', label='Tidal', group='Music', available=True,
              description='Tidal and the saved music queue.')
 
+AIRPLAY = dict(id='airplay', label='AirPlay', group='Music', available=True,
+               device='hw:Loopback,1,1', channels=2, mapping=[0, 1], rates=[44100],
+               description='Cast to Octet on your LAN. Phone volume attenuates the input; automatic master starts at −18 dB.')
+
+
+def pcm_fields(path):
+    return dict(line.split(':', 1) for line in path.read_text().splitlines() if ':' in line)
+
+
+def pcm_params_match(path):
+    try:
+        fields = {key.strip(): value.strip() for key, value in pcm_fields(path).items()}
+        return (fields.get('format') == 'S32_LE' and fields.get('channels') == '2'
+                and fields.get('rate', '').split()[0] == '44100')
+    except (OSError, IndexError):
+        return False
+
+
+def loopback_card(proc):
+    """Resolve the ALSA ID and verify the kernel driver and both exact endpoints."""
+    card = (proc / 'Loopback').resolve(strict=True)
+    if card.parent != proc.resolve() or not re.fullmatch(r'card[0-9]+', card.name):
+        raise ValueError('Invalid Loopback card link')
+    index = int(card.name[4:])
+    if (card / 'id').read_text().strip() != 'Loopback':
+        raise ValueError('Incorrect ALSA card ID')
+    modules = dict(line.split() for line in (proc / 'modules').read_text().splitlines())
+    if modules.get(str(index)) != 'snd_aloop':
+        raise ValueError('Loopback must use snd_aloop')
+    for endpoint, device, direction in [('pcm0p', '0', 'PLAYBACK'), ('pcm1c', '1', 'CAPTURE')]:
+        sub = card / endpoint / 'sub1'
+        info = {k.strip(): v.strip() for k, v in pcm_fields(sub / 'info').items()}
+        if any(info.get(k) != v for k, v in dict(card=str(index), device=device,
+                                                subdevice='1', stream=direction).items()):
+            raise ValueError('Incorrect Loopback endpoint')
+        (sub / 'status').read_text()
+    return card, index
+
+
+def probe_pcm(index, device, capture):
+    """Negotiate on a closed hardware endpoint, in a bounded helper process."""
+    try:
+        result = subprocess.run([sys.executable, __file__, '--probe-loopback', str(index),
+                                 str(device), str(int(capture))], capture_output=True, timeout=2)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def negotiate_pcm(index, device, capture):
+    # No conversion, playback writes, or capture reads. Close releases the parameters.
+    alsa = ctypes.CDLL('libasound.so.2')
+    pcm, params = ctypes.c_void_p(), ctypes.c_void_p()
+    def checked(name, *args):
+        if getattr(alsa, name)(*args) < 0:
+            raise RuntimeError('ALSA negotiation failed')
+    checked('snd_pcm_open', ctypes.byref(pcm), f'hw:{index},{device},1'.encode(), capture, 1)
+    try:
+        checked('snd_pcm_hw_params_malloc', ctypes.byref(params))
+        checked('snd_pcm_hw_params_any', pcm, params)
+        checked('snd_pcm_hw_params_set_access', pcm, params, 3)  # RW_INTERLEAVED
+        fmt = alsa.snd_pcm_format_value(b'S32_LE')
+        checked('snd_pcm_hw_params_set_format', pcm, params, fmt)
+        checked('snd_pcm_hw_params_set_channels', pcm, params, 2)
+        checked('snd_pcm_hw_params_set_rate', pcm, params, 44100, 0)
+        checked('snd_pcm_hw_params', pcm, params)
+        endpoint = f'pcm{device}{"c" if capture else "p"}'
+        if not pcm_params_match(Path('/proc/asound') / f'card{index}' / endpoint / 'sub1/hw_params'):
+            raise RuntimeError('ALSA negotiated unexpected parameters')
+    finally:
+        if params:
+            alsa.snd_pcm_hw_params_free(params)
+        alsa.snd_pcm_close(pcm)
+
+
+def loopback_available(proc=Path('/proc/asound')):
+    try:
+        card, index = loopback_card(proc)
+        for endpoint, device, capture in [('pcm0p', 0, False), ('pcm1c', 1, True)]:
+            sub = card / endpoint / 'sub1'
+            if (sub / 'status').read_text().strip() == 'closed':
+                if not probe_pcm(index, device, capture):
+                    return False
+            elif not pcm_params_match(sub / 'hw_params'):
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+
 
 def discover_sources(proc=Path('/proc/asound')):
-    """Only advertise real USB capture endpoints, never HDMI outputs or loopback."""
+    """Advertise music routes and real USB capture endpoints, never HDMI outputs."""
     sources = [dict(TIDAL)]
+    if loopback_available(proc):
+        sources.append(dict(AIRPLAY))
     for card in sorted(proc.glob('card[0-9]*')):
         try:
             card_id = (card / 'id').read_text().strip()
@@ -56,7 +150,10 @@ def source_metadata(config):
     stage = next((stage for stage in config.get('pipeline', [])
                   if stage.get('type') == 'Mixer' and stage.get('name') == SOURCE_MIXER), None)
     if stage is None:
-        return dict(id='tidal', label='Tidal') if config.get('devices', {}).get('capture', {}).get('device', '').startswith('hw:Loopback') else dict(id='unknown', label='Other source')
+        device = config.get('devices', {}).get('capture', {}).get('device', '')
+        if device == 'hw:Loopback,1,1':
+            return dict(id='airplay', label='AirPlay')
+        return dict(id='tidal', label='Tidal') if device == 'hw:Loopback,1,0' else dict(id='unknown', label='Other source')
     description = config['mixers'][SOURCE_MIXER].get('description', '')
     if not description.startswith(SOURCE_DESCRIPTION):
         raise RuntimeError('The active source configuration is not recognised')
@@ -65,7 +162,7 @@ def source_metadata(config):
 
 def meter_channels(config):
     """The visualizer follows the selected input, including duplicated mono."""
-    if source_metadata(config)['id'] in ('tidal', 'unknown'):
+    if source_metadata(config)['id'] in ('tidal', 'airplay', 'unknown'):
         return (0, 1)
     mapping = config['mixers'][SOURCE_MIXER]['mapping']
     return tuple(row['sources'][0]['channel'] for row in sorted(mapping, key=lambda row: row['dest']))
@@ -79,6 +176,8 @@ def source_config(config, source):
     if metadata['id'] == 'unknown':
         raise RuntimeError('The current capture device is not managed by the music page')
     if metadata['id'] != 'tidal':
+        if 'tidal_capture' not in metadata or 'tidal_clock' not in metadata:
+            raise RuntimeError('Source restore metadata is missing; restore the managed DSP preset')
         result['pipeline'] = [stage for stage in result['pipeline']
                               if not (stage.get('type') == 'Mixer' and stage.get('name') == SOURCE_MIXER)]
         del result['mixers'][SOURCE_MIXER]
@@ -90,7 +189,9 @@ def source_config(config, source):
                 devices.pop(key, None)
     if source['id'] == 'tidal':
         return result
-    rate = devices['samplerate']
+    if source['id'] == 'airplay' and devices['samplerate'] != 48000:
+        raise ValueError('AirPlay requires the approved 48000 Hz speaker pipeline')
+    rate = 44100 if source['id'] == 'airplay' else devices['samplerate']
     if rate not in source['rates']:
         raise ValueError('This input does not support the speaker sample rate')
     saved = dict(id=source['id'], label=source['label'],
@@ -106,3 +207,12 @@ def source_config(config, source):
                  for dest, channel in enumerate(source['mapping'])])
     result['pipeline'].insert(0, dict(type='Mixer', name=SOURCE_MIXER))
     return result
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 5 or sys.argv[1] != '--probe-loopback':
+        sys.exit(1)
+    try:
+        negotiate_pcm(*(int(value) for value in sys.argv[2:]))
+    except Exception:
+        sys.exit(1)

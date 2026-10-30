@@ -7,6 +7,8 @@ import pwd
 import shutil
 import subprocess
 
+from remote_manifest import EXECUTABLE, REMOTE_FILES
+
 
 def main():
     if os.geteuid() != 0:
@@ -17,14 +19,7 @@ def main():
     home = Path(user.pw_dir)
     backup = Path('/var/backups/octet-visualizer') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(parents=True, mode=0o700)
-    files = ['server.py', 'network_access.py', 'now_playing_bridge.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css',
-             'visualizer.html', 'visualizer.js', 'visualizer-sync.js', 'visualizer-themes.js', 'visualizer-solar.js',
-             'visualizer-audio.js', 'visualizer.css', 'README.md', 'launch-visualizer.sh', 'visualizer_kiosk.py']
-    for name in [*files, 'octet-visualizer.service', 'octet-visualizer.desktop']:
-        if not (source / name).is_file():
-            raise SystemExit(f'Missing installation file: {source / name}')
-    if not (source / 'visualizer-media').is_dir():
-        raise SystemExit('Missing visualizer-media directory')
+    files = list(REMOTE_FILES)
     # Back up all files before replacing any of the running application.
     for name in files:
         if (target / name).exists():
@@ -36,7 +31,7 @@ def main():
     target.mkdir(mode=0o755, exist_ok=True)
     for name in files:
         shutil.copy2(source / name, target / name)
-        (target / name).chmod(0o755 if name.endswith('.sh') else 0o644)
+        (target / name).chmod(0o755 if name in EXECUTABLE else 0o644)
     shutil.copytree(source / 'visualizer-media', target / 'visualizer-media', dirs_exist_ok=True)
     for path in (target / 'visualizer-media').iterdir():
         path.chmod(0o644)

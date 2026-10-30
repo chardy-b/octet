@@ -12,6 +12,11 @@ import pwd
 import yaml
 from server import CHANNEL_PROFILE, channel_config
 
+# FIRST-TIME installer. It stops MPD and CamillaDSP, resets the CamillaDSP state file, rewrites
+# mpd.conf and octet-remote.service, and copies the visualizer media. Do NOT use it to update a
+# running Octet: run deploy.py, which changes only the application files and never touches DSP state.
+from remote_manifest import EXECUTABLE, MEDIA, REMOTE_FILES  # noqa: E402  (shared with deploy.py)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -20,9 +25,7 @@ def main():
         raise SystemExit('Run this installer with sudo on Octet.')
     source = Path(__file__).resolve().parent
     preset = 'channel-dsp.yml'
-    files = ['server.py', 'network_access.py', 'now_playing_bridge.py', 'audio_sources.py', 'source_profiles.py', 'input_levels.py', 'input-levels.js', 'visualizer_state.py', 'tuning_proxy.py', 'auto.js', 'measurements.js', 'index.html', 'app.js', 'volume.js', 'dsp.html', 'dsp.js', 'style.css', 'visualizer-sync.js',
-                 'visualizer.html', 'visualizer.js', 'visualizer-themes.js', 'visualizer-solar.js', 'visualizer-audio.js', 'visualizer.css', 'README.md']
-    media = ['sky.jpg', 'water.jpg', 'stars.jpg', 'solar.jpg', 'sun.jpg', 'lunar.jpg', 'sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'sky-playback.mp4', 'water-playback.mp4', 'stars-playback.mp4', 'lunar-playback.mp4', 'edm.mp3', 'classical.mp3', 'README.md']
+    files, media = list(REMOTE_FILES), list(MEDIA)
     # Fail before stopping playback if the staging tree is incomplete.
     for path in [*(source / name for name in files),
                  *(source / 'visualizer-media' / name for name in media),
@@ -41,7 +44,7 @@ def main():
     target.mkdir(mode=0o755, exist_ok=True)
     for name in files:
         shutil.copy2(source / name, target / name)
-        os.chmod(target / name, 0o644)
+        os.chmod(target / name, 0o755 if name in EXECUTABLE else 0o644)
     (target / 'visualizer-media').mkdir(mode=0o755, exist_ok=True)
     for name in media:
         shutil.copy2(source / 'visualizer-media' / name, target / 'visualizer-media' / name)
@@ -54,7 +57,8 @@ def main():
     os.chmod(CHANNEL_PROFILE.parent, 0o2750)
     if CHANNEL_PROFILE.exists():
         shutil.copy2(CHANNEL_PROFILE, backup / CHANNEL_PROFILE.name)
-    CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
+    else:
+        CHANNEL_PROFILE.write_text(yaml.safe_dump(channel_config(yaml.safe_load((source / preset).read_text())), sort_keys=False))
     os.chown(CHANNEL_PROFILE, pwd.getpwnam('upmpdcli').pw_uid, grp.getgrnam('audio').gr_gid)
     os.chmod(CHANNEL_PROFILE, 0o640)
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(CHANNEL_PROFILE)], check=True)
@@ -73,7 +77,7 @@ def main():
     config.write_text(text)
     override = Path('/etc/systemd/system/camilladsp.service.d')
     override.mkdir(exist_ok=True)
-    (override / 'octet-startup.conf').write_text('[Service]\nExecStart=\nExecStart=/opt/camilladsp/camilladsp -p 1234 -a 0.0.0.0 -s /opt/camilladsp/statefile.yml -o /opt/camilladsp/camilladsp.log -w --mute --gain=-36\n')
+    (override / 'octet-startup.conf').write_text('[Service]\nExecStart=\nExecStart=/opt/camilladsp/camilladsp -p 1234 -a 127.0.0.1 -s /opt/camilladsp/statefile.yml -o /opt/camilladsp/camilladsp.log -w --mute --gain=-36\n')
     shutil.copy2(source / 'octet-remote.service', '/etc/systemd/system/octet-remote.service')
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'start', 'camilladsp', 'mpd'], check=True)

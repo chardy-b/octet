@@ -50,5 +50,45 @@ class BridgeTests(unittest.TestCase):
             self.assertIsNone(bridge.fetch_song())
 
 
+class ArtworkValidationTests(unittest.TestCase):
+    def fetch(self, body, kind, key=None):
+        key = key or hashlib.sha256(body).hexdigest()
+        with patch.object(bridge, 'urlopen', return_value=Response(body, kind)):
+            return bridge.fetch_artwork(key)
+
+    def test_invalid_keys_are_rejected_before_any_request(self):
+        for key in ('a' * 63, 'a' * 65, 'A' * 64, 'g' * 64, '../' + 'a' * 61, 'a' * 64 + '\n', ''):
+            with self.subTest(key=key), patch.object(bridge, 'urlopen') as opened:
+                with self.assertRaises(ValueError):
+                    bridge.fetch_artwork(key)
+                opened.assert_not_called()
+
+    def test_hash_mismatch_is_rejected(self):
+        body = b'\xff\xd8\xffimage'
+        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            self.fetch(body, 'image/jpeg', key=hashlib.sha256(b'other').hexdigest())
+
+    def test_supported_types_are_returned_without_parameters(self):
+        for body, kind in ((b'\x89PNG\r\n\x1a\nimage', 'image/png'),
+                           (b'RIFF\0\0\0\0WEBPimage', 'image/webp'),
+                           (b'\xff\xd8\xffimage', 'image/jpeg; charset=binary')):
+            with self.subTest(kind=kind):
+                self.assertEqual(self.fetch(body, kind), (body, kind.split(';')[0]))
+
+    def test_disallowed_or_mismatched_content_types_are_rejected(self):
+        jpeg = b'\xff\xd8\xffimage'
+        for body, kind in ((jpeg, 'text/html'), (jpeg, 'image/svg+xml'), (jpeg, ''),
+                           (jpeg, 'IMAGE/JPEG'), (jpeg, 'image/png'),
+                           (b'<svg onload=alert(1)>', 'image/jpeg'),
+                           (b'RIFF\0\0\0\0WAVEdata', 'image/webp')):
+            with self.subTest(kind=kind, body=body[:12]), self.assertRaises(ValueError):
+                self.fetch(body, kind)
+
+    def test_oversized_artwork_is_rejected(self):
+        body = b'\xff\xd8\xff' + b'\0' * (2 * 1024 * 1024)
+        with self.assertRaises(ValueError):
+            self.fetch(body, 'image/jpeg')
+
+
 if __name__ == '__main__':
     unittest.main()

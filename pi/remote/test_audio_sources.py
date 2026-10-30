@@ -19,6 +19,21 @@ def usb(mapping=(0, 1), key='pair-1'):
                 channels=10, mapping=list(mapping), rates=[44100, 48000], available=True)
 
 
+def loopback_fixture(root, state='PREPARED'):
+    card = root / 'card10'
+    card.mkdir(exist_ok=True)
+    (root / 'Loopback').symlink_to(card, target_is_directory=True)
+    (card / 'id').write_text('Loopback\n')
+    (root / 'modules').write_text('10 snd_aloop\n')
+    for endpoint, device, direction in [('pcm0p', 0, 'PLAYBACK'), ('pcm1c', 1, 'CAPTURE')]:
+        path = card / endpoint / 'sub1'
+        path.mkdir(parents=True)
+        (path / 'info').write_text(f'card: 10\ndevice: {device}\nsubdevice: 1\nstream: {direction}\n')
+        (path / 'status').write_text(f'state: {state}\nowner_pid: 123\nhw_ptr: 100\nappl_ptr: 100\n')
+        (path / 'hw_params').write_text('format: S32_LE\nchannels: 2\nrate: 44100 (44100/1)\n')
+    return card
+
+
 class AudioSources(unittest.TestCase):
     def test_discovers_capture_only_and_distinguishes_analogue_from_optical(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,6 +55,91 @@ class AudioSources(unittest.TestCase):
         self.assertIn('usb:OtherUSB:pair-3', ids)
         self.assertEqual(sources[1]['channels'], 10)
         self.assertIn('Audient iD14', sources[1]['label'])
+
+    def test_airplay_discovery_and_untagged_capture_are_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual([s['id'] for s in audio_sources.discover_sources(root)], ['tidal'])
+            loopback_fixture(root)
+            self.assertEqual([s['id'] for s in audio_sources.discover_sources(root)], ['tidal', 'airplay'])
+        raw = config()
+        raw['devices']['capture']['device'] = 'hw:Loopback,1,1'
+        self.assertEqual(audio_sources.source_metadata(raw)['id'], 'airplay')
+        self.assertEqual(audio_sources.meter_channels(raw), (0, 1))
+        with self.assertRaisesRegex(RuntimeError, 'metadata'):
+            audio_sources.source_config(raw, audio_sources.TIDAL)
+
+    def test_status_files_alone_do_not_advertise_loopback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for endpoint in ('pcm0p', 'pcm1c'):
+                path = root / 'Loopback' / endpoint / 'sub1'
+                path.mkdir(parents=True)
+                (path / 'status').write_text('closed')
+            self.assertFalse(audio_sources.loopback_available(root))
+
+    def test_probe_timeout_fails_closed(self):
+        import subprocess
+        with patch.object(audio_sources.subprocess, 'run', side_effect=subprocess.TimeoutExpired('probe', 2)):
+            self.assertFalse(audio_sources.probe_pcm(10, 1, True))
+
+    def test_negotiation_requires_capture_format_rate_and_channels(self):
+        alsa = MagicMock()
+        for name in ('open', 'hw_params_malloc', 'hw_params_any', 'hw_params_set_access',
+                     'hw_params_set_format', 'hw_params_set_channels', 'hw_params_set_rate', 'hw_params'):
+            getattr(alsa, 'snd_pcm_' + name).return_value = 0
+        alsa.snd_pcm_format_value.return_value = 10
+        with patch.object(audio_sources.ctypes, 'CDLL', return_value=alsa), \
+             patch.object(audio_sources, 'pcm_params_match', return_value=True):
+            audio_sources.negotiate_pcm(10, 1, 1)
+            self.assertEqual(alsa.snd_pcm_open.call_args.args[1:], (b'hw:10,1,1', 1, 1))
+            self.assertEqual(alsa.snd_pcm_hw_params_set_channels.call_args.args[-1], 2)
+            self.assertEqual(alsa.snd_pcm_hw_params_set_rate.call_args.args[-2:], (44100, 0))
+            self.assertEqual(alsa.snd_pcm_hw_params_set_format.call_args.args[-1], 10)
+            alsa.snd_pcm_hw_params_set_channels.return_value = -22
+            with self.assertRaises(RuntimeError):
+                audio_sources.negotiate_pcm(10, 1, 1)
+            self.assertEqual(alsa.snd_pcm_close.call_count, 2)
+
+    def test_loopback_identity_and_negotiated_capture_are_required(self):
+        for file, value in [('id', 'Other'), ('../modules', '10 snd_usb_audio'),
+                            ('pcm1c/sub1/info', 'card: 10\ndevice: 1\nsubdevice: 0\nstream: CAPTURE'),
+                            ('pcm1c/sub1/hw_params', 'format: S32_LE\nchannels: 2\nrate: 48000'),
+                            ('pcm0p/sub1/info', 'card: 9\ndevice: 0\nsubdevice: 1\nstream: CAPTURE')]:
+            with self.subTest(file=file), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                card = loopback_fixture(root)
+                (card / file).write_text(value)
+                self.assertFalse(audio_sources.loopback_available(root))
+
+    def test_closed_endpoints_require_both_negotiation_probes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            card = loopback_fixture(root)
+            for endpoint in ('pcm0p', 'pcm1c'):
+                (card / endpoint / 'sub1/status').write_text('closed')
+            with patch.object(audio_sources, 'probe_pcm', side_effect=[True, False]) as probe:
+                self.assertFalse(audio_sources.loopback_available(root))
+                self.assertEqual([c.args for c in probe.call_args_list], [(10, 0, False), (10, 1, True)])
+            with patch.object(audio_sources, 'probe_pcm', return_value=True):
+                self.assertTrue(audio_sources.loopback_available(root))
+
+    def test_airplay_rate_protection_and_round_trip(self):
+        original = config()
+        original['filters']['output_2_polarity']['parameters']['mute'] = True
+        changed = audio_sources.source_config(original, audio_sources.AIRPLAY)
+        self.assertEqual(changed['devices']['capture']['device'], 'hw:Loopback,1,1')
+        self.assertEqual(changed['devices']['capture_samplerate'], 44100)
+        self.assertEqual(changed['devices']['samplerate'], 48000)
+        self.assertEqual(changed['devices']['resampler']['type'], 'AsyncSinc')
+        self.assertEqual(changed['filters'], original['filters'])
+        self.assertEqual(changed['devices']['playback'], original['devices']['playback'])
+        self.assertEqual(audio_sources.source_metadata(changed)['id'], 'airplay')
+        changed = audio_sources.source_config(changed, usb())
+        self.assertEqual(audio_sources.source_config(changed, audio_sources.TIDAL), original)
+        original['devices']['samplerate'] = 96000
+        with self.assertRaisesRegex(ValueError, '48000'):
+            audio_sources.source_config(original, audio_sources.AIRPLAY)
 
     def test_mono_duplicates_to_stereo_without_changing_any_speaker_setting(self):
         original = config()
@@ -138,6 +238,53 @@ class AudioSources(unittest.TestCase):
                         mpd.assert_not_called()
                     else:
                         self.assertIn(('SetMute', True), calls)
+
+    def test_real_deferred_source_path_activates_only_after_live_pcm(self):
+        from airplay_control import AirPlayController
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / 'channel-dsp.yml'
+            original = config()
+            profile.write_text(yaml.safe_dump(original))
+            loaded = copy.deepcopy(original)
+            dsp = MagicMock()
+            dsp.__enter__.return_value = dsp
+
+            def call(name, *args):
+                nonlocal loaded
+                if name == 'GetConfigFilePath':
+                    return str(profile)
+                if name == 'GetConfigJson':
+                    return json.dumps(loaded)
+                if name == 'GetState':
+                    return 'Running'
+                if name == 'Reload':
+                    loaded = yaml.safe_load(profile.read_text())
+                    loaded['devices']['capture']['labels'] = None
+
+            dsp.call.side_effect = call
+            with patch.object(server, 'CHANNEL_PROFILE', profile), \
+                 patch.object(server, 'DSP', return_value=dsp), \
+                 patch.object(server, 'approved'), \
+                 patch.object(server, 'discover_sources', return_value=[audio_sources.AIRPLAY]), \
+                 patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \
+                 patch.object(server, 'mpd') as mpd, \
+                 patch.object(server.TUNING, 'status', return_value={'audio_owned': False}), \
+                 patch('airplay_control.loopback_available', return_value=True), \
+                 patch('airplay_control.receiver_running', return_value=True), \
+                 patch('airplay_control.pcm_running', return_value=False) as live:
+                server.ACTIVE_CAPTURE_CHANNELS = (1, 1)
+                controller = AirPlayController(server)
+                controller.event('start', now=0)
+                controller.tick(now=1)
+                self.assertNotIn(('SetMute', False), [c.args for c in dsp.call.call_args_list])
+                live.return_value = True
+                controller.tick(now=2)
+                self.assertTrue(controller.active)
+                self.assertEqual(server.ACTIVE_CAPTURE_CHANNELS, (0, 1))
+                self.assertEqual([c.args for c in dsp.call.call_args_list][-2:],
+                                 [('SetVolume', -18.0), ('SetMute', False)])
+                self.assertEqual(loaded['filters'], original['filters'])
+                mpd.assert_called_once_with('pause 1')
 
     def test_tidal_transport_does_not_play_over_selected_input(self):
         changed = audio_sources.source_config(config(), usb())

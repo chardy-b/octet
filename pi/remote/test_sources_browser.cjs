@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const sources = [
+  {id:'airplay',label:'AirPlay',group:'Music',available:true,description:'Cast to Octet on your LAN.'},
   {id:'tidal',label:'Tidal',group:'Music',available:true,description:'Tidal and the saved music queue.'},
   {id:'airplay',label:'AirPlay',group:'Music',available:true,description:'AirPlay receiver.'},
   {id:'usb:iD14:pair-1',label:'Audient iD14 · Inputs 1 / 2 · stereo',group:'Audient iD14',available:true,description:'Stereo inputs.'},
@@ -20,7 +21,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     : {headless:true,channel:'msedge'});
   try{
     const page=await browser.newPage({viewport:{width:1280,height:1000}});
-    const errors=[],writes=[];let state=initial(),reject=false;
+    const errors=[],writes=[];let state=initial(),reject=false,nowPlaying=null;
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('http://octet.test/**',async route=>{
       const url=new URL(route.request().url());
@@ -91,6 +92,28 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.match(await page.locator('#cover').getAttribute('src'),/\/api\/now-playing\/artwork\//);
     assert.equal(await page.locator('#cover').isVisible(),true);
     assert.deepEqual(writes,[{id:'usb:iD14:mono-1'},{id:'tidal'},{id:'tidal'}]);
+    state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:false}};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#song-artist').textContent(),/Waiting/);
+    assert.equal(await page.locator('.transport').isVisible(),false);
+    state={...state,airplay:{active:true},muted:false,volume:-18};
+    await page.evaluate(()=>refresh());
+    assert.match(await page.locator('#source-status').textContent(),/cast active/);
+    assert.equal(await page.locator('#queue-count').textContent(),'1');
+    // Published live metadata replaces the fallback card only for the selected source.
+    nowPlaying={source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)};
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#song-title').textContent(),'AirPlay song');
+    assert.equal(await page.locator('#song-artist').textContent(),'AirPlay artist');
+    assert.equal(await page.locator('#song-album').textContent(),'AirPlay album');
+    assert.match(await page.locator('#cover').getAttribute('src'),/\/api\/now-playing\/artwork\//);
+    assert.equal(await page.locator('#cover').isVisible(),true);
+    nowPlaying={...nowPlaying,source:'bluetooth'};
+    await page.evaluate(()=>refresh());
+    assert.equal(await page.locator('#song-title').textContent(),'AirPlay');
+    assert.match(await page.locator('#song-artist').textContent(),/cast active/);
+    assert.equal(await page.locator('#song-album').textContent(),'');
+    assert.equal(await page.locator('#cover').isVisible(),false);
     assert.deepEqual(errors,[]);
     console.log('Browser source flow passed: saved tuning retained, selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, unavailable reasons, mobile layout.');
   }finally{await browser.close();}

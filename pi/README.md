@@ -56,3 +56,14 @@ startup glitches. Audio quality, channel filters and listening levels are unchan
 The [read-only song publisher](now-playing/README.md) shares AirPlay and Tidal song
 metadata with the Magic Mirror over wlan0 only. It also adds a standalone local
 song display linked from the music page.
+
+### AirPlay audio
+
+Octet supports classic AirPlay through Shairport Sync on dedicated ALSA loopback
+subdevice 1, preserving MPD's subdevice 0 and the protected CamillaDSP speaker
+chain. Casting automatically pauses Tidal and starts at −18 dB master; phone
+volume attenuates the source. Playback end mutes without resuming Tidal.
+See [remote AirPlay installation, rollback and physical acceptance](remote/README.md#classic-airplay-wil-248).
+The optional installer requires already provisioned classic Shairport/Avahi
+packages and validates the real Pi loopback/configuration before enabling.
+Discovery requires the same LAN; Tailscale discovery and AirPlay 2 are not included.
