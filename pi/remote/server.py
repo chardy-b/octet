@@ -24,6 +24,7 @@ from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from network_access import NetworkAccess
 from source_profiles import SourceProfiles
+from now_playing_bridge import fetch_song, fetch_artwork
 
 BIND = os.environ.get('OCTET_BIND', '0.0.0.0')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
@@ -1287,6 +1288,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_visualizer()
             if parsed.path == '/api/status':
                 return self.send(current_status())
+            if parsed.path == '/api/now-playing':
+                return self.send({'song': fetch_song()})
+            artwork = re.fullmatch(r'/api/now-playing/artwork/([a-f0-9]{64})', parsed.path)
+            if artwork:
+                try:
+                    body, kind = fetch_artwork(artwork.group(1))
+                except (OSError, ValueError):
+                    return self.send({'error': 'Artwork unavailable'}, 404)
+                return self.send(body, content_type=kind)
             if parsed.path == '/api/input-levels':
                 return self.send(INPUT_LEVELS.snapshot())
             if parsed.path == '/api/dsp':

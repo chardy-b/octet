@@ -97,6 +97,12 @@ and stop/mute. Tidal credentials stay on the Pi and use the existing upmpdcli lo
 No external web hosting or browser plugins are needed. The server uses Python 3
 and the existing `tidalapi` package. The installer also uses the existing PyYAML.
 
+The Music player displays title, artist, album and cover art for Tidal. For
+AirPlay/live inputs it reads the Pi's Wi-Fi-only now-playing publisher through a
+bounded same-host bridge (`/api/now-playing` and its artwork proxy), so the
+Tailscale browser does not need direct Wi-Fi access. Stale or absent metadata
+falls back to the input name; this display never changes playback.
+
 ## Audio sources
 
 Click the **Input levels** or **Speaker output levels** heading to collapse or

@@ -29,3 +29,7 @@
 .queue-heading{font-size:11px;color:var(--muted);font-weight:500;margin:18px 0 2px;overflow-wrap:anywhere}
 .queue-track .queue-title{flex:1;min-width:0;max-width:none}
 .queue-track .queue-remove{flex-shrink:0;padding:3px 7px;font-size:18px;color:var(--muted)}
+
+/* Album metadata shares the now-playing card for Tidal and live inputs. */
+#song-album{color:var(--muted);font-size:11px;margin:-12px 0 18px;overflow-wrap:anywhere}
+#song-album:empty{display:none}
