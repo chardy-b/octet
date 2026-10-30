@@ -265,6 +265,8 @@ class AudioSources(unittest.TestCase):
             with patch.object(server, 'CHANNEL_PROFILE', profile), \
                  patch.object(server, 'DSP', return_value=dsp), \
                  patch.object(server, 'approved'), \
+                 patch.object(server, 'listening_profile', side_effect=lambda path: dict(
+                     label='Test', description='', tuning=None, origin_path=path)), \
                  patch.object(server, 'discover_sources', return_value=[audio_sources.AIRPLAY]), \
                  patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \
                  patch.object(server, 'mpd') as mpd, \

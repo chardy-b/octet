@@ -153,6 +153,8 @@ class ProfileRollbackTests(unittest.TestCase):
                 with patch.object(server, 'discover_sources', return_value=[usb()]), \
                      patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \
                      patch.object(server, 'mpd'), patch.object(server.INPUT_LEVELS, 'release'), \
+                     patch.object(server, 'listening_profile', side_effect=lambda path: dict(
+                         label='Test', description='', tuning=None, origin_path=path)), \
                      patch.object(os, 'fsync', side_effect=OSError('disk failure')):
                     with self.assertRaises(OSError):
                         if operation == 'source':

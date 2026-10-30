@@ -29,8 +29,8 @@ def patch_server(text):
          'not NETWORK.local_peer(self.client_address[0], BIND)'),
     ]
     for old, new in replacements:
-        if new in text or (old.startswith('from input_levels') and 'from network_access import NetworkAccess
-' in text):
+        # The import may already exist elsewhere, for example after other first-party imports.
+        if new in text or (old.startswith('from input_levels') and 'from network_access import NetworkAccess\n' in text):
             continue
         if text.count(old) != 1:
             raise RuntimeError(f'Server layout changed; inspect before installing: {old!r}')
