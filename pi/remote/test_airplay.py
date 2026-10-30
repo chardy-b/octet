@@ -343,7 +343,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.original.write_text('# Immutable Auto Tune baseline\n' + yaml.safe_dump(self.config))
         self.original_bytes = self.original.read_bytes()
         self.sha = airplay_baseline.digest(self.original_bytes)
-        (tuning_root / 'active.json').write_text(json.dumps(dict(config_path=str(self.original), sha256=self.sha)))
+        (tuning_root / 'active.json').write_text(json.dumps(dict(config_path=str(self.original), sha256=self.sha, name='Auto Tune baseline')))
         self.lock_path = tuning_root / 'audio.lock'
         self.lock_path.write_bytes(b'lock sentinel')
         self.lock_path.chmod(0o640)

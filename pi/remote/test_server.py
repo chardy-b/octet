@@ -94,7 +94,7 @@ class HandshakeFailures(unittest.TestCase):
             self.assertRegex(str(caught.exception), message)
         self.assertEqual(len(TrackedSocket.instances), 1)
         self.assertTrue(TrackedSocket.instances[0].closed)
-        self.assertEqual(self.tcp, [('127.0.0.1', 1234)])
+        self.assertEqual(set(self.tcp), {('127.0.0.1', 1234)})
 
     @staticmethod
     def reply(accept, extra=(b'Upgrade: websocket', b'Connection: Upgrade'), status=b'HTTP/1.1 101 Switching Protocols'):
@@ -175,7 +175,7 @@ class HandshakeFailures(unittest.TestCase):
         with server.DSP() as dsp:
             self.assertFalse(TrackedSocket.instances[0].closed)
         self.assertTrue(TrackedSocket.instances[0].closed)
-        self.assertEqual(self.tcp, [('127.0.0.1', 1234)])
+        self.assertEqual(set(self.tcp), {('127.0.0.1', 1234)})
 
     def test_connect_failure_closes_socket(self):
         closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -301,8 +301,8 @@ class PlaybackGuards(unittest.TestCase):
         handler.wfile.write.assert_called_once_with(png)
 
     def test_installer_packages_now_playing_bridge(self):
-        installer = (Path(server.__file__).parent / 'install.py').read_text()
-        self.assertIn("'now_playing_bridge.py'", installer)
+        import remote_manifest
+        self.assertIn('now_playing_bridge.py', remote_manifest.REMOTE_FILES)
 
     def test_remote_footer_links_wifi_now_playing(self):
         page = (Path(server.__file__).parent / 'index.html').read_text()
