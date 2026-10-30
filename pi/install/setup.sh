@@ -10,6 +10,6 @@ sudo chmod +x /opt/camilladsp/camilladsp
 ls /opt/camilladsp /opt/camilladsp/gui
 # loopback for player input
 echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf >/dev/null
-echo 'options snd-aloop index=10 pcm_substreams=2' | sudo tee /etc/modprobe.d/snd-aloop.conf >/dev/null
-sudo modprobe snd-aloop index=10 pcm_substreams=2 || true
+echo 'options snd-aloop index=10 pcm_substreams=3' | sudo tee /etc/modprobe.d/snd-aloop.conf >/dev/null
+sudo modprobe snd-aloop index=10 pcm_substreams=3 || true
 /opt/camilladsp/camilladsp --version

@@ -19,6 +19,10 @@ octet-measure                  # the real thing
 
 See [`measure/README.md`](measure/README.md) for what it does, how to set it up on each system, and how to develop it. The tests need no hardware: `python -m pytest` in `measure/`.
 
+## Deploying to the Pi
+
+- [**Deployment guide**](docs/DEPLOYMENT.md): update a running Pi with one command (`python pi/remote/deploy.py`), the full ordered setup of a new Pi, how to verify AirPlay without playing anything, and AirPlay troubleshooting.
+
 ## Project plan and hardware
 
 - [Phase 2 plan](docs/PHASE_2_PLAN.md): the accepted Auto Tune design and decisions for version 0.2.0.

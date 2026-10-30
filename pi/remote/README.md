@@ -706,8 +706,9 @@ First provision Debian's classic-only `shairport-sync`, `avahi-daemon` and
 installer never installs packages. AirPlay 2 builds are deliberately rejected
 pending separate capability verification; no NQPTP is needed.
 
-Upgrade the remote from this checkout with `sudo python3 pi/remote/install.py`,
-then run `sudo python3 pi/remote/install_airplay.py`. The remote installer preserves
+Update a running Octet with `python pi/remote/deploy.py` (see [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)).
+`install.py` is for a brand-new Pi only. On a new Pi run `sudo python3 pi/remote/install.py`, then
+`sudo python3 pi/remote/install_airplay.py`. The remote installer preserves
 an existing channel DSP file, including output mutes. The AirPlay installer checks
 ALSA/Avahi binary capabilities using `shairport-sync -V`, resolves the Loopback
 card index and `snd_aloop` driver, and verifies both directions on subdevice 1.
@@ -723,7 +724,7 @@ is changed by the AirPlay installer.
 
 MPD owns `hw:Loopback,0,0` → `hw:Loopback,1,0`. Shairport owns
 `hw:Loopback,0,1` → `hw:Loopback,1,1`, **44100 Hz / S32_LE / stereo**. Existing
-`snd-aloop pcm_substreams=2` is required; there is no `plughw`, DAC or MPD fallback.
+`snd-aloop` with at least `pcm_substreams=2` (3 when Bluetooth is used) is required; there is no `plughw`, DAC or MPD fallback.
 Camilla's asynchronous input resampler converts to the 48000 Hz speaker pipeline.
 Confirm the installed Shairport version honors the supplied options and reports
 this PCM format during a real cast. Package/version checks and negotiation probes
@@ -790,9 +791,8 @@ for exactly what is and is not verified.
 and prints JSON (exit 0 for prerequisites present, 1 for blockers). It requires
 working BlueALSA daemon/player binaries and idle, exact snd_aloop subdevice-2
 playback/capture endpoints. MPD keeps subdevice 0 and AirPlay keeps subdevice 1.
-A two-substream `snd-aloop` intentionally fails this check. The Pi now has the
-third substream, but `install/setup.sh` still writes `pcm_substreams=2`; do not
-re-run it on the Pi until that is reconciled.
+A two-substream `snd-aloop` intentionally fails this check. `install/setup.sh` now writes
+`pcm_substreams=3`, matching the live Pi.
 
 `sudo python3 install_bluetooth.py` is a dry run; `--apply` refuses on any preflight
 blocker. It installs only a **disabled** `/etc/octet/bluetooth.json`
