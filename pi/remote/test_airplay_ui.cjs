@@ -3,11 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-function element(){return {textContent:'',dataset:{},value:'',classList:{toggle(){}},replaceChildren(){},append(){}};}
+function element(){return {textContent:'',dataset:{},value:'',classList:{toggle(){}},style:{},replaceChildren(){},append(){},addEventListener(){},setAttribute(){},removeAttribute(){}};}
 const nodes = new Map();
 const get = id => {if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);};
 const context = vm.createContext({document:{getElementById:get,createElement:element,
-  querySelector:get,querySelectorAll:()=>[]},playlistPlayBusy:false});
+  querySelector:get,querySelectorAll:()=>[]},window:{},playlistPlayBusy:false});
+vm.runInContext(fs.readFileSync(path.join(__dirname,'volume.js'),'utf8'),context);
 const code = fs.readFileSync(path.join(__dirname,'app.js'),'utf8').split("$('source-choice').onchange")[0];
 vm.runInContext(code + '\nfunction renderPlayer(next){state=next;} function notice(){}',context);
 const base = {source:'airplay',source_label:'AirPlay',ready:true,muted:true,source_switching_available:true,
