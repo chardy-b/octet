@@ -9,19 +9,49 @@ from airplay_control import AirPlayController
 
 
 class AirPlayTests(unittest.TestCase):
+    """Any saved profile; every cast takes the journalled route built by dsp_inputs."""
     def setUp(self):
+        import tempfile
+        from pathlib import Path
+        import yaml
+        import airplay_baseline
+        from tuning_proxy import TuningProxy
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        (root / 'dsp').mkdir()
+        tuning_root = root / 'autotune'
+        tuning_root.mkdir()
+        (tuning_root / 'audio.lock').write_bytes(b'lock')
+        self.profile = tuning_root / 'profile.yml'
+        self.profile.write_text(yaml.safe_dump(config()))
+        (tuning_root / 'active.json').write_text(json.dumps(dict(config_path=str(self.profile), name='Tuned')))
+        tuning = TuningProxy(tuning_root)
+        self.path = str(self.profile)
+        self.loaded = config()
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
-        self.loaded = source_config(config(), AIRPLAY)
-        self.dsp.call.side_effect = lambda name, *args: {
-            'GetConfigFilePath': str(server.CHANNEL_PROFILE),
-            'GetConfigJson': json.dumps(self.loaded), 'GetState': 'Running', 'GetVolume': -18.0,
-            'GetMute': True,
-        }.get(name)
-        self.patches = [patch.object(server, 'DSP', return_value=self.dsp),
-                        patch.object(server, 'select_source', return_value=None),
+        def call(name, *args):
+            if name == 'SetConfigFilePath':
+                self.path = args[0]
+            elif name == 'Reload':
+                self.loaded = yaml.safe_load(Path(self.path).read_text())
+            return args[0] if name == 'ReadConfig' else {
+                'GetConfigFilePath': self.path,
+                'GetConfigJson': json.dumps(self.loaded), 'GetState': 'Running', 'GetVolume': -18.0,
+                'GetMute': True,
+            }.get(name)
+        self.dsp.call.side_effect = call
+        def back_to_tidal(identifier):
+            self.path, self.loaded = str(self.profile), config()
+        self.patches = [patch.object(airplay_baseline, 'ROOT', root / 'dsp'),
+                        patch.object(server, 'DSP', return_value=self.dsp),
+                        patch.object(server, 'TUNING', tuning),
+                        patch.object(tuning, 'status', return_value={'audio_owned': False}),
+                        patch.object(server, 'select_source', side_effect=back_to_tidal),
                         patch.object(server, 'mpd'),
-                        patch.object(server.TUNING, 'status', return_value={'audio_owned': False}),
+                        patch.object(server.INPUT_LEVELS, 'release'),
+                        patch('airplay_baseline.subprocess.run', return_value=MagicMock(returncode=0)),
                         patch('airplay_control.loopback_available', return_value=True),
                         patch('airplay_control.receiver_running', return_value=True),
                         patch('airplay_control.pcm_running', return_value=True)]
@@ -29,6 +59,7 @@ class AirPlayTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.control = AirPlayController(server)
+        self.addCleanup(self.control.baseline.release)
 
     def calls(self):
         return [call.args for call in self.dsp.call.call_args_list]
@@ -49,24 +80,40 @@ class AirPlayTests(unittest.TestCase):
         self.control.tick(now=4)  # live PCM: stale stop
         self.assertTrue(self.control.active)
         self.control.event('stop', now=5)
+        self.dsp.call.reset_mock()
         with patch('airplay_control.pcm_running', return_value=False):
             self.control.tick(now=7)
         self.assertFalse(self.control.active)
-        self.assertEqual(self.calls()[-1], ('SetMute', True))
+        self.assertIn(('SetMute', True), self.calls())
+        self.assertEqual(self.path, str(self.profile))
         self.control.event('start', now=8)
         self.control.invalidate()
         self.control.tick(now=9)
-        self.assertEqual(self.calls().count(('SetMute', False)), 1)
+        self.assertNotIn(('SetMute', False), self.calls())  # the manual override won
+
+    def test_any_saved_profile_and_any_input_are_cast_from_the_profile(self):
+        from audio_sources import source_metadata
+        # The Output DSP controls preset is a saved profile like any other.
+        with patch.object(server, 'CHANNEL_PROFILE', self.profile), \
+             patch.object(server, 'PROFILES', {str(self.profile): ('Output DSP controls', '')}), \
+             patch.object(server.TUNING, 'active', return_value=None):
+            self.loaded = source_config(config(), AIRPLAY)  # another input was picked first
+            self.control.event('start', now=0)
+            server.select_source.assert_called_once_with('tidal')
+            self.assertEqual(self.path, str(self.control.baseline.candidate))
+            self.assertEqual(source_metadata(self.loaded)['id'], 'airplay')
+            self.control.end()
+            self.assertEqual(self.path, str(self.profile))
 
     def test_tuning_and_failed_prerequisites_never_unmute(self):
-        for failure in ('tuning', 'device', 'receiver', 'preset', 'reload'):
+        for failure in ('tuning', 'device', 'receiver', 'preset', 'check'):
             with self.subTest(failure=failure):
                 self.dsp.call.reset_mock()
                 target = {'tuning': patch.object(server.TUNING, 'status', return_value={'audio_owned': True}),
                           'device': patch('airplay_control.loopback_available', return_value=False),
                           'receiver': patch('airplay_control.receiver_running', return_value=False),
                           'preset': patch.object(server, 'approved', side_effect=RuntimeError('preset')),
-                          'reload': patch.object(server, 'select_source', side_effect=RuntimeError('reload'))}[failure]
+                          'check': patch('airplay_baseline.subprocess.run', return_value=MagicMock(returncode=1))}[failure]
                 with target, self.assertRaises(RuntimeError):
                     self.control.event('start', now=0)
                 self.assertNotIn(('SetMute', False), self.calls())
@@ -75,38 +122,37 @@ class AirPlayTests(unittest.TestCase):
     def test_tuning_wins_before_readiness_and_receiver_crash_mutes(self):
         self.control.event('start', now=0)
         with patch.object(server.TUNING, 'status', return_value={'audio_owned': True}):
-            self.control.tick(now=1)
+            # Auto Tune owns the DSP: muted, recovery retained until it lets go.
+            with self.assertRaisesRegex(RuntimeError, 'recovery retained'):
+                self.control.tick(now=1)
         self.assertNotIn(('SetMute', False), self.calls())
+        self.control.tick(now=1.5)
+        self.assertEqual(self.path, str(self.profile))
         self.control.event('start', now=2)
         self.control.tick(now=3)
+        self.dsp.call.reset_mock()
         with patch('airplay_control.receiver_running', return_value=False):
             self.control.tick(now=4)
         self.assertFalse(self.control.active)
-        self.assertEqual(self.calls()[-1], ('SetMute', True))
+        self.assertIn(('SetMute', True), self.calls())
+        self.assertEqual(self.path, str(self.profile))
 
 class IntegrationSafetyTests(AirPlayTests):
-    def test_mute_failure_is_retried_without_losing_rollback(self):
-        from pathlib import Path
-        import tempfile
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'channel-dsp.yml'
-            path.write_bytes(b'new')
-            with patch.object(server, 'CHANNEL_PROFILE', path), patch.object(server, 'approved'):
-                self.control.event('start', now=0)
-                self.control.previous = b'old'
-                with patch.object(self.control, 'mute', side_effect=RuntimeError('offline')):
-                    with self.assertRaises(RuntimeError):
-                        self.control.fail('offline')
-                self.control.tick(now=1)
-                self.assertEqual(path.read_bytes(), b'old')
-                self.assertFalse(self.control.needs_mute)
-                self.assertNotIn(('SetMute', False), self.calls())
+    def test_mute_failure_is_retried_until_the_profile_is_restored(self):
+        self.control.event('start', now=0)
+        with patch.object(self.control, 'mute', side_effect=RuntimeError('offline')):
+            with self.assertRaises(RuntimeError):
+                self.control.fail('offline')
+        self.control.tick(now=1)
+        self.assertEqual(self.path, str(self.profile))
+        self.assertFalse(self.control.needs_mute)
+        self.assertNotIn(('SetMute', False), self.calls())
 
     def test_status_does_not_treat_selected_source_as_active_cast(self):
+        self.loaded = source_config(config(), AIRPLAY)
         with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
              patch.object(server, 'discover_sources', return_value=[AIRPLAY]), \
-             patch.object(server, 'mpd', return_value=[[], [], []]), \
-             patch.object(server.TUNING, 'active', return_value=None):
+             patch.object(server, 'mpd', return_value=[[], [], []]):
             result = server.current_status()
             self.assertEqual(result['source'], 'airplay')
             self.assertFalse(result['airplay']['active'])
@@ -115,15 +161,15 @@ class IntegrationSafetyTests(AirPlayTests):
             self.control.tick(now=1)
             self.assertTrue(server.current_status()['airplay']['active'])
 
-    def test_manual_protection_edit_revokes_pending_rollback(self):
+    def test_manual_protection_edit_ends_a_pending_cast_on_the_profile(self):
         self.control.event('start', now=0)
-        self.control.previous = b'old'
         with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
              patch.object(server, 'set_channel_control'), \
              patch.object(server, 'current_status', return_value={}):
             server.action('channel-mute', {'output': 2, 'muted': True})
         self.control.tick(now=11)
-        self.assertIsNone(self.control.previous)
+        self.assertEqual(self.path, str(self.profile))
+        self.assertFalse(self.control.baseline.exists())
         self.assertNotIn(('SetMute', False), self.calls())
 
     def test_rapid_stop_start_reapplies_safe_master(self):
@@ -149,18 +195,13 @@ class IntegrationSafetyTests(AirPlayTests):
         self.control.tick(now=6)
         self.assertTrue(self.control.active)
 
-    def test_timeout_restores_previous_file_and_stays_muted(self):
-        from pathlib import Path
-        import tempfile
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'channel-dsp.yml'
-            path.write_bytes(b'new config')
-            with patch.object(server, 'CHANNEL_PROFILE', path), patch.object(server, 'approved'):
-                self.control.event('start', now=0)
-                self.control.previous = b'previous config'
-                with patch('airplay_control.pcm_running', return_value=False):
-                    self.control.tick(now=11)
-                self.assertEqual(path.read_bytes(), b'previous config')
+    def test_timeout_restores_the_profile_and_stays_muted(self):
+        before = self.profile.read_bytes()
+        self.control.event('start', now=0)
+        with patch('airplay_control.pcm_running', return_value=False):
+            self.control.tick(now=11)
+        self.assertEqual(self.path, str(self.profile))
+        self.assertEqual(self.profile.read_bytes(), before)
         self.assertNotIn(('SetMute', False), self.calls())
 
     def test_changed_protection_prevents_unmute(self):
@@ -297,7 +338,7 @@ class PreparationDeadlineTests(AirPlayTests):
             finally:
                 finished.set()
         client, connection = socket.socketpair()
-        with client, connection, patch.object(server, 'select_source', side_effect=blocked), \
+        with client, connection, patch.object(server, 'mpd', side_effect=blocked), \
              patch.object(self.control, 'event', side_effect=event), \
              patch.object(airplay_control, 'PREPARATION_TIMEOUT', .05):
             client.sendall(b'start\n')
@@ -515,7 +556,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         linked = self.original.with_name('linked.yml')
         linked.symlink_to(self.original)
         self.control.baseline.record = dict(version=1, original=str(linked), sha256=self.sha)
-        with self.assertRaisesRegex(RuntimeError, 'AirPlay recovery path is not an Auto Tune baseline'):
+        with self.assertRaisesRegex(RuntimeError, 'AirPlay recovery path is not a saved profile'):
             self.control.baseline.original()
         self.unchanged()
 

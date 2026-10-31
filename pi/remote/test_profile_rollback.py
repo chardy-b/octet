@@ -156,7 +156,7 @@ class ProfileRollbackTests(unittest.TestCase):
                     raise RuntimeError('reload failed')
                 state['config'] = tidal
             return {'GetConfigFilePath': lambda: state['path'], 'GetConfigJson': lambda: json.dumps(state['config']),
-                    'GetState': lambda: 'Running', 'ReadConfigJson': lambda: args[0]}.get(name, lambda: None)()
+                    'GetState': lambda: 'Running', 'ReadConfigJson': lambda: args[0], 'ReadConfig': lambda: args[0]}.get(name, lambda: None)()
         self.dsp.call.side_effect = call
         profile = dict(label='Tuned', description='', tuning={'name': 'Tuned'}, origin_path=str(origin))
         patches = [patch.object(server, 'discover_sources', return_value=[dict(id='tidal', label='Tidal', available=True)]),
@@ -189,8 +189,9 @@ class ProfileRollbackTests(unittest.TestCase):
         self.assertEqual(state['path'], copy_path)
         self.assertNotIn(('SetMute', False), calls)
 
-    def test_source_and_output_failures_use_retryable_restore(self):
-        for operation in ('source', 'output'):
+    def test_output_failures_use_retryable_restore(self):
+        # Source switches never write channel-dsp.yml; only output-control edits do.
+        for operation in ('output',):
             with self.subTest(operation=operation):
                 self.path.write_bytes(self.previous)
                 self.dsp.call.reset_mock()
@@ -200,7 +201,8 @@ class ProfileRollbackTests(unittest.TestCase):
                         raise RuntimeError('reload failed')
                     return {'GetConfigFilePath': str(self.path), 'GetConfigJson': json.dumps(loaded),
                             'GetState': 'Running', 'GetMute': False,
-                            'ReadConfigJson': args[0] if args else None}.get(name)
+                            'ReadConfigJson': args[0] if args else None,
+                            'ReadConfig': args[0] if args else None}.get(name)
                 self.dsp.call.side_effect = call
                 with patch.object(server, 'discover_sources', return_value=[usb()]), \
                      patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \

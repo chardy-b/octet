@@ -43,13 +43,12 @@ import time
 import uuid
 
 from airplay_baseline import MAX_CONFIG, read_bounded
-from audio_sources import meter_channels
+from audio_sources import meter_channels, source_metadata
 from bluetooth_bridge import BridgeSupervisor
 from bluetooth_contract import bridge_arguments
 from bluetooth_identity import observe_identity, paired_addresses
 from bluetooth_route import BluetoothRoute
 from bluetooth_transport import CODECS, StreamGeneration, _TRANSPORT, _UNIQUE
-from source_profiles import SourceProfiles
 
 SOCKET = '/run/octet-bluetooth/control.sock'
 START_TIMEOUT = 120.0
@@ -195,16 +194,15 @@ class BluetoothControl:
         if self.server.TUNING.status().get('audio_owned') is not False:
             raise RuntimeError('Auto Tune owns audio or ownership is unknown')
         with self.server.DSP() as dsp:
-            path = dsp.call('GetConfigFilePath')
-        if SourceProfiles(Path(self.server.CHANNEL_PROFILE).parent).origin(path):
-            # On a source working copy (another input picked on the Music page): go back
-            # to the approved profile, as AirPlay does, rather than refusing the phone.
+            loaded = json.loads(dsp.call('GetConfigJson'))
+        if source_metadata(loaded)['id'] != 'tidal':
+            # Another input was picked on the Music page: back to the profile's Tidal
+            # input first, as AirPlay does; the phone's route is built from that.
             self.server.select_source('tidal')
         with self.server.DSP() as dsp:
             path = dsp.call('GetConfigFilePath')
-            if (path == str(self.server.CHANNEL_PROFILE) or not self.server.TUNING.active(path)
-                    or dsp.call('GetState') != 'Running'):
-                raise RuntimeError('Bluetooth requires the approved Auto Tune baseline to be loaded')
+            if not self.server.listening_profile(path) or dsp.call('GetState') != 'Running':
+                raise RuntimeError('Bluetooth requires a saved speaker profile; select one on the DSP page')
 
     def _pause_mpd(self):
         # Pause keeps queue and position; Bluetooth never resumes MPD.

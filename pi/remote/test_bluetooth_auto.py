@@ -338,13 +338,13 @@ class ObserverIntegrationTests(unittest.TestCase):
         self.bus.set(path, IFACE, State=state)
         self.obs.on_properties_changed(BLUEZ, path, IFACE, {'State': state})
 
-    def test_idle_and_boot_active_do_nothing(self):
+    def test_boot_active_starts_once_and_other_idle_does_nothing(self):
         self.bus.set(TP, IFACE, State='active')
         self.obs.start()
         self.change('active')
         self.change('idle', TP2)
         self.assertTrue(self.runtime.join(WAIT))
-        self.assertEqual(self.controller.calls, [])
+        self.assertEqual([(action, gen.counter) for action, gen in self.controller.calls], [('start', 1)])
 
     def test_fresh_active_then_idle_starts_then_stops_exact_generation(self):
         self.obs.start()
@@ -377,7 +377,9 @@ class ObserverIntegrationTests(unittest.TestCase):
         self.obs.on_name_owner_changed('org.bluealsa', BLUEALSA, ':1.77')
         self.assertTrue(self.runtime.join(WAIT))
         self.assertFalse(self.runtime.is_current(gen))
-        self.assertEqual(self.controller.calls[-1], ('stop', gen))
+        # The old session stops before the still-active stream is re-admitted.
+        actions = [(action, call.bluealsa_owner) for action, call in self.controller.calls]
+        self.assertEqual(actions[1:], [('stop', gen.bluealsa_owner), ('start', ':1.77')])
 
     def test_blocked_start_then_idle_edge_never_unmutes(self):
         self.obs.start()

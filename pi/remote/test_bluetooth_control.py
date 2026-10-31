@@ -44,6 +44,8 @@ class RecoveryTests(unittest.TestCase):
             AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, restore_pending=None,
                                             needs_mute=False, hook_busy=threading.Lock(),
                                             baseline=SimpleNamespace(exists=lambda: False)))
+        # A saved profile is whatever the (patchable) Auto Tune proxy reports as active.
+        self.server.listening_profile = lambda path: self.server.TUNING.active(path)
         self.stop_bridge = Mock()
         self.control = self.controller()
         self.addCleanup(self.control.route.release)
@@ -210,7 +212,7 @@ class RecoveryTests(unittest.TestCase):
             self.prepare()
         self.server.TUNING.status = lambda: {'audio_owned': False}
         self.server.TUNING.active = lambda p: None
-        with self.assertRaisesRegex(RuntimeError, 'active profile'):
+        with self.assertRaisesRegex(RuntimeError, 'saved profile'):
             self.prepare()
 
     def test_profile_whose_filters_omit_defaults_is_accepted(self):
@@ -236,19 +238,16 @@ class RecoveryTests(unittest.TestCase):
         self.control.stop()
         self.assertTrue(self.state['mute'])
 
-    def test_source_working_copy_returns_to_the_approved_profile_first(self):
-        from source_profiles import SourceProfiles
-        profiles = SourceProfiles(self.root)
-        working = profiles.target(self.path)
-        working.write_bytes(self.data)
-        profiles.save(working, self.path)
-        self.state['path'] = str(working)
-        self.server.TUNING.active = lambda p: {'sha256': digest(self.data)} if p == str(self.path) else None
-        self.server.select_source.side_effect = lambda source: self.state.update(path=str(self.path))
+    def test_another_input_returns_to_the_profiles_tidal_input_first(self):
+        from audio_sources import AIRPLAY, source_config
+        self.state.update(path=str(self.root / 'running.yml'), config=source_config(self.config, AIRPLAY))
+        def back_to_tidal(source):
+            self.state.update(path=str(self.path), config=copy.deepcopy(self.config))
+        self.server.select_source.side_effect = back_to_tidal
         self.control._idle()
         self.server.select_source.assert_called_once_with('tidal')
         # AirPlay owning audio is refused before anything is switched.
-        self.state['path'] = str(working)
+        self.state.update(path=str(self.root / 'running.yml'), config=source_config(self.config, AIRPLAY))
         self.server.select_source.reset_mock()
         self.server.AIRPLAY_CONTROL.active = True
         with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
@@ -345,8 +344,7 @@ class RecoveryTests(unittest.TestCase):
     def test_invalid_journal_formats(self):
         self.prepare()
         original = self.control.route.journal.read_bytes()
-        for field, value in [('sha256', None), ('sha256', 'g' * 64),
-                             ('sha256', 'A' * 64), ('generation', 'z' * 32),
+        for field, value in [('generation', 'z' * 32),
                              ('generation', '0' * 31 + '\n'), ('version', True)]:
             with self.subTest(field=field, value=value):
                 record = json.loads(original)

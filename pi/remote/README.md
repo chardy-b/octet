@@ -148,14 +148,25 @@ The same crossover, EQ, polarity, output mutes and master level apply to all
 sources. Track transport is hidden while a physical input is selected; browsing
 and adding tracks to the Tidal queue remain available.
 
-Source switching keeps the current approved speaker preset, including saved Auto
-Tune profiles. A source mixer feeds the existing stereo speaker pipeline and
-captures all ten iD14 channels in the hardware's native format. USB inputs use
-asynchronous resampling and rate adjustment to follow the DAC8x clock. Returning
-to Tidal restores its original capture and clock settings. Saved tuning files stay
-unchanged: source changes use a working copy that retains the tuning's identity
-and speaker settings. The selected source survives service restarts; boot remains
-muted. Each candidate is checked by CamillaDSP before activation. A failed
+### Profiles and inputs
+
+A saved profile (any Auto Tune profile, or the built-in Output DSP controls and
+exciter presets) holds the speaker settings: crossovers, EQ, levels, polarity and
+routing. Every input (Tidal, AirPlay, Bluetooth, USB) works with every profile.
+`dsp_inputs.with_input(profile, input)` is the one place a configuration gets its
+input: it ignores whatever input the profile file contains and applies the one in
+use. Profile files are never edited when the input changes.
+
+Tidal runs the profile file itself. Any other input picked on the Music page runs
+from `/var/lib/octet-dsp/running.yml`, with `running.json` naming the profile it
+was built from. AirPlay and Bluetooth casts run from their own journalled
+candidates (below) and always restore the profile on stop, failure or restart. A
+cast or phone that starts while another input is selected first returns to the
+profile's Tidal input. A USB source mixer feeds the stereo speaker pipeline and
+captures all ten iD14 channels in the hardware's native format; non-Tidal inputs
+use asynchronous resampling to the profile's rate. The output must be a real `hw:`
+device (never the loopback). The selected source survives service restarts; boot
+remains muted. Each candidate is checked by CamillaDSP before activation. A failed
 activation restores the previous source and stays muted. A disconnected source is
 shown as unavailable.
 
@@ -657,40 +668,32 @@ are RUNNING at 44100 Hz / S32_LE / stereo, capture application and hardware
 pointers advance, and DSP readiness checks pass. Phone volume is Shairport software attenuation; 100% phone
 volume does not raise the DSP master. Deliberate remote volume changes remain
 available. Output pair mutes, crossover, protection filters and EQ are preserved.
-Ending playback mutes; Tidal never resumes itself. With the classic channel profile,
-AirPlay stays selected: choose Tidal explicitly and press Play to resume the queue.
-With an approved Auto Tune baseline, the original baseline path and exact config
-are restored on stop or failure, still muted.
+Ending playback mutes and returns to the profile; Tidal never resumes itself.
 
 The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
 Manual source selection stays muted. Auto Tune excludes automatic playback;
-a missing receiver, loopback, unsupported preset or failed reload stays muted.
-Manual source selection still requires the **Output DSP controls** preset. Automatic
-AirPlay also supports a SHA-verified `TUNING.active(path)` baseline directly under
-`/var/lib/octet-autotune/baselines`, provided its loaded JSON exactly equals the
-baseline YAML and it uses stereo Tidal loopback at a 48 kHz DSP rate. Unsupported
-configs fail closed; there is no fallback to the 37-filter channel preset.
+a missing receiver, loopback, unsaved profile or failed reload stays muted.
+AirPlay works with any saved profile (see [Profiles and inputs](#profiles-and-inputs));
+profile files are identified by path and are not checksum-checked.
 
-Baseline AirPlay uses `/var/lib/octet-dsp/airplay-baseline.yml` (0640), copied from
-the exact loaded config with only capture/clock routing changes. The original
-baseline is never written: all 129 filters in the verified baseline, pipeline,
-mixers, gains, output protections and playback device remain unchanged. The
-candidate must pass CamillaDSP `--check`. A bounded 0600 `airplay-recovery.json`
-journal records the original path and SHA-256, with fdatasync and directory fsync
-completed before `SetConfigFilePath(candidate)` followed by `Reload`. Readiness
-requires exact candidate config/path, unchanged approved baseline digest, running
-DSP and advancing capture PCM before setting −18 dB and unmuting.
+Every cast uses `/var/lib/octet-dsp/airplay-baseline.yml` (0640), built by
+`dsp_inputs.with_input(profile, 'airplay')` from the loaded profile. The profile
+file is never written. The candidate must pass CamillaDSP `--check`. A bounded
+0600 `airplay-recovery.json` journal records the profile path, with fdatasync and
+directory fsync completed before `SetConfigFilePath(candidate)` followed by
+`Reload`. Readiness requires the exact candidate config/path, running DSP and
+advancing capture PCM before setting −18 dB and unmuting. Profiles are compared as
+CamillaDSP loads them (`ReadConfig`), so fields it fills in by default do not count
+as differences.
 
-Stop/failure/restart mutes and restores using `SetConfigFilePath(original)` then
-`Reload`; cleanup follows verification of original path, exact config, running
-DSP and baseline digest. Failed recovery retains the journal and mute/retry latch.
-Manual controls end baseline AirPlay and complete recovery under the shared lock
-before proceeding; this deliberately narrow version does not edit baseline files
-or expose ephemeral profiles as general editable presets. Auto Tune handoff uses
-the same recovery gate. If Auto Tune already owns audio or has selected another
-path, mute and retain recovery evidence without overwriting its configuration.
-Recovery requires ownership to be released and a recognized path plus the original
-approval/digest; unknown, changed, malformed or oversized state blocks playback.
+Stop/failure/restart mutes and restores using `SetConfigFilePath(profile)` then
+`Reload`; cleanup follows verification of the profile path, config and running
+DSP. Failed recovery retains the journal and mute/retry latch. Manual controls end
+AirPlay and complete recovery under the shared lock before proceeding. Auto Tune
+handoff uses the same recovery gate. If Auto Tune already owns audio or has
+selected another path, mute and retain recovery evidence without overwriting its
+configuration. Recovery requires ownership to be released and a saved profile
+path; unknown, malformed or oversized state blocks playback.
 An Auto Tune stop request remains available while recovery is blocked. Never delete
 the journal to bypass a failed restore. Remote initialization recovers before
 allowing AirPlay; a persisted route never implies a live cast.
@@ -725,7 +728,7 @@ is changed by the AirPlay installer.
 MPD owns `hw:Loopback,0,0` → `hw:Loopback,1,0`. Shairport owns
 `hw:Loopback,0,1` → `hw:Loopback,1,1`, **44100 Hz / S32_LE / stereo**. Existing
 `snd-aloop` with at least `pcm_substreams=2` (3 when Bluetooth is used) is required; there is no `plughw`, DAC or MPD fallback.
-Camilla's asynchronous input resampler converts to the 48000 Hz speaker pipeline.
+Camilla's asynchronous input resampler converts to the profile's speaker rate.
 Confirm the installed Shairport version honors the supplied options and reports
 this PCM format during a real cast. Package/version checks and negotiation probes
 are not substitutes for that acceptance test. Configuration follows the
@@ -809,8 +812,9 @@ to the Bluetooth route and unmutes at no more than −18 dB once audio is flowin
 AirPlay or Auto Tune holding the audio refuses the Bluetooth start; Bluetooth
 holding it refuses AirPlay (first owner wins). Any Music-page control stops
 Bluetooth muted. When the phone stops streaming, Octet mutes and does not resume
-Tidal. A stream already playing when octet-remote starts is not picked up until
-the phone pauses and plays again.
+Tidal. A phone already playing when octet-remote (or BlueZ/BlueALSA) starts is
+picked up once, after the same identity checks. Any saved profile works; the
+phone's route is built by `dsp_inputs.with_input(profile, 'bluetooth', ...)`.
 
 **WirePlumber.** The fragment disables only WirePlumber's BlueZ monitor so
 PipeWire never claims the phone's audio. Restarting WirePlumber while MPD and

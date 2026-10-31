@@ -12,7 +12,6 @@ import yaml
 
 import audio_sources
 import server
-from source_profiles import SourceProfiles
 from test_audio_sources import config, usb
 from tuning_proxy import TuningProxy
 
@@ -39,7 +38,7 @@ class ListeningDSP:
             return self.path
         if name == 'GetConfigJson':
             return json.dumps(self.document)
-        if name == 'ReadConfigJson':
+        if name in ('ReadConfigJson', 'ReadConfig'):
             return value
         if name == 'GetState':
             return self.state
@@ -97,9 +96,9 @@ class SourceSwitching(unittest.TestCase):
             patches.enter_context(patch.object(server.INPUT_LEVELS, 'release'))
             patches.enter_context(patch.object(server.time, 'sleep'))
             patches.enter_context(patch.object(server, 'ACTIVE_CAPTURE_CHANNELS', (0, 1)))
-            profiles = SourceProfiles(working)
-            target = profiles.target(origin)
-            yield origin, baseline, tuning, dsp, validation, mpd, profiles, target
+            # Every non-Tidal input runs from one file; its record names the profile.
+            target = working / 'running.yml'
+            yield origin, baseline, tuning, dsp, validation, mpd, working / 'running.json', target
 
     def assert_tuning_available(self, dsp, tuning, source):
         status = server.current_status()
@@ -121,7 +120,7 @@ class SourceSwitching(unittest.TestCase):
             self.assert_tuning_available(dsp, tuning, 'tidal')
             for source in (usb()['id'], 'tidal'):
                 server.select_source(source)
-                # Tidal returns to the approved profile itself so AirPlay and Bluetooth accept it.
+                # Tidal runs the saved profile itself.
                 self.assertEqual(dsp.path, str(origin if source == 'tidal' else target))
                 self.assertEqual(origin.read_bytes(), original_bytes)
                 self.assertEqual(audio_sources.source_config(dsp.document, audio_sources.TIDAL), baseline)
@@ -129,7 +128,7 @@ class SourceSwitching(unittest.TestCase):
                 self.assertEqual(dsp.volume, -31)
                 self.assertTrue(dsp.muted)
                 self.assert_tuning_available(dsp, tuning, source)
-                self.assertIsNotNone(SourceProfiles(target.parent).read(target, server.original_profile))
+                self.assertEqual(json.loads(profiles.read_text())['profile'], str(origin))
             self.assertEqual(dsp.document, baseline)
             server.action('volume', {'db': -32})
             self.assertEqual(dsp.volume, -32)
@@ -143,7 +142,7 @@ class SourceSwitching(unittest.TestCase):
                 if existing:
                     server.select_source(usb()['id'])
                 original_bytes = origin.read_bytes()
-                manifest = profiles.manifest_path(target)
+                manifest = profiles
                 before = (target.read_bytes(), manifest.read_bytes()) if existing else None
                 previous_path = dsp.path
                 previous_document = copy.deepcopy(dsp.document)
@@ -163,7 +162,7 @@ class SourceSwitching(unittest.TestCase):
                     self.assertFalse(target.exists() or manifest.exists())
                 self.assertNotIn(('SetMute', True), dsp.calls)
                 mpd.assert_not_called()
-                self.assertEqual(list(target.parent.glob('*.source-candidate.yml')), [])
+                self.assertEqual(list(target.parent.glob('*.candidate.yml')), [])
 
     def test_activation_failure_restores_previous_path_file_manifest_and_mutes(self):
         for existing in (False, True):
@@ -172,7 +171,7 @@ class SourceSwitching(unittest.TestCase):
                 if existing:
                     server.select_source(usb()['id'])
                 original_bytes = origin.read_bytes()
-                manifest = profiles.manifest_path(target)
+                manifest = profiles
                 before = (target.read_bytes(), manifest.read_bytes()) if existing else None
                 previous_path = dsp.path
                 previous_document = copy.deepcopy(dsp.document)
@@ -192,7 +191,7 @@ class SourceSwitching(unittest.TestCase):
                     self.assertFalse(target.exists() or manifest.exists())
                     self.assertIn(('SetConfigFilePath', str(origin)), dsp.calls)
                 self.assertNotIn(('SetMute', False), dsp.calls)
-                self.assertEqual(list(target.parent.glob('*.source-candidate.yml')), [])
+                self.assertEqual(list(target.parent.glob('*.candidate.yml')), [])
                 self.assert_tuning_available(dsp, tuning, usb()['id'] if existing else 'tidal')
 
     def test_unapproved_configuration_cannot_switch_sources_or_unmute(self):

@@ -61,16 +61,24 @@ class ContractTests(unittest.TestCase):
                                     (44100, 'S32_LE', 1), (48000.0, 'S16_LE', 2)):
             with self.assertRaises(ValueError):
                 bt.routed(self.baseline(), rate=rate, sample_format=fmt, channels=channels)
-        for section, key, value in (('capture', 'device', 'hw:Loopback,1,1'),
-                                    ('capture', 'device', 'hw:Loopback,1,2'),
-                                    ('playback', 'device', 'default'),
+        for section, key, value in (('playback', 'device', 'default'),
                                     ('playback', 'device', 'plughw:DAC,0'),
-                                    ('playback', 'device', 'hw:Loopback,0,0'),
-                                    ('playback', 'channels', 2)):
+                                    ('playback', 'device', 'hw:Loopback,0,0')):
             config = self.baseline()
             config['devices'][section][key] = value
             with self.subTest(section=section, value=value), self.assertRaises(ValueError):
                 bt.routed(config, rate=44100, sample_format='S16_LE', channels=2)
+
+    def test_any_profile_input_and_output_count_is_accepted(self):
+        # Profiles hold speaker settings; whatever input they were saved with is replaced.
+        for section, key, value in (('capture', 'device', 'hw:Loopback,1,1'),
+                                    ('capture', 'device', 'hw:CARD=iD14,DEV=0'),
+                                    ('playback', 'channels', 2)):
+            config = self.baseline()
+            config['devices'][section][key] = value
+            with self.subTest(section=section, value=value):
+                candidate = bt.routed(config, rate=44100, sample_format='S16_LE', channels=2)
+                self.assertEqual(candidate['devices']['capture']['device'], 'hw:Loopback,1,2')
 
 
 if __name__ == '__main__':

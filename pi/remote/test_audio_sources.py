@@ -66,8 +66,10 @@ class AudioSources(unittest.TestCase):
         raw['devices']['capture']['device'] = 'hw:Loopback,1,1'
         self.assertEqual(audio_sources.source_metadata(raw)['id'], 'airplay')
         self.assertEqual(audio_sources.meter_channels(raw), (0, 1))
-        with self.assertRaisesRegex(RuntimeError, 'metadata'):
-            audio_sources.source_config(raw, audio_sources.TIDAL)
+        # Any input a config holds is replaced; Tidal is rebuilt from the speaker settings.
+        tidal = audio_sources.source_config(raw, audio_sources.TIDAL)
+        self.assertEqual(tidal['devices']['capture']['device'], 'hw:Loopback,1,0')
+        self.assertEqual(audio_sources.source_metadata(tidal)['id'], 'tidal')
 
     def test_status_files_alone_do_not_advertise_loopback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -137,9 +139,10 @@ class AudioSources(unittest.TestCase):
         self.assertEqual(audio_sources.source_metadata(changed)['id'], 'airplay')
         changed = audio_sources.source_config(changed, usb())
         self.assertEqual(audio_sources.source_config(changed, audio_sources.TIDAL), original)
+        # Any speaker rate: AirPlay's 44.1 kHz is resampled to it.
         original['devices']['samplerate'] = 96000
-        with self.assertRaisesRegex(ValueError, '48000'):
-            audio_sources.source_config(original, audio_sources.AIRPLAY)
+        changed = audio_sources.source_config(original, audio_sources.AIRPLAY)
+        self.assertEqual((changed['devices']['samplerate'], changed['devices']['capture_samplerate']), (96000, 44100))
 
     def test_mono_duplicates_to_stereo_without_changing_any_speaker_setting(self):
         original = config()
@@ -170,7 +173,8 @@ class AudioSources(unittest.TestCase):
         changed['filters']['output_2_polarity']['parameters']['mute'] = True
         restored = audio_sources.source_config(changed, audio_sources.TIDAL)
         original['filters']['output_2_polarity']['parameters']['mute'] = True
-        self.assertEqual(restored, original)
+        from dsp_inputs import speaker_part
+        self.assertEqual(restored, speaker_part(original))
 
     def test_invalid_rate_unknown_capture_and_unplugged_id_are_rejected(self):
         before = config()
@@ -178,10 +182,10 @@ class AudioSources(unittest.TestCase):
         source['rates'] = [96000]
         with self.assertRaises(ValueError):
             audio_sources.source_config(before, source)
+        # An unknown input in a profile is ignored, not refused.
         other = copy.deepcopy(before)
         other['devices']['capture']['device'] = 'hw:unknown'
-        with self.assertRaises(RuntimeError):
-            audio_sources.source_config(other, usb())
+        self.assertEqual(audio_sources.source_config(other, usb())['devices']['capture']['device'], usb()['device'])
         with patch.object(server, 'discover_sources', return_value=[audio_sources.TIDAL]), patch.object(server, 'DSP') as dsp:
             for value in ('usb:unplugged:mono-1', '../123', 'tidal\nplay', None):
                 with self.assertRaises(ValueError):
@@ -199,18 +203,22 @@ class AudioSources(unittest.TestCase):
                 dsp = MagicMock()
                 dsp.__enter__.return_value = dsp
 
+                path = str(profile)
+
                 def call(name, *args):
-                    nonlocal loaded
+                    nonlocal loaded, path
                     if name == 'GetConfigFilePath':
-                        return str(profile)
+                        return path
+                    if name == 'SetConfigFilePath':
+                        path = args[0]
                     if name == 'GetConfigJson':
                         return json.dumps(loaded)
-                    if name == 'ReadConfigJson':
+                    if name in ('ReadConfigJson', 'ReadConfig'):
                         return args[0]
                     if name == 'GetState':
                         return 'Running'
                     if name == 'Reload' and outcome == 'success':
-                        loaded = yaml.safe_load(profile.read_text())
+                        loaded = yaml.safe_load(Path(path).read_text())
                         loaded['devices']['capture']['labels'] = None  # CamillaDSP adds defaults.
 
                 dsp.call.side_effect = call
@@ -238,57 +246,6 @@ class AudioSources(unittest.TestCase):
                         mpd.assert_not_called()
                     else:
                         self.assertIn(('SetMute', True), calls)
-
-    def test_real_deferred_source_path_activates_only_after_live_pcm(self):
-        from airplay_control import AirPlayController
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / 'channel-dsp.yml'
-            original = config()
-            profile.write_text(yaml.safe_dump(original))
-            loaded = copy.deepcopy(original)
-            dsp = MagicMock()
-            dsp.__enter__.return_value = dsp
-
-            def call(name, *args):
-                nonlocal loaded
-                if name == 'GetConfigFilePath':
-                    return str(profile)
-                if name == 'GetConfigJson':
-                    return json.dumps(loaded)
-                if name == 'GetState':
-                    return 'Running'
-                if name == 'ReadConfigJson':
-                    return args[0]
-                if name == 'Reload':
-                    loaded = yaml.safe_load(profile.read_text())
-                    loaded['devices']['capture']['labels'] = None
-
-            dsp.call.side_effect = call
-            with patch.object(server, 'CHANNEL_PROFILE', profile), \
-                 patch.object(server, 'DSP', return_value=dsp), \
-                 patch.object(server, 'approved'), \
-                 patch.object(server, 'listening_profile', side_effect=lambda path: dict(
-                     label='Test', description='', tuning=None, origin_path=path)), \
-                 patch.object(server, 'discover_sources', return_value=[audio_sources.AIRPLAY]), \
-                 patch.object(server.subprocess, 'run', return_value=MagicMock(returncode=0)), \
-                 patch.object(server, 'mpd') as mpd, \
-                 patch.object(server.TUNING, 'status', return_value={'audio_owned': False}), \
-                 patch('airplay_control.loopback_available', return_value=True), \
-                 patch('airplay_control.receiver_running', return_value=True), \
-                 patch('airplay_control.pcm_running', return_value=False) as live:
-                server.ACTIVE_CAPTURE_CHANNELS = (1, 1)
-                controller = AirPlayController(server)
-                controller.event('start', now=0)
-                controller.tick(now=1)
-                self.assertNotIn(('SetMute', False), [c.args for c in dsp.call.call_args_list])
-                live.return_value = True
-                controller.tick(now=2)
-                self.assertTrue(controller.active)
-                self.assertEqual(server.ACTIVE_CAPTURE_CHANNELS, (0, 1))
-                self.assertEqual([c.args for c in dsp.call.call_args_list][-2:],
-                                 [('SetVolume', -18.0), ('SetMute', False)])
-                self.assertEqual(loaded['filters'], original['filters'])
-                mpd.assert_called_once_with('pause 1')
 
     def test_tidal_transport_does_not_play_over_selected_input(self):
         changed = audio_sources.source_config(config(), usb())

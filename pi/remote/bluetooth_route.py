@@ -85,13 +85,12 @@ class BluetoothRoute(BaselineRoute):
                 result[key] = value
             return result
         record = json.loads(raw, object_pairs_hook=unique)
+        # Journals from before profile + input may still carry a checksum; it is ignored.
         if (not isinstance(record, dict)
-                or set(record) != {'version', 'original', 'sha256', 'generation'}
+                or set(record) - {'sha256'} != {'version', 'original', 'generation'}
                 or type(record['version']) is not int or record['version'] != 1
                 or not isinstance(record['original'], str)
                 or len(record['original']) > 4096
-                or not isinstance(record['sha256'], str)
-                or re.fullmatch(r'[0-9a-f]{64}', record['sha256']) is None
                 or not isinstance(record['generation'], str)
                 or re.fullmatch(r'[0-9a-f]{32}', record['generation']) is None):
             raise RuntimeError('Invalid Bluetooth recovery journal')
@@ -109,20 +108,19 @@ class BluetoothRoute(BaselineRoute):
         self.acquire()
         record = self.read_record()
         path = Path(record['original'])
-        if (path.parent != self.server.TUNING.root / 'baselines'
-                or path.suffix != '.yml' or path.resolve() != path):
-            raise RuntimeError('Bluetooth original is not an approved baseline path')
+        if path.suffix != '.yml' or path.resolve() != path:
+            raise RuntimeError('Bluetooth original is not a saved profile path')
         data = read_bounded(path, MAX_CONFIG)
-        if not self.server.TUNING.active(str(path)):
-            raise RuntimeError('Bluetooth original is no longer the active profile; recovery retained')
+        if not self.server.listening_profile(str(path)):
+            raise RuntimeError('Bluetooth original is no longer a saved profile; recovery retained')
         self.record = record
         return path, self.as_loaded(data)
 
     def begin(self, path, loaded):
-        """Durably capture an approved baseline without changing any DSP path.
+        """Durably record the running profile without changing any DSP path.
 
         This foundation is not a playback entry point. No bridge or candidate is
-        started. Snapshot bytes are written once, read-only, and digest checked.
+        started. Snapshot bytes are kept read-only as recovery evidence.
         """
         if self.exists():
             raise RuntimeError('Bluetooth recovery pending')
@@ -135,21 +133,18 @@ class BluetoothRoute(BaselineRoute):
             self.ownership()
             self.mute()
             original = Path(path)
-            if (original.parent != self.server.TUNING.root / 'baselines'
-                    or original.suffix != '.yml' or original.resolve() != original):
-                raise RuntimeError('Bluetooth requires an approved baseline path')
+            if original.suffix != '.yml' or original.resolve() != original:
+                raise RuntimeError('Bluetooth requires a saved profile path')
             data = read_bounded(original, MAX_CONFIG)
-            if not self.server.TUNING.active(path) or self.as_loaded(data) != loaded:
-                raise RuntimeError('Bluetooth requires the active profile to be loaded')
-            # Validate the Tidal topology without claiming observed PCM or --check.
-            routed(loaded, rate=48000, sample_format='S32_LE', channels=2)
+            if not self.server.listening_profile(path) or self.as_loaded(data) != loaded:
+                raise RuntimeError('Bluetooth requires a saved profile to be loaded')
             with self.server.DSP() as dsp:
                 if (dsp.call('GetConfigFilePath') != path
                         or json.loads(dsp.call('GetConfigJson')) != loaded
                         or dsp.call('GetState') != 'Running'):
                     raise RuntimeError('DSP baseline changed')
             persist(self.snapshot, data, 0o400)
-            self.record = dict(version=1, original=path, sha256=digest(data), generation=uuid.uuid4().hex)
+            self.record = dict(version=1, original=path, generation=uuid.uuid4().hex)
             self.ownership()
             persist(self.journal, json.dumps(self.record).encode(), 0o600)
             self.original()

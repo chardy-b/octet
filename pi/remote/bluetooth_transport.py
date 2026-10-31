@@ -7,9 +7,10 @@ the codec. Callbacks and signal payloads are hints only: every admission re-read
 transport and Device1 properties from the pinned BlueZ owner twice and requires paired,
 trusted and connected, so a signal alone never admits anything.
 
-Not admitted, by design: paired/connected idle devices, transports that were already
-active when the observer (re)synchronised (boot, daemon restart), duplicate active
-callbacks, and a second device while the first holds the slot. After release() or
+A transport already active when the observer (re)synchronises (boot, a restart of
+octet-remote, BlueZ or BlueALSA) is admitted once, like a fresh edge, so a phone that
+is playing is picked up. Not admitted, by design: paired/connected idle devices,
+duplicate active callbacks, and a second device while the first holds the slot. After release() or
 fail() a still-active stream is not re-admitted; only a new idle/pending -> active edge
 is. Any bus-owner change, object removal, idle, disconnect, untrust or contradictory
 read invalidates the generation. The admission policy (which phones may play) is the
@@ -74,8 +75,10 @@ class TransportObserver:
     def start(self):
         """(Re)synchronise: pin owners and record every present transport's state.
 
-        Anything already active is stale and is never admitted. Unavailable BlueZ or
-        BlueALSA leaves the observer closed until a NameOwnerChanged resync succeeds.
+        A stream already active (a phone playing when octet-remote starts or BlueZ or
+        BlueALSA restarts) is admitted once, through the same read-back as a fresh
+        edge. Unavailable BlueZ or BlueALSA leaves the observer closed until a
+        NameOwnerChanged resync succeeds.
         """
         self._pins, self._states = None, {}
         try:
@@ -87,7 +90,11 @@ class TransportObserver:
                 return
         except Exception:
             return
-        self._pins, self._states = owners, states
+        self._pins, self._states = owners, {path: state for path, state in states.items()
+                                            if state != 'active'}
+        for path in sorted(states):
+            if states[path] == 'active':
+                self._transition(path, 'active')
 
     def valid(self, generation):
         """True only for the current generation whose pins and properties still hold."""

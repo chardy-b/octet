@@ -1,15 +1,12 @@
 """Discover USB capture sources and feed an unchanged stereo speaker pipeline."""
-import copy
 import ctypes
 import subprocess
 import sys
-import json
 from pathlib import Path
 import re
 
-SOURCE_MIXER = 'octet_source'
-SOURCE_DESCRIPTION = 'Octet source: '
-CLOCK_KEYS = ('resampler', 'enable_rate_adjust', 'capture_samplerate', 'target_level', 'adjust_period')
+from dsp_inputs import CLOCK_KEYS, SOURCE_DESCRIPTION, SOURCE_MIXER, input_of, with_input
+
 TIDAL = dict(id='tidal', label='Tidal', group='Music', available=True,
              description='Tidal and the saved music queue.')
 
@@ -147,66 +144,20 @@ def discover_sources(proc=Path('/proc/asound')):
 
 
 def source_metadata(config):
-    stage = next((stage for stage in config.get('pipeline', [])
-                  if stage.get('type') == 'Mixer' and stage.get('name') == SOURCE_MIXER), None)
-    if stage is None:
-        device = config.get('devices', {}).get('capture', {}).get('device', '')
-        if device == 'hw:Loopback,1,1':
-            return dict(id='airplay', label='AirPlay')
-        return dict(id='tidal', label='Tidal') if device == 'hw:Loopback,1,0' else dict(id='unknown', label='Other source')
-    description = config['mixers'][SOURCE_MIXER].get('description', '')
-    if not description.startswith(SOURCE_DESCRIPTION):
-        raise RuntimeError('The active source configuration is not recognised')
-    return json.loads(description[len(SOURCE_DESCRIPTION):])
+    return input_of(config)
 
 
 def meter_channels(config):
     """The visualizer follows the selected input, including duplicated mono."""
-    if source_metadata(config)['id'] in ('tidal', 'airplay', 'unknown'):
+    if source_metadata(config)['id'] in ('tidal', 'airplay', 'bluetooth', 'unknown'):
         return (0, 1)
     mapping = config['mixers'][SOURCE_MIXER]['mapping']
     return tuple(row['sources'][0]['channel'] for row in sorted(mapping, key=lambda row: row['dest']))
 
 
 def source_config(config, source):
-    """Prepend a capture-to-stereo mixer; leave every speaker setting intact."""
-    result = copy.deepcopy(config)
-    metadata = source_metadata(result)
-    devices = result['devices']
-    if metadata['id'] == 'unknown':
-        raise RuntimeError('The current capture device is not managed by the music page')
-    if metadata['id'] != 'tidal':
-        if 'tidal_capture' not in metadata or 'tidal_clock' not in metadata:
-            raise RuntimeError('Source restore metadata is missing; restore the managed DSP preset')
-        result['pipeline'] = [stage for stage in result['pipeline']
-                              if not (stage.get('type') == 'Mixer' and stage.get('name') == SOURCE_MIXER)]
-        del result['mixers'][SOURCE_MIXER]
-        devices['capture'] = metadata['tidal_capture']
-        for key, saved in metadata['tidal_clock'].items():
-            if saved['present']:
-                devices[key] = saved['value']
-            else:
-                devices.pop(key, None)
-    if source['id'] == 'tidal':
-        return result
-    if source['id'] == 'airplay' and devices['samplerate'] != 48000:
-        raise ValueError('AirPlay requires the approved 48000 Hz speaker pipeline')
-    rate = 44100 if source['id'] == 'airplay' else devices['samplerate']
-    if rate not in source['rates']:
-        raise ValueError('This input does not support the speaker sample rate')
-    saved = dict(id=source['id'], label=source['label'],
-                 tidal_capture=copy.deepcopy(devices['capture']),
-                 tidal_clock={key: dict(present=key in devices, value=devices.get(key)) for key in CLOCK_KEYS})
-    devices['capture'] = dict(type='Alsa', channels=source['channels'], device=source['device'], format='S32_LE')
-    devices.update(resampler=dict(type='AsyncSinc', profile='Balanced'), enable_rate_adjust=True,
-                   capture_samplerate=rate, target_level=devices['chunksize'], adjust_period=10)
-    result.setdefault('mixers', {})[SOURCE_MIXER] = dict(
-        description=SOURCE_DESCRIPTION + json.dumps(saved, separators=(',', ':')),
-        channels={'in': source['channels'], 'out': 2},
-        mapping=[dict(dest=dest, sources=[dict(channel=channel, gain=0)])
-                 for dest, channel in enumerate(source['mapping'])])
-    result['pipeline'].insert(0, dict(type='Mixer', name=SOURCE_MIXER))
-    return result
+    """The profile's speaker settings fed from source (see dsp_inputs.with_input)."""
+    return with_input(config, source)
 
 
 if __name__ == '__main__':

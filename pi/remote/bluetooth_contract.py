@@ -3,10 +3,10 @@
 Observed PCM parameters and approval must eventually come from a trusted runtime
 controller. These pure helpers deliberately cannot establish either fact.
 """
-import copy
 import re
 
-from bluetooth_preflight import CAPTURE, PLAYBACK
+from bluetooth_preflight import PLAYBACK
+from dsp_inputs import with_input
 
 
 def check_cli(version, help_text, *, player):
@@ -41,27 +41,11 @@ def bridge_arguments(address, allowlist):
 
 
 def routed(config, *, rate, sample_format, channels):
-    """Build an offline candidate from actual post-bridge PCM parameters.
+    """The running profile fed from the phone's actual post-bridge PCM parameters.
 
-    No ALSA plug conversion. Unsupported native streams must be rejected. The
-    future controller must verify approval/path/digest and run Camilla --check.
+    Any profile (see dsp_inputs). No ALSA plug conversion: unsupported native
+    streams are rejected. The controller runs Camilla --check on the result.
     """
-    if (type(rate) is not int or rate not in (44100, 48000)
-            or sample_format not in ('S16_LE', 'S32_LE')
-            or type(channels) is not int or channels != 2):
+    if type(channels) is not int or channels != 2:
         raise ValueError('Unsupported Bluetooth PCM parameters')
-    devices = config['devices']
-    capture, playback = devices['capture'], devices['playback']
-    if (capture.get('type') != 'Alsa' or capture.get('device') != 'hw:Loopback,1,0'
-            or capture.get('channels') != 2 or devices.get('samplerate') != 48000
-            or playback.get('type') != 'Alsa' or playback.get('channels') != 8
-            or not re.fullmatch(r'hw:[A-Za-z0-9_=,]+', playback.get('device', ''))
-            or 'Loopback' in playback['device']):
-        raise ValueError('Requires stereo Tidal baseline with explicit eight-output DAC')
-    result = copy.deepcopy(config)
-    result['devices']['capture'].update(device=CAPTURE, format=sample_format)
-    result['devices'].update(capture_samplerate=rate,
-                             resampler=dict(type='AsyncSinc', profile='Balanced'),
-                             enable_rate_adjust=True, target_level=devices['chunksize'],
-                             adjust_period=10)
-    return result
+    return with_input(config, 'bluetooth', rate=rate, sample_format=sample_format)

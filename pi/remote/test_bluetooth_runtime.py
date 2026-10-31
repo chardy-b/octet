@@ -230,14 +230,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.mpd_calls, [])
         self.assertIsNone(self.control.session)
 
-    def test_channel_profile_unapproved_or_autotune_refuses_without_muting(self):
+    def test_unsaved_profile_or_autotune_refuses_without_muting(self):
         tuning = self.server.TUNING
         saved = tuning.active, tuning.status
-        for change in ('channel', 'unapproved', 'autotune', 'unknown'):
+        for change in ('unapproved', 'autotune', 'unknown'):
             with self.subTest(change=change):
-                if change == 'channel':
-                    self.state['path'] = str(self.server.CHANNEL_PROFILE)
-                elif change == 'unapproved':
+                if change == 'unapproved':
                     self.server.TUNING.active = lambda p: None
                 elif change == 'autotune':
                     self.server.TUNING.status = lambda: {'audio_owned': True}
@@ -587,7 +585,7 @@ class RuntimeTests(unittest.TestCase):
                 self.server.mpd = unknown
                 with self.assertRaisesRegex(RuntimeError, 'Music player'):
                     self.control.start_auto(self.generation(), lambda generation: True)
-                self.assertTrue({c[0] for c in self.calls} <= {'GetConfigFilePath', 'GetState'})
+                self.assertTrue({c[0] for c in self.calls} <= {'GetConfigFilePath', 'GetConfigJson', 'GetState'})
                 self.assertEqual(self.mpd_calls, ['status'])
                 self.spawn.assert_not_called()
                 self.assertIsNone(self.control.session)

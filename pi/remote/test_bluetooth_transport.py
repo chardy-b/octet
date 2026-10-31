@@ -94,18 +94,20 @@ class AdmissionTests(Base):
         self.go_idle()
         self.assertEqual(self.gens, [])
 
-    def test_boot_active_snapshot_does_nothing_even_when_repeated(self):
+    def test_boot_active_stream_is_admitted_once_even_when_repeated(self):
+        # A phone already playing when octet-remote starts is picked up.
         self.bus.set(TP, 'org.bluez.MediaTransport1', State='active')
         self.obs.start()
         self.go_active()  # duplicate callback for already-active state
-        self.assertEqual(self.gens, [])
+        self.assertEqual(len(self.gens), 1)
+        self.assertTrue(self.obs.valid(self.gens[0]))
 
-    def test_boot_active_then_idle_then_active_admits(self):
+    def test_boot_active_then_idle_then_active_admits_again(self):
         self.bus.set(TP, 'org.bluez.MediaTransport1', State='active')
         self.obs.start()
         self.go_idle()
         self.go_active()
-        self.assertEqual(len(self.gens), 1)
+        self.assertEqual(len(self.gens), 2)
 
     def test_pending_to_active_is_fresh(self):
         self.obs.start()
@@ -139,17 +141,18 @@ class RejectionTests(Base):
         self.go_active(sender=':1.99')
         self.assertEqual(self.gens, [])
 
-    def test_owner_restart_between_event_and_read_rejected(self):
+    def test_owner_restart_between_event_and_read_resyncs_to_the_new_owner(self):
         self.obs.start()
         self.bus.owners['org.bluez'] = ':1.11'
         self.go_active()
-        self.assertEqual(self.gens, [])
+        # The racing event is rejected; the resync admits the stream under the new owner.
+        self.assertEqual([g.bluez_owner for g in self.gens], [':1.11'])
 
-    def test_bluealsa_owner_changed_before_read_rejected(self):
+    def test_bluealsa_owner_changed_before_read_resyncs_to_the_new_owner(self):
         self.obs.start()
         self.bus.owners['org.bluealsa'] = ':1.21'
         self.go_active()
-        self.assertEqual(self.gens, [])
+        self.assertEqual([g.bluealsa_owner for g in self.gens], [':1.21'])
 
     def test_bluealsa_absent_at_start_fails_closed(self):
         del self.bus.owners['org.bluealsa']
@@ -341,8 +344,9 @@ class SlotTests(Base):
         self.bus.set(TP, 'org.bluez.MediaTransport1', State='idle')
         self.obs.on_properties_changed(':1.11', TP, 'org.bluez.MediaTransport1', {'State': 'idle'})
         self.go_active(sender=':1.11')
-        self.assertEqual([g.counter for g in self.gens], [1, 2])
-        self.assertEqual(self.gens[1].bluez_owner, ':1.11')
+        # 1: first stream; 2: still active at the resync; 3: the next fresh edge.
+        self.assertEqual([g.counter for g in self.gens], [1, 2, 3])
+        self.assertEqual(self.gens[-1].bluez_owner, ':1.11')
 
 
 class InvalidationTests(Base):
@@ -392,14 +396,15 @@ class InvalidationTests(Base):
         self.assertEqual(self.invalid[0][0], gen)
         self.assertFalse(self.obs.valid(gen))
 
-    def test_owner_vanishing_fails_closed_and_recovery_ignores_active_snapshot(self):
+    def test_owner_vanishing_fails_closed_and_recovery_readmits_the_active_stream(self):
         gen = self.admitted()
         del self.bus.owners['org.bluez']
         self.obs.on_name_owner_changed('org.bluez', BLUEZ, '')
         self.assertEqual(self.invalid[0][0], gen)
         self.bus.owners['org.bluez'] = ':1.11'
         self.obs.on_name_owner_changed('org.bluez', '', ':1.11')
-        self.assertEqual(len(self.gens), 1)  # stream still active at resync: stale
+        # Still active at the resync: a new generation pinned to the new owner.
+        self.assertEqual([g.bluez_owner for g in self.gens], [gen.bluez_owner, ':1.11'])
         self.assertFalse(self.obs.valid(gen))
 
     def test_unchanged_owner_notification_is_harmless(self):

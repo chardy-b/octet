@@ -12,7 +12,7 @@ import time
 
 import yaml
 
-from audio_sources import source_metadata
+from dsp_inputs import with_input
 
 ROOT = Path('/var/lib/octet-dsp')
 MAX_CONFIG = 2 * 1024 * 1024
@@ -62,18 +62,8 @@ def persist(path, data, mode):
 
 
 def routed(config):
-    # Narrow scope: only the verified stereo Tidal baseline. No mixer/pipeline edits.
-    capture = config['devices']['capture']
-    if (source_metadata(config)['id'] != 'tidal' or capture.get('channels') != 2
-            or capture.get('type') != 'Alsa' or capture.get('device') != 'hw:Loopback,1,0'
-            or config['devices']['samplerate'] != 48000):
-        raise RuntimeError('AirPlay requires an approved stereo Tidal baseline')
-    result = copy.deepcopy(config)
-    result['devices']['capture'].update(device='hw:Loopback,1,1', format='S32_LE')
-    result['devices'].update(resampler=dict(type='AsyncSinc', profile='Balanced'),
-                             enable_rate_adjust=True, capture_samplerate=44100,
-                             target_level=config['devices']['chunksize'], adjust_period=10)
-    return result
+    """The running profile fed from AirPlay (any profile; see dsp_inputs)."""
+    return with_input(config, 'airplay')
 
 
 class BaselineRoute:
@@ -157,16 +147,17 @@ class BaselineRoute:
         if self.record is None:
             self.record = json.loads(read_bounded(self.journal, MAX_JOURNAL))
         record = self.record
-        if (set(record) != {'version', 'original', 'sha256'} or record['version'] != 1
+        # Journals from before profile + input may still carry a checksum; it is ignored.
+        if (not isinstance(record, dict) or set(record) - {'sha256'} != {'version', 'original'}
+                or record['version'] != 1
                 or not isinstance(record['original'], str) or len(record['original']) > 4096):
             raise RuntimeError('Invalid AirPlay recovery journal')
         path = Path(record['original'])
-        if (path.parent != self.server.TUNING.root / 'baselines' or path.suffix != '.yml'
-                or path.resolve() != path):
-            raise RuntimeError('AirPlay recovery path is not an Auto Tune baseline')
+        if path.suffix != '.yml' or path.resolve() != path:
+            raise RuntimeError('AirPlay recovery path is not a saved profile')
         data = read_bounded(path, MAX_CONFIG)
-        if not self.server.TUNING.active(str(path)):
-            raise RuntimeError('AirPlay baseline is no longer the active profile')
+        if not self.server.listening_profile(str(path)):
+            raise RuntimeError('AirPlay recovery path is not a saved profile')
         return path, self.as_loaded(data)
 
     def ownership(self):
@@ -179,13 +170,12 @@ class BaselineRoute:
             raise RuntimeError('AirPlay recovery is still pending')
         self.acquire()
         try:
-            approval = self.server.TUNING.active(path)
-            if not approval:
-                raise RuntimeError('AirPlay baseline is not approved')
-            self.record = dict(version=1, original=path, sha256=approval['sha256'])
+            if not self.server.listening_profile(path):
+                raise RuntimeError('AirPlay requires a saved speaker profile')
+            self.record = dict(version=1, original=path)
             original, config = self.original()
             if loaded != config:
-                raise RuntimeError('Loaded DSP differs from the approved baseline')
+                raise RuntimeError('Loaded DSP differs from the saved profile')
             expected = routed(loaded)
             persist(self.candidate, yaml.safe_dump(expected, sort_keys=False).encode(), 0o640)
             check = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(self.candidate)],

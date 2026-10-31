@@ -23,6 +23,7 @@ REMOTE_FILES = (
     'install_bluetooth.py',
     'install_airplay.py',
     'audio_sources.py',
+    'dsp_inputs.py',
     'input_levels.py',
     'input-levels.js',
     'visualizer_state.py',

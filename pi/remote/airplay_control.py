@@ -14,8 +14,6 @@ import threading
 import time
 
 from airplay_baseline import BaselineRoute
-
-from source_profiles import SourceProfiles
 from audio_sources import loopback_available, source_metadata, meter_channels, pcm_fields, pcm_params_match
 
 SOCKET = '/run/octet-airplay/control.sock'
@@ -189,31 +187,23 @@ class AirPlayController:
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
                 with self.server.DSP() as dsp:
-                    path = dsp.call('GetConfigFilePath')
-                if SourceProfiles(Path(self.server.CHANNEL_PROFILE).parent).origin(path):
-                    # On a source working copy (for example after a USB input): go back to the
-                    # approved profile rather than refusing the cast.
+                    loaded = json.loads(dsp.call('GetConfigJson'))
+                if source_metadata(loaded)['id'] != 'tidal':
+                    # Another input was picked on the Music page: back to the profile's
+                    # Tidal input first; the cast is then built from that.
                     self.server.select_source('tidal')
                 check_deadline()
+                self.baseline.acquire()
                 with self.server.DSP() as dsp:
                     path = dsp.call('GetConfigFilePath')
-                    if path != str(self.server.CHANNEL_PROFILE):
-                        self.baseline.acquire()
                     self.server.approved(dsp)
                     loaded = json.loads(dsp.call('GetConfigJson'))
-                    if path != str(self.server.CHANNEL_PROFILE) and not self.server.TUNING.active(path):
-                        raise RuntimeError('AirPlay requires an approved baseline or Output DSP controls preset')
                 if not loopback_available() or not receiver_running():
                     raise RuntimeError('AirPlay receiver or dedicated loopback is unavailable')
                 check_deadline()
                 self.server.mpd('pause 1')
                 check_deadline()
-                if path == str(self.server.CHANNEL_PROFILE):
-                    transition = self.server.select_source('airplay', defer_ready=True)
-                    if transition is not None:
-                        self.previous, self.expected = transition
-                else:
-                    self.expected = self.baseline.begin(path, loaded)
+                self.expected = self.baseline.begin(path, loaded)
                 check_deadline()
                 self.pending = time.monotonic() if supplied_now is None else now
             except Exception as error:
@@ -260,8 +250,8 @@ class AirPlayController:
                     with self.server.DSP() as dsp:
                         loaded = json.loads(dsp.call('GetConfigJson'))
                         ready = (source_metadata(loaded)['id'] == 'airplay'
-                                 and dsp.call('GetConfigFilePath') == str(
-                                     self.baseline.candidate if self.baseline.exists() else self.server.CHANNEL_PROFILE)
+                                 and self.baseline.exists()
+                                 and dsp.call('GetConfigFilePath') == str(self.baseline.candidate)
                                  and dsp.call('GetState') == 'Running'
                                  and loaded['devices']['capture']['device'] == 'hw:Loopback,1,1'
                                  and loaded['devices'].get('capture_samplerate') == 44100)

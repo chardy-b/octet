@@ -20,7 +20,8 @@ from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 from visualizer_state import VisualizerState
-from audio_sources import discover_sources, source_config, source_metadata, meter_channels
+from audio_sources import discover_sources, source_metadata, meter_channels
+from dsp_inputs import with_input
 from tuning_proxy import TuningProxy
 from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
@@ -48,7 +49,7 @@ HIGH_DB = 0.0
 LEVELS_UNLOCKED = False
 TUNING = TuningProxy()
 CHANNEL_PROFILE = Path('/var/lib/octet-dsp/channel-dsp.yml')
-PROFILES[str(CHANNEL_PROFILE)] = ('Output DSP controls', 'EX30 → 1/2 · EX32 → 3/4 · subs → 5/6 · tweeters → 7/8')
+PROFILES[str(CHANNEL_PROFILE)] =('Output DSP controls', 'EX30 → 1/2 · EX32 → 3/4 · subs → 5/6 · tweeters → 7/8')
 LOCK = threading.RLock()
 TIDAL_LOCK = threading.RLock()
 SESSION = None
@@ -495,12 +496,33 @@ def original_profile(path):
     return None
 
 
+def running_file():
+    """A profile fed from anything other than its own Tidal input runs from this one file."""
+    return CHANNEL_PROFILE.with_name('running.yml')
+
+
+def running_record():
+    """Names the profile running_file() was built from."""
+    return CHANNEL_PROFILE.with_name('running.json')
+
+
+def profile_path(path):
+    """The saved profile behind the file CamillaDSP runs: the profile itself, or
+    the one recorded for the running-input file (or an older per-profile copy)."""
+    path = str(path)
+    if path == str(running_file()):
+        try:
+            record = json.loads(running_record().read_text())
+            return record['profile'] if isinstance(record['profile'], str) else None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+    origin = SourceProfiles(CHANNEL_PROFILE.parent).origin(path)
+    return str(origin) if origin else path
+
+
 def listening_profile(path):
-    profile = original_profile(path)
-    if profile:
-        return profile
-    working = SourceProfiles(CHANNEL_PROFILE.parent).read(path, original_profile)
-    return working['origin_approval'] if working else None
+    profile = profile_path(path)
+    return original_profile(profile) if profile else None
 
 
 def approved(dsp):
@@ -522,42 +544,12 @@ def restore_channel_profile(previous):
     AIRPLAY_CONTROL.recover()
 
 
-def return_to_baseline(identifier, origin, previous_path, config):
-    global ACTIVE_CAPTURE_CHANNELS
-    import yaml
-    with DSP() as dsp:
-        baseline = json.loads(dsp.call('ReadConfigJson', json.dumps(yaml.safe_load(Path(origin).read_text()))))
-    if source_metadata(baseline)['id'] != identifier:
-        raise RuntimeError('The approved profile does not use that source')
-    INPUT_LEVELS.release()
-    with DSP() as dsp:
-        dsp.call('SetMute', True)
-    try:
-        mpd('pause 1')
-        with DSP() as dsp:
-            dsp.call('SetConfigFilePath', origin)
-            dsp.call('Reload')
-        for _ in range(60):
-            time.sleep(.1)
-            with DSP() as dsp:
-                loaded = json.loads(dsp.call('GetConfigJson'))
-                if (dsp.call('GetConfigFilePath') == origin
-                        and source_metadata(loaded)['id'] == identifier
-                        and dsp.call('GetState') == 'Running'):
-                    ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
-                    return  # Explicit Unmute/Play is required after a source change.
-        raise RuntimeError('The selected input did not start')
-    except Exception:
-        AIRPLAY_CONTROL.invalidate(manual=False)
-        with DSP() as dsp:
-            dsp.call('SetMute', True)
-            dsp.call('SetConfigFilePath', previous_path)
-            dsp.call('Reload')
-        ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
-        raise RuntimeError('Source change failed; the previous source was restored and output is muted')
+def select_source(identifier):
+    """Run the selected profile from identifier's input (see dsp_inputs.with_input).
 
-
-def select_source(identifier, defer_ready=False):
+    Tidal runs the profile file itself when it already uses Tidal; every other
+    input runs from running_file(). Ends muted with MPD paused; Unmute/Play is explicit.
+    """
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
     if not isinstance(identifier, str):
@@ -567,53 +559,45 @@ def select_source(identifier, defer_ready=False):
         raise ValueError('That input is no longer connected. Refresh the available sources.')
     with DSP() as dsp:
         previous_path = dsp.call('GetConfigFilePath')
-        profile = listening_profile(previous_path)
-        if not profile:
-            raise RuntimeError('Select a saved speaker profile on the DSP page before changing sources.')
         config = json.loads(dsp.call('GetConfigJson'))
-        on_copy = bool(profile['tuning']) and previous_path not in (profile['origin_path'], str(CHANNEL_PROFILE))
-        if source_metadata(config)['id'] == identifier and dsp.call('GetState') == 'Running' and not (
-                on_copy and identifier == 'tidal' and not defer_ready):
-            return (None, config) if defer_ready else None
-    origin = profile['origin_path']
-    if (identifier == 'tidal' and not defer_ready and profile['tuning']
-            and previous_path != origin and previous_path != str(CHANNEL_PROFILE)):
-        # AirPlay and Bluetooth only accept the approved baseline itself, so Tidal
-        # returns to it instead of staying on a source working copy.
-        return return_to_baseline(identifier, origin, previous_path, config)
-    updated = source_config(config, source)
+        running = dsp.call('GetState') == 'Running'
+    details = listening_profile(previous_path)
+    if not details:
+        raise RuntimeError('Select a saved speaker profile on the DSP page before changing sources.')
+    profile = details['origin_path']
+    if source_metadata(config)['id'] == identifier and running and previous_path in (profile, str(running_file())):
+        return
     with DSP() as dsp:
-        updated = json.loads(dsp.call('ReadConfigJson', json.dumps(updated)))
-    profiles = SourceProfiles(CHANNEL_PROFILE.parent)
-    # Saved tuning is immutable. Change capture on a verified listening copy,
-    # retaining its original profile identity and every speaker setting.
-    target = CHANNEL_PROFILE if previous_path == str(CHANNEL_PROFILE) else profiles.target(profile['origin_path'])
-    manifest = profiles.manifest_path(target) if target != CHANNEL_PROFILE else None
-    candidate = target.with_suffix('.source-candidate.yml')
-    previous = target.read_bytes() if target.exists() else None
-    previous_manifest = manifest.read_bytes() if manifest and manifest.exists() else None
+        base = yaml.safe_load(dsp.call('ReadConfig', Path(profile).read_text()))
+    if identifier == 'tidal' and source_metadata(base)['id'] == 'tidal':
+        target, updated = Path(profile), base
+    else:
+        target, updated = running_file(), with_input(base, 'tidal' if identifier == 'tidal' else source)
+    previous = running_file().read_bytes() if running_file().exists() else None
+    previous_record = running_record().read_bytes() if running_record().exists() else None
+    candidate = running_file().with_suffix('.candidate.yml')
     try:
-        candidate.write_text(yaml.safe_dump(updated, sort_keys=False))
-        candidate.chmod(0o640)
-        validation = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(candidate)], capture_output=True, timeout=10)
-        if validation.returncode:
-            raise RuntimeError('DSP rejected the source; the previous source was retained')
+        if target == running_file():
+            candidate.write_text(yaml.safe_dump(updated, sort_keys=False))
+            candidate.chmod(0o640)
+            validation = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(candidate)],
+                                        capture_output=True, timeout=10)
+            if validation.returncode:
+                raise RuntimeError('DSP rejected the source; the previous source was retained')
         INPUT_LEVELS.release()
         with DSP() as dsp:
             dsp.call('SetMute', True)
         try:
             # Retain the queue and its position, but never play Tidal in the background.
-            if not defer_ready:
-                mpd('pause 1')
-            candidate.replace(target)
-            if manifest:
-                profiles.save(target, profile['origin_path'])
+            mpd('pause 1')
+            if target == running_file():
+                candidate.replace(running_file())
+                running_record().write_text(json.dumps(dict(profile=profile, input=identifier)))
+                running_record().chmod(0o640)
             with DSP() as dsp:
                 if str(target) != previous_path:
                     dsp.call('SetConfigFilePath', str(target))
                 dsp.call('Reload')
-            if defer_ready:
-                return previous, updated
             for _ in range(60):
                 time.sleep(.1)
                 with DSP() as dsp:
@@ -627,29 +611,17 @@ def select_source(identifier, defer_ready=False):
                         return  # Explicit Unmute/Play is required after a source change.
             raise RuntimeError('The selected input did not start')
         except Exception:
-            if target == CHANNEL_PROFILE:
-                # Durable, retryable restore: keeps the mute latched and the rollback bytes
-                # until both the file and the DSP reload have succeeded.
-                restore_channel_profile(previous)
-            else:
-                AIRPLAY_CONTROL.invalidate(manual=False)
-                if previous is not None:
-                    candidate.write_bytes(previous)
-                    candidate.chmod(0o640)
-                    candidate.replace(target)
+            AIRPLAY_CONTROL.invalidate(manual=False)
+            for path, saved in ((running_file(), previous), (running_record(), previous_record)):
+                if saved is None:
+                    path.unlink(missing_ok=True)
                 else:
-                    target.unlink(missing_ok=True)
-                if manifest:
-                    if previous_manifest is None:
-                        manifest.unlink(missing_ok=True)
-                    else:
-                        manifest.write_bytes(previous_manifest)
-                        manifest.chmod(0o640)
-                with DSP() as dsp:
-                    dsp.call('SetMute', True)
-                    if str(target) != previous_path:
-                        dsp.call('SetConfigFilePath', previous_path)
-                    dsp.call('Reload')
+                    path.write_bytes(saved)
+            with DSP() as dsp:
+                dsp.call('SetMute', True)
+                if dsp.call('GetConfigFilePath') != previous_path:
+                    dsp.call('SetConfigFilePath', previous_path)
+                dsp.call('Reload')
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
             raise RuntimeError('Source change failed; the previous source was restored and output is muted')
     finally:

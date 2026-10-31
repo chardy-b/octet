@@ -11,9 +11,9 @@ An invalidation clears the cache synchronously, so a start already in flight ref
 its final unmute, and the controller's watchdog fails the lost generation. A start that
 fails is not retried; only a new active generation is. Any failure of the worker, the
 adapter or the GLib loop invalidates the cache and stops the automatic session, and is
-contained: manual control, Tidal and AirPlay are never affected. Idle connections and
-streams already active at (re)synchronisation never reach this module: the observer
-does not emit them.
+contained: manual control, Tidal and AirPlay are never affected. Idle connections never
+reach this module; a stream already active at (re)synchronisation arrives once, as a
+new generation.
 """
 import logging
 import queue
