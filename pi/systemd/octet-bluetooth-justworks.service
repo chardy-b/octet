@@ -1,0 +1,23 @@
+# Octet pairs phones with plain "Just Works" and no pairing agent. The kernel only
+# accepts that by itself when the controller's IO capability is NoInputNoOutput; a
+# leftover DisplayYesNo makes it ask an agent to confirm a passkey, and with no agent
+# BlueZ rejects the pairing. Also advertise as a Hi-Fi audio device so phones list
+# Octet as a speaker. Runs whenever bluetooth.service starts, including restarts.
+# Install: sudo cp to /etc/systemd/system/, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now octet-bluetooth-justworks
+[Unit]
+Description=Octet Bluetooth Just Works pairing and audio device class
+After=bluetooth.service
+PartOf=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# bluetoothd powers hci0 shortly after it starts; settings applied before that are lost.
+# btmgmt only runs a command, then exits, when its input is a pipe that closes; with
+# /dev/null it does nothing. Each call is also bounded.
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do /usr/bin/bluetoothctl show | grep -q "Powered: yes" && break; sleep 1; done; sleep 1 | /usr/bin/timeout 10 /usr/bin/btmgmt io-cap 3; sleep 1 | /usr/bin/timeout 10 /usr/bin/btmgmt class 4 40'
+TimeoutStartSec=60
+
+[Install]
+WantedBy=bluetooth.service

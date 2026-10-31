@@ -74,7 +74,12 @@ Do these in order. Anything marked **(quiet)** produces no sound. Keep speakers 
 5. **systemd units and DSP config.** Copy `pi/systemd/camilladsp.service` and `camillagui.service` to `/etc/systemd/system/`; `pi/camilladsp/3way-lr4.yml` and `stereo-passthrough.yml` to `/opt/camilladsp/configs/`; and `pi/camilladsp/camillagui.yml` and `statefile.yml` to `/opt/camilladsp/`. CamillaDSP must listen on **127.0.0.1**, start muted and at −36 dB: `-p 1234 -a 127.0.0.1 ... --mute --gain=-36`. Then `sudo systemctl daemon-reload && sudo systemctl enable --now camilladsp camillagui`.
 6. **The Octet remote (first-time installer).** On the Pi, from the staged `pi/remote/`: `sudo python3 install.py`. This is the *first-time* installer: it stops MPD and CamillaDSP, resets the CamillaDSP state file and rewrites `mpd.conf`. **Never run it on a Pi that is already set up**; use `deploy.py`. It leaves the system muted.
 7. **AirPlay (quiet).** `sudo python3 install_airplay.py`. It validates the loopback, writes the Shairport config and service override, creates the `octet-airplay` group and the `airplay.conf` drop-in (with `RuntimeDirectoryMode=0750`), restarts the remote muted and starts Shairport. `--rollback` undoes it.
-8. **Bluetooth (optional, disabled by default).** `python3 bluetooth_preflight.py` (read-only). If it passes: `sudo python3 install_bluetooth.py` is a dry run, `--apply` installs the disabled receiver and the `bluetooth.conf` drop-in. Bluetooth playback still needs attended physical acceptance; see the Bluetooth section of [`pi/remote/README.md`](../pi/remote/README.md). To have the A2DP receiver ready after every boot (so a phone can connect without anyone starting it), run `sudo systemctl add-wants multi-user.target octet-bluealsa.service` (undo with `sudo systemctl disable octet-bluealsa`; the unit has no `[Install]` section on purpose, so `systemctl enable` does not apply). For automatic sessions (a phone that starts streaming takes over without anyone pressing anything), copy `pi/systemd/octet-remote-bluetooth-auto.conf` to `/etc/systemd/system/octet-remote.service.d/bluetooth-auto.conf`, run `sudo systemctl daemon-reload`, then deploy. Without it, choose **Bluetooth** in the Audio source menu on the web page. Automatic start works while Tidal is stopped or paused; it never interrupts music that is playing.
+8. **Bluetooth.** Any paired phone can play; there is no allow-list. `python3 bluetooth_preflight.py` (read-only), then `sudo python3 install_bluetooth.py --apply` installs the A2DP receiver unit and the `bluetooth.conf` drop-in. Then make it work from boot with no attention:
+   - Start the receiver at boot: `sudo systemctl add-wants multi-user.target octet-bluealsa.service` (the unit has no `[Install]` section, so `systemctl enable` does not apply).
+   - Automatic sessions (a phone that starts streaming takes over, pausing Tidal): copy `pi/systemd/octet-remote-bluetooth-auto.conf` to `/etc/systemd/system/octet-remote.service.d/bluetooth-auto.conf`.
+   - "Just Works" pairing with no code: copy `pi/systemd/octet-bluetooth-justworks.service` to `/etc/systemd/system/` and `sudo systemctl enable --now octet-bluetooth-justworks`. It sets the controller to NoInputNoOutput (and the Hi-Fi audio device class) every time `bluetooth.service` starts.
+   - **No pairing agent may run.** The desktop taskbar's Bluetooth applet registers one that shows a passkey prompt on the Pi's own screen, so phones fail to pair. Remove it: copy `pi/home/wf-panel-pi.ini` to `~/.config/wf-panel-pi/wf-panel-pi.ini` (as user `octet`) and log in again or reboot.
+   - `sudo systemctl daemon-reload`, then deploy. New phones pair from the **Bluetooth** panel on the Music page (**Let new phones pair**, on by default); octet-remote trusts each newly paired phone, and paired phones can always reconnect.
 9. **Now-playing (Wi-Fi) publisher.** Copy `pi/now-playing/` to the Pi and run `sudo python3 install.py` there.
 10. **Auto Tune (optional).** `pi/deploy_autotune.py` installs the measurement engine and service; see [`measure/docs/AUTO_TUNE.md`](../measure/docs/AUTO_TUNE.md).
 11. **Record the revision.** From your PC run `python pi/remote/deploy.py`. This writes `REVISION` and proves the update path works on the new Pi.
@@ -110,5 +115,15 @@ It must be `750`. systemd applies the **last** `RuntimeDirectoryMode` among the 
 **The AirPlay status shows an error.** `curl -s http://127.0.0.1:8767/api/status` prints `airplay.error`; common causes are Auto Tune owning the audio outputs, an unapproved DSP profile, or a Bluetooth session holding the audio. The design is fail-closed: it stays muted and tells you why.
 
 **Octet does not appear in the AirPlay list.** Phone and Pi must be on the same LAN (the Pi is on `wlan0`; Tailscale carries no mDNS). Check `systemctl is-active avahi-daemon shairport-sync`.
+
+## Troubleshooting Bluetooth pairing
+
+**A phone shows a code and then "cannot connect" / "pairing unsuccessful".** Something made the Pi ask for a passkey confirmation that nobody answers. Check for a pairing agent, which must not exist (bluetoothd logs `Calling Agent.RequestConfirmation` when one is registered):
+
+```bash
+ssh octet@octet 'systemctl is-active octet-bluetooth-justworks; grep -c bluetooth ~/.config/wf-panel-pi/wf-panel-pi.ini'
+```
+
+Expected: `active` and `0`. If the taskbar still lists `bluetooth`, restore `pi/home/wf-panel-pi.ini`. To see the handshake, run `sudo btmon` while pairing: the Pi's `IO Capability Request Reply` must say `NoInputNoOutput`; if it says `DisplayYesNo`, run `sudo systemctl restart octet-bluetooth-justworks`.
 
 **Which code is the Pi running?** `cat /opt/octet-remote/REVISION`. If that file does not exist the Pi was installed by hand: run `deploy.py` to put it under version control.

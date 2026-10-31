@@ -115,6 +115,24 @@ def mpris_property(name):
     return json.loads(result.stdout)['data']
 
 
+def bluez_player():
+    """AVRCP track info a phone sends over Bluetooth: the playing BlueZ MediaPlayer1, if any.
+
+    Phones send title, artist, album, duration and position, but no cover art.
+    """
+    result = subprocess.run([
+        'busctl', '--system', '--json=short', '--timeout=2', 'call', 'org.bluez', '/',
+        'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects',
+    ], capture_output=True, text=True, check=True, timeout=3)
+    players = [interfaces['org.bluez.MediaPlayer1']
+               for path, interfaces in sorted(json.loads(result.stdout)['data'][0].items())
+               if path.startswith('/org/bluez/hci0/') and 'org.bluez.MediaPlayer1' in interfaces]
+    if not players:
+        raise ValueError('No Bluetooth player')
+    playing = [player for player in players if player.get('Status', {}).get('data') == 'playing']
+    return (playing or players)[0]
+
+
 def text(value):
     return value[:512] if isinstance(value, str) else ''
 
@@ -127,7 +145,7 @@ def number(value):
         return 0
 
 
-def describe(status, read_mpris=mpris_property, artwork=None):
+def describe(status, read_mpris=mpris_property, artwork=None, read_bluetooth=bluez_player):
     source = status.get('source', 'unknown')
     result = dict(version=1, source=source, source_label=text(status.get('source_label')),
                   state='stopped', title='', artist='', album='', elapsed=0, duration=0,
@@ -150,6 +168,24 @@ def describe(status, read_mpris=mpris_property, artwork=None):
                               duration=number(metadata.get('mpris:length', {}).get('data')) / 1e6)
                 art_uri = text(metadata.get('mpris:artUrl', {}).get('data'))
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            result['metadata_available'] = False
+    elif source == 'bluetooth':
+        if not status.get('bluetooth', {}).get('active'):
+            if artwork:
+                artwork.update(source, '')
+            return result
+        result['state'] = 'playing'
+        try:
+            player = read_bluetooth()
+            result['state'] = {'playing': 'playing', 'paused': 'paused'}.get(
+                player.get('Status', {}).get('data'), 'stopped')
+            if result['state'] != 'stopped':
+                track = player.get('Track', {}).get('data', {})
+                field = lambda name: track.get(name, {}).get('data')
+                result.update(title=text(field('Title')), artist=text(field('Artist')),
+                              album=text(field('Album')), duration=number(field('Duration')) / 1000,
+                              elapsed=number(player.get('Position', {}).get('data')) / 1000)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
             result['metadata_available'] = False
     elif source == 'tidal':
         if status.get('player_error'):

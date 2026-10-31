@@ -41,6 +41,26 @@ class NowPlayingTests(unittest.TestCase):
         self.assertEqual(song['title'], '')
         self.assertFalse(song['metadata_available'])
 
+    def test_bluetooth_shows_the_phones_track_and_never_the_tidal_queue(self):
+        player = {'Status': {'data': 'playing'}, 'Position': {'data': 87540},
+                  'Track': {'data': {'Title': {'data': 'Too Little Too Late'}, 'Artist': {'data': 'JoJo'},
+                                     'Album': {'data': 'The High Road'}, 'Duration': {'data': 221720}}}}
+        status = dict(source='bluetooth', source_label='Bluetooth', bluetooth={'active': True},
+                      current={'title': 'Old Tidal track'})
+        song = publisher.describe(status, read_bluetooth=lambda: player)
+        self.assertEqual((song['state'], song['title'], song['artist'], song['album']),
+                         ('playing', 'Too Little Too Late', 'JoJo', 'The High Road'))
+        self.assertEqual((song['elapsed'], song['duration']), (87.54, 221.72))
+        player['Status'] = {'data': 'paused'}
+        self.assertEqual(publisher.describe(status, read_bluetooth=lambda: player)['state'], 'paused')
+        def no_player():
+            raise ValueError('No Bluetooth player')
+        song = publisher.describe(status, read_bluetooth=no_player)
+        self.assertEqual(song['title'], '')
+        self.assertFalse(song['metadata_available'])
+        status['bluetooth'] = {'active': False}
+        self.assertEqual(publisher.describe(status, read_bluetooth=lambda: player)['state'], 'stopped')
+
     def test_only_same_wifi_subnet_and_wifi_destination_allowed(self):
         wifi = [ipaddress.ip_interface('192.168.68.63/22')]
         self.assertTrue(publisher.allowed_peer('192.168.68.61', '192.168.68.63', wifi))
