@@ -3,6 +3,7 @@
 Caller holds server.LOCK. The inherited flock is retained until recovery finishes,
 including failures; never transfer its ownership through a socket or unlink it.
 """
+import copy
 import json
 import os
 import re
@@ -118,7 +119,24 @@ class BluetoothRoute(BaselineRoute):
                 or not approval or approval['sha256'] != record['sha256']):
             raise RuntimeError('Bluetooth original bytes or approval changed; recovery retained')
         self.record = record
-        return path, yaml.safe_load(data)
+        return path, self.as_loaded(data)
+
+    def as_loaded(self, data):
+        """The config as CamillaDSP reports it once loaded from these bytes.
+
+        CamillaDSP fills in defaults (for example description: null on filters that
+        omit it), so the file's own YAML never equals GetConfigJson for such files.
+        ReadConfig parses the raw text exactly as a reload does; a Python YAML/JSON
+        round trip first changes the last digit of some floats. Cached per digest:
+        checks right after the unmute must not open a connection.
+        """
+        key = digest(data)
+        cached = getattr(self, '_as_loaded', None)
+        if cached is None or cached[0] != key:
+            with self.server.DSP() as dsp:
+                cached = (key, yaml.safe_load(dsp.call('ReadConfig', data.decode())))
+            self._as_loaded = cached
+        return copy.deepcopy(cached[1])
 
     def begin(self, path, loaded):
         """Durably capture an approved baseline without changing any DSP path.
@@ -142,7 +160,7 @@ class BluetoothRoute(BaselineRoute):
                 raise RuntimeError('Bluetooth requires an approved baseline path')
             data = read_bounded(original, MAX_CONFIG)
             approval = self.server.TUNING.active(path)
-            if not approval or approval['sha256'] != digest(data) or yaml.safe_load(data) != loaded:
+            if not approval or approval['sha256'] != digest(data) or self.as_loaded(data) != loaded:
                 raise RuntimeError('Bluetooth requires exact approved active baseline')
             # Validate the Tidal topology without claiming observed PCM or --check.
             routed(loaded, rate=48000, sample_format='S32_LE', channels=2)

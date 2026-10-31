@@ -65,6 +65,8 @@ class RecoveryTests(unittest.TestCase):
             self.state['path'] = args[0]
         if name == 'Reload' and not self.bad_reload:
             self.state['config'] = yaml.safe_load(Path(self.state['path']).read_bytes())
+        if name == 'ReadConfig':
+            return args[0]
         return {'GetMute': self.state['mute'], 'GetState': self.state['running'],
                 'GetConfigFilePath': self.state['path'],
                 'GetConfigJson': json.dumps(self.state['config'])}.get(name)
@@ -212,6 +214,29 @@ class RecoveryTests(unittest.TestCase):
         self.server.TUNING.active = lambda p: None
         with self.assertRaisesRegex(RuntimeError, 'approved'):
             self.prepare()
+
+    def test_profile_whose_filters_omit_defaults_is_accepted(self):
+        # Live Oct 31: filters without "description" load as description: null.
+        def with_defaults(config):
+            config = copy.deepcopy(config)
+            for item in config.get('filters', {}).values():
+                item.setdefault('description', None)
+            return config
+        self.state['config'] = with_defaults(self.config)
+        plain = self.call
+        def call(name, *args):
+            if name == 'ReadConfig':
+                self.calls.append((name,))
+                return yaml.safe_dump(with_defaults(yaml.safe_load(args[0])))
+            result = plain(name, *args)
+            if name == 'Reload' and not self.bad_reload:
+                self.state['config'] = with_defaults(self.state['config'])
+            return result
+        self.dsp.call.side_effect = call
+        self.control.route.begin(str(self.path), self.state['config'])
+        self.assertEqual(self.control.route.original()[1], self.state['config'])
+        self.control.stop()
+        self.assertTrue(self.state['mute'])
 
     def test_source_working_copy_returns_to_the_approved_profile_first(self):
         from source_profiles import SourceProfiles
