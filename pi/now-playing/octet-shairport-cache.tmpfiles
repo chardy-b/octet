@@ -1,0 +1,5 @@
+# The song publisher bind-mounts Shairport's cover cache read-only. Create it at boot so
+# the (optional) mount exists even before the first AirPlay cast.
+d /tmp/shairport-sync 0777 shairport-sync shairport-sync -
+d /tmp/shairport-sync/.cache 0777 shairport-sync shairport-sync -
+d /tmp/shairport-sync/.cache/coverart 0777 shairport-sync shairport-sync -
