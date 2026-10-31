@@ -45,13 +45,13 @@ class SourceProfileTests(unittest.TestCase):
             self.copies.save(self.working, other)
         self.assertIsNone(self.copies.read(self.origin))
 
-    def test_both_file_hashes_and_current_origin_approval_are_required(self):
+    def test_current_origin_approval_is_required_but_contents_are_not_checksummed(self):
         self.copies.save(self.working, self.origin)
         self.assertIsNone(self.copies.read(self.working, lambda path: None))
         self.working.write_text('modified working config', encoding='utf-8')
-        self.assertIsNone(self.copies.read(self.working))
-        self.copies.save(self.working, self.origin)
-        self.origin.write_text('modified immutable config', encoding='utf-8')
+        self.origin.write_text('modified origin config', encoding='utf-8')
+        self.assertEqual(self.copies.origin(self.working), self.origin)
+        self.origin.unlink()
         self.assertIsNone(self.copies.read(self.working))
 
     def test_repeated_source_changes_update_manifest_without_changing_origin(self):

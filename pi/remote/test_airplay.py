@@ -367,6 +367,8 @@ class BaselineAirPlayTests(unittest.TestCase):
                 return -18
             if name == 'GetMute':
                 return True
+            if name == 'ReadConfig':
+                return args[0]
             if name == 'SetConfigFilePath':
                 # Journal must already exist before ANY path change.
                 self.assertTrue((self.storage / 'airplay-recovery.json').exists())
@@ -598,20 +600,18 @@ class BaselineAirPlayTests(unittest.TestCase):
             request.assert_called_once_with('start', {})
         self.assertTrue(self.control.suppressed)
 
-    def test_digest_mismatch_and_loaded_difference_fail_closed(self):
+    def test_loaded_difference_fails_closed_but_a_comment_edit_does_not(self):
         self.loaded['devices']['playback']['device'] = 'wrong'
         with self.assertRaises(RuntimeError):
             self.control.event('start', now=0)
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
         self.loaded = self.copy(self.config)
-        self.control.event('start', now=1)
+        # Profiles are not checksum-checked: a byte change with the same settings plays.
         self.original.write_bytes(self.original_bytes + b'# changed\n')
-        with self.assertRaises(RuntimeError):
-            self.control.tick(now=2)
+        self.control.event('start', now=1)
         self.assertTrue(self.control.baseline.journal.exists())
-        self.assertNotIn(('SetMute', False), self.calls)
-        self.original.write_bytes(self.original_bytes)
-        self.control.tick(now=3)
+        self.control.end()
+        self.original.write_bytes(self.original_bytes)  # restored() also checks the file
         self.restored()
 
     def test_corrupt_or_oversized_journal_blocks_restart_and_manual_unmute(self):
@@ -661,7 +661,9 @@ class BaselineAirPlayTests(unittest.TestCase):
                 self.restored()
 
     def test_unapproved_baseline_never_falls_back_to_channel_profile(self):
-        self.original.write_bytes(self.original_bytes + b'# tampered\n')
+        # Not the profile selected on the DSP page.
+        (self.tuning.root / 'active.json').write_text(json.dumps(dict(
+            config_path=str(self.original.with_name('other.yml')), sha256=self.sha)))
         with self.assertRaises(RuntimeError):
             self.control.event('start', now=0)
         self.assertEqual(self.path, str(self.original))

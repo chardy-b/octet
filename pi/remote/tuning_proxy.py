@@ -1,5 +1,4 @@
 """Small, fixed-endpoint bridge to the Pi's local measurement service."""
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -54,7 +53,8 @@ class TuningProxy:
     def active(self, path):
         try:
             record = json.loads((self.root/'active.json').read_text())
-            if record['config_path'] == str(path) and hashlib.sha256(Path(path).read_bytes()).hexdigest() == record['sha256']:
+            # The profile selected on the DSP page; its bytes are not re-checked.
+            if record['config_path'] == str(path) and Path(path).is_file():
                 return record
         except (OSError, ValueError, KeyError):
             pass

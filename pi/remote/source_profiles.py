@@ -47,10 +47,10 @@ class SourceProfiles:
             if not isinstance(record, dict) or record.get('version') != 1:
                 return None
             origin = Path(record['origin_path'])
+            # Identity is by path; file contents are not checksum-checked.
             if (not origin.is_absolute() or self._working(origin) or
                     self.target(origin) != path or record['config_path'] != str(path) or
-                    record['origin_sha256'] != digest(origin) or
-                    record['sha256'] != digest(path)):
+                    not origin.is_file() or not path.is_file()):
                 return None
             approval = approve_origin(str(origin)) if approve_origin else True
             if not approval:

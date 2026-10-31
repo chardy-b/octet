@@ -124,6 +124,23 @@ class BaselineRoute:
         if not self.exists():
             self.release()
 
+    def as_loaded(self, data):
+        """The config as CamillaDSP reports it once loaded from these bytes.
+
+        CamillaDSP fills in defaults (for example description: null on filters that
+        omit it), so the file's own YAML never equals GetConfigJson for such files.
+        ReadConfig parses the raw text exactly as a reload does; a Python YAML/JSON
+        round trip first changes the last digit of some floats. Cached per digest:
+        checks right after the unmute must not open a connection.
+        """
+        key = digest(data)
+        cached = getattr(self, '_as_loaded', None)
+        if cached is None or cached[0] != key:
+            with self.server.DSP() as dsp:
+                cached = (key, yaml.safe_load(dsp.call('ReadConfig', data.decode())))
+            self._as_loaded = cached
+        return copy.deepcopy(cached[1])
+
     @property
     def journal(self):
         return self.root / 'airplay-recovery.json'
@@ -148,10 +165,9 @@ class BaselineRoute:
                 or path.resolve() != path):
             raise RuntimeError('AirPlay recovery path is not an Auto Tune baseline')
         data = read_bounded(path, MAX_CONFIG)
-        approval = self.server.TUNING.active(str(path))
-        if digest(data) != record['sha256'] or not approval or approval['sha256'] != record['sha256']:
-            raise RuntimeError('AirPlay baseline approval or digest changed')
-        return path, yaml.safe_load(data)
+        if not self.server.TUNING.active(str(path)):
+            raise RuntimeError('AirPlay baseline is no longer the active profile')
+        return path, self.as_loaded(data)
 
     def ownership(self):
         self.check_lock()

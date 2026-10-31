@@ -181,26 +181,24 @@ class RecoveryTests(unittest.TestCase):
         self.control.route.check_lock()
         self.assertTrue(self.state['mute'])
 
-    def test_changed_snapshot_baseline_or_lock_retains_recovery(self):
-        for target in ('snapshot', 'baseline', 'lock'):
-            with self.subTest(target=target):
-                if not self.control.route.exists():
-                    self.prepare()
-                path = {'snapshot': self.control.route.snapshot, 'baseline': self.path,
-                        'lock': self.root / 'audio.lock'}[target]
-                saved = path.read_bytes()
-                if target == 'lock':
-                    path.rename(self.root / 'old.lock')
-                    path.touch()
-                else:
-                    path.chmod(0o600)
-                    path.write_bytes(b'changed')
-                with self.assertRaises(RuntimeError):
-                    self.control.stop()
-                self.assertTrue(self.control.route.journal.exists())
-                self.assertTrue(self.state['mute'])
-                if target != 'lock':
-                    path.write_bytes(saved)
+    def test_replaced_lock_retains_recovery(self):
+        self.prepare()
+        lock = self.root / 'audio.lock'
+        lock.rename(self.root / 'old.lock')
+        lock.touch()
+        with self.assertRaises(RuntimeError):
+            self.control.stop()
+        self.assertTrue(self.control.route.journal.exists())
+        self.assertTrue(self.state['mute'])
+
+    def test_profile_bytes_are_not_checksum_checked(self):
+        # A comment edit keeps the same settings: recovery still restores.
+        self.prepare()
+        self.path.chmod(0o600)
+        self.path.write_bytes(self.data + b'# edited\n')
+        self.control.stop()
+        self.assertFalse(self.control.route.exists())
+        self.assertTrue(self.state['mute'])
 
     def test_airplay_autotune_and_unapproved_baselines_refused(self):
         self.server.AIRPLAY_CONTROL.active = True
@@ -212,7 +210,7 @@ class RecoveryTests(unittest.TestCase):
             self.prepare()
         self.server.TUNING.status = lambda: {'audio_owned': False}
         self.server.TUNING.active = lambda p: None
-        with self.assertRaisesRegex(RuntimeError, 'approved'):
+        with self.assertRaisesRegex(RuntimeError, 'active profile'):
             self.prepare()
 
     def test_profile_whose_filters_omit_defaults_is_accepted(self):
@@ -407,7 +405,7 @@ class RecoveryTests(unittest.TestCase):
                 self.path.write_bytes(b'new baseline')
             return result
         self.dsp.call.side_effect = change
-        with self.assertRaisesRegex(RuntimeError, 'changed'):
+        with self.assertRaises(RuntimeError):
             self.control.stop()
         self.assertEqual(self.path.read_bytes(), b'new baseline')
         self.assertTrue(self.control.route.journal.exists())
