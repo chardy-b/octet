@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """Local administrator flow for the manual Bluetooth receiver. Run with sudo.
 
-  discoverable [SECONDS]  open a pairing window (1-180 s, enforced by bluetoothd)
+  discoverable [SECONDS]  open a timed pairing window (1-180 s, enforced by bluetoothd)
   close                   end discoverability/pairability now
-  trust MAC               trust one already-paired, allowlisted phone; closes window
+  trust MAC               trust one already-paired phone; closes window
   untrust MAC             revoke trust for an explicit device
   start MAC | stop | status   drive octet-remote over its root-only socket
 
-The policy (/etc/octet/bluetooth.json, root:octet-bluetooth 0640) and its
-allowlist are written by the administrator, never by this tool. A phone's MAC is
-not known before its first pairing, so `discoverable` accepts a valid policy that
-is still disabled or has an empty allowlist. The window grants no playback:
-`trust` and `start` require the policy enabled with that MAC allowlisted, under
-the same file contract octet-remote reads, plus Paired+Trusted(+Connected).
-
-Pairing needs a BlueZ agent during the window: BlueZ rejects confirmation
-requests when none is registered. This tool deliberately does not register one
-(an unattended NoInputNoOutput agent would accept any phone in range); run an
-interactive `sudo bluetoothctl` with `agent on` and `default-agent` and confirm
-the passkey on both devices. The octet-bluealsa A2DP sink daemon must already be
-running, or the phone sees no audio sink.
+Any paired phone may play; there is no allowlist. Normally pairing is switched on and
+off from the web page (bluetooth_pairing), and octet-remote trusts newly paired phones.
+Pairing is plain Just Works with no agent: do not register one, because an interactive
+agent makes BlueZ demand a passkey confirmation that nobody can answer. The
+octet-bluealsa A2DP sink daemon must be running, or the phone sees no audio sink.
 """
 import argparse
 import json
@@ -29,7 +21,7 @@ import subprocess
 import sys
 
 from bluetooth_contract import bridge_arguments
-from bluetooth_identity import local_policy, pairing_policy
+from bluetooth_identity import paired_addresses
 
 SOCKET = '/run/octet-bluetooth/control.sock'
 ADAPTER = '/org/bluez/hci0'
@@ -86,9 +78,6 @@ def discoverable(seconds=120):
     if type(seconds) is not int or not 0 < seconds <= MAX_WINDOW:
         raise ValueError(f'Pairing window must be 1-{MAX_WINDOW} whole seconds')
     require_admin()
-    # Missing, invalid or service-unreadable policy: no window. Disabled or empty
-    # is accepted (the new phone's MAC is unknown) and grants nothing.
-    pairing_policy()
     # Read-only: never power the adapter on implicitly; pairing cannot work off.
     if _adapter('Powered') != b'b true\n':
         raise RuntimeError('Bluetooth adapter hci0 is not powered; power it on deliberately '
@@ -109,9 +98,9 @@ def discoverable(seconds=120):
 
 
 def trust(address):
-    """Trust only an explicit, allowlisted, already-paired device on hci0."""
+    """Trust only an explicit, already-paired device on hci0."""
     require_admin()
-    address = bridge_arguments(address, local_policy())[-1]
+    address = bridge_arguments(address, paired_addresses())[-1]
     expected = {'Address': f's "{address}"\n'.encode(),
                 'Adapter': f'o "{ADAPTER}"\n'.encode(), 'Paired': b'b true\n'}
     for name, value in expected.items():
@@ -125,7 +114,7 @@ def trust(address):
 
 
 def untrust(address):
-    """Revocation works even when the policy is disabled; it never grants access."""
+    """Revocation never grants access."""
     require_admin()
     address = canonical(address)
     _device(address, 'Trusted', 'b', 'false')

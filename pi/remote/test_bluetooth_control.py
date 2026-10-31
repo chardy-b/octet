@@ -143,7 +143,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.state['config'], self.config)
         self.assertFalse(self.control.route.exists())
 
-    def test_orphan_tick_and_stop_recover_start_refuses_pending_or_disabled(self):
+    def test_orphan_tick_and_stop_recover_start_refuses_pending_or_unpaired(self):
         for event in ('tick', 'stop'):
             with self.subTest(event=event):
                 self.prepare()
@@ -157,11 +157,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.control.stop()
         self.calls.clear()
-        # The default is the root-owned /etc/octet/bluetooth.json service policy.
-        from bluetooth_identity import service_policy
-        self.assertIs(self.control.policy, service_policy)
-        self.control.policy = lambda: service_policy(self.root / 'missing.json')
-        with self.assertRaisesRegex(RuntimeError, 'disabled'):
+        # The default is every phone paired with hci0; with none paired, start refuses.
+        from bluetooth_identity import paired_addresses
+        self.assertIs(self.control.policy, paired_addresses)
+        def none_paired():
+            raise RuntimeError('No paired Bluetooth phone')
+        self.control.policy = none_paired
+        with self.assertRaisesRegex(RuntimeError, 'No paired'):
             self.control.start('12:34:56:78:9A:BC')
         self.assertEqual(self.calls, [])
 

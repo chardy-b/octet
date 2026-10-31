@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Guarded, disabled-by-default Bluetooth receiver installer. Dry run unless --apply.
 
-Installs only a DISABLED root-owned policy (never overwriting an existing one), an
-octet-remote drop-in providing the root-only control socket directory, and a
-dedicated octet-bluealsa.service A2DP-sink daemon unit that has no [Install]
-section, so it cannot be enabled and never starts at boot. It never installs
+Installs an octet-remote drop-in providing the root-only control socket directory
+and a dedicated octet-bluealsa.service A2DP-sink daemon unit that has no [Install]
+section (DEPLOYMENT.md shows how to start it at boot). Any paired phone may play;
+there is no policy file or allowlist. It never installs
 packages, edits packaged BlueALSA/BlueZ units, restarts octet-remote, enables,
 starts, stops or masks any unit, makes the adapter discoverable or changes audio.
 
@@ -19,7 +19,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import stat
 import sys
 
 from bluetooth_preflight import preflight
@@ -32,19 +31,14 @@ except ModuleNotFoundError as error:
     raise SystemExit('install_bluetooth.py requires install_airplay.py alongside it in '
                      f'{Path(__file__).resolve().parent}; redeploy with install.py') from error
 
-POLICY = Path('/etc/octet/bluetooth.json')
 DROPIN = Path('/etc/systemd/system/octet-remote.service.d/bluetooth.conf')
 UNIT = Path('/etc/systemd/system/octet-bluealsa.service')
 BACKUP = Path('/var/backups/octet-bluetooth')
 REMOTE = Path('/opt/octet-remote')
 GROUP = 'octet-bluetooth'
-ADMIN_UID = 0
-# Legacy v1 shape, which bluetooth_identity always reads as disabled RESTRICTED. A fresh
-# install never writes an open (v2) policy and never replaces an existing one.
-DEFAULT = json.dumps(dict(version=1, enabled=False, addresses=[])).encode() + b'\n'
 REQUIRED = ('server.py', 'bluetooth_control.py', 'bluetooth_route.py', 'bluetooth_bridge.py',
             'bluetooth_identity.py', 'bluetooth_contract.py', 'bluetooth_preflight.py',
-            'bluetooth_admin.py', 'bluetooth_auto.py', 'bluetooth_transport.py',
+            'bluetooth_admin.py', 'bluetooth_auto.py', 'bluetooth_transport.py', 'bluetooth_pairing.py',
             'airplay_control.py', 'airplay_baseline.py')
 # Observed, never changed. bluealsa.service is the packaged daemon, which must
 # not own org.bluealsa alongside ours; the installer only reports its state.
@@ -53,8 +47,7 @@ UNITS = ('octet-remote.service', 'octet-bluealsa.service', 'bluealsa.service', '
 
 def managed():
     """Managed file -> backup name, resolved at call time (tests patch the paths)."""
-    return {POLICY: 'policy.json', DROPIN: 'octet-remote-bluetooth.conf',
-            UNIT: 'octet-bluealsa.service'}
+    return {DROPIN: 'octet-remote-bluetooth.conf', UNIT: 'octet-bluealsa.service'}
 
 
 def dropin():
@@ -137,13 +130,6 @@ def check():
     missing = [name for name in REQUIRED if not (REMOTE / name).is_file()]
     if missing:
         raise RuntimeError('Upgrade Octet remote files first: ' + ', '.join(missing))
-    directory = POLICY.parent
-    if directory.exists() or directory.is_symlink():
-        info = directory.lstat()
-        # Same rule as bluetooth_identity: octet-remote must be able to reach the file.
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != ADMIN_UID
-                or info.st_mode & 0o022 or not info.st_mode & stat.S_IXOTH):
-            raise RuntimeError(f'Policy directory is not protected and searchable: {directory}')
     for path in (DROPIN, UNIT):
         if path.is_symlink():
             raise RuntimeError(f'Managed file must not be a symlink: {path}')
@@ -153,9 +139,8 @@ def check():
 def plan():
     return ['verify BlueALSA 4.3.1 binaries and idle Loopback sub2 endpoints',
             f'record enable/active state of {", ".join(UNITS)} (read only)',
-            f'back up {POLICY}, {DROPIN} and {UNIT} (or their absence) in {BACKUP}',
+            f'back up {DROPIN} and {UNIT} (or their absence) in {BACKUP}',
             f'create system group {GROUP} if missing',
-            f'create {POLICY} as disabled v1 restricted (root:{GROUP} 0640) only if absent',
             f'write {DROPIN}',
             f'write {UNIT} (A2DP sink only; no [Install], cannot be enabled)',
             'systemctl daemon-reload, then re-read unit state and report any change',
@@ -176,30 +161,15 @@ def install():
     for path, saved in managed().items():
         save_file(path, BACKUP / saved)
     try:
-        gid = grp.getgrnam(GROUP).gr_gid
+        grp.getgrnam(GROUP)
     except KeyError:
         run('groupadd', '--system', GROUP)
-        gid = grp.getgrnam(GROUP).gr_gid
-    if not POLICY.parent.exists():
-        POLICY.parent.mkdir(mode=0o755, parents=True)
-    if not POLICY.exists() and not POLICY.is_symlink():
-        atomic_write(POLICY, DEFAULT, 0o640, (ADMIN_UID, gid))
-    else:
-        info = POLICY.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != ADMIN_UID or info.st_gid != gid
-                or stat.S_IMODE(info.st_mode) != 0o640):
-            # Never overwritten; pairing, trust and start all refuse until fixed.
-            print(f'Existing {POLICY} is not root:{GROUP} 0640 and was left unchanged; '
-                  f'pairing, trust and start refuse until: chown root:{GROUP} {POLICY} '
-                  f'&& chmod 0640 {POLICY}', file=sys.stderr)
     atomic_write(DROPIN, dropin().encode(), 0o644)
     atomic_write(UNIT, unit(daemon).encode(), 0o644)
     run('systemctl', 'daemon-reload')
     unchanged(before, states(), expected_ours=dict(enabled='static', active='inactive'))
-    print('Bluetooth installed DISABLED; octet-bluealsa installed but not started. '
-          'An attended octet-remote restart is required. Pair first (the disabled policy '
-          'opens the pairing window), then edit the policy in place, keeping '
-          f'root:{GROUP} 0640. Backup:', BACKUP)
+    print('Bluetooth installed; octet-bluealsa installed but not started. Restart '
+          'octet-remote, start octet-bluealsa, then pair from the Music page. Backup:', BACKUP)
 
 
 def rollback():
@@ -208,17 +178,7 @@ def rollback():
         # Never stop it silently: removing a running unit's file strands it.
         raise RuntimeError('octet-bluealsa is running; stop it deliberately, then retry rollback')
     errors = []
-    marker = BACKUP / 'policy.json.absent'
-    try:
-        if marker.exists() and POLICY.exists() and POLICY.read_bytes() == DEFAULT:
-            POLICY.unlink()
-        elif POLICY.exists():
-            print(f'Retaining administrator-edited or pre-existing {POLICY}', file=sys.stderr)
-    except OSError as error:
-        errors.append(str(error))
     for path, saved in managed().items():
-        if path == POLICY:
-            continue
         try:
             restore_file(path, BACKUP / saved)
         except (OSError, RuntimeError) as error:

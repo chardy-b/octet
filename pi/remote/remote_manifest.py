@@ -13,6 +13,7 @@ REMOTE_FILES = (
     'bluetooth_route.py',
     'bluetooth_bridge.py',
     'bluetooth_identity.py',
+    'bluetooth_pairing.py',
     'bluetooth_contract.py',
     'bluetooth_preflight.py',
     'bluetooth_admin.py',

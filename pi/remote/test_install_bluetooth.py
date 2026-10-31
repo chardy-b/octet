@@ -42,6 +42,7 @@ class InstallerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name).resolve()
+        # There is no policy file or allowlist any more; nothing may create one.
         self.policy = root / 'etc/octet/bluetooth.json'
         self.dropin = root / 'systemd/octet-remote.service.d/bluetooth.conf'
         self.unit = root / 'systemd/octet-bluealsa.service'
@@ -58,9 +59,8 @@ class InstallerTests(unittest.TestCase):
                       'bluetooth.service': ['enabled', 'active'],
                       'octet-bluealsa.service': ['', 'inactive']}
         self.on_reload = None
-        for item in (patch.multiple(install_bluetooth, POLICY=self.policy, DROPIN=self.dropin,
-                                    UNIT=self.unit, BACKUP=self.backup, REMOTE=self.remote,
-                                    ADMIN_UID=os.getuid()),
+        for item in (patch.multiple(install_bluetooth, DROPIN=self.dropin,
+                                    UNIT=self.unit, BACKUP=self.backup, REMOTE=self.remote),
                      patch('install_bluetooth.shutil.which',
                            side_effect=lambda name: '/usr/bin/bluealsad' if name == 'bluealsad' else None),
                      patch('install_bluetooth.Path.resolve', lambda path, strict=False: path),
@@ -105,12 +105,10 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.dropin.exists())
         self.assertEqual(self.commands, [])
 
-    def test_apply_installs_disabled_policy_and_dropin_without_starting_anything(self):
+    def test_apply_installs_dropin_and_unit_without_policy_or_starting_anything(self):
         del self.groups['octet-bluetooth']
         install_bluetooth.main(['--apply'])
-        self.assertEqual(json.loads(self.policy.read_bytes()),
-                         dict(version=1, enabled=False, addresses=[]))
-        self.assertEqual(self.policy.stat().st_mode & 0o777, 0o640)
+        self.assertFalse(self.policy.exists())
         dropin = self.dropin.read_text()
         self.assertIn('RuntimeDirectory=octet-bluetooth\n', dropin)
         self.assertIn('SupplementaryGroups=octet-bluetooth\n', dropin)
@@ -174,29 +172,6 @@ class InstallerTests(unittest.TestCase):
         install_bluetooth.main(['--apply'])
         self.assertIn('SupplementaryGroups=octet-bluetooth bluetooth\n', self.dropin.read_text())
 
-    def test_existing_policy_is_never_overwritten(self):
-        self.policy.parent.mkdir(parents=True)
-        self.policy.write_bytes(b'{"admin": "owned"}')
-        with patch('sys.stderr', new_callable=io.StringIO):
-            install_bluetooth.main(['--apply'])
-        self.assertEqual(self.policy.read_bytes(), b'{"admin": "owned"}')
-
-    def test_existing_root_only_policy_is_reported_not_repaired(self):
-        # A root-only 0600 policy would let pairing/trust look fine while
-        # octet-remote can never read it; the installer says so and changes nothing.
-        self.policy.parent.mkdir(parents=True)
-        self.policy.write_bytes(b'{}')
-        self.policy.chmod(0o600)
-        self.groups['octet-bluetooth'] = self.policy.stat().st_gid
-        with patch('sys.stderr', new_callable=io.StringIO) as err:
-            install_bluetooth.main(['--apply'])
-        self.assertIn('chmod 0640', err.getvalue())
-        self.assertEqual(self.policy.stat().st_mode & 0o777, 0o600)
-        self.policy.chmod(0o640)
-        with patch('sys.stderr', new_callable=io.StringIO) as err:
-            install_bluetooth.main(['--apply'])
-        self.assertNotIn('chmod 0640', err.getvalue())
-
     def test_blockers_missing_files_or_non_root_refuse_before_any_change(self):
         self.blockers = ['Dedicated snd_aloop playback 0,2 and capture 1,2 required']
         with self.assertRaisesRegex(RuntimeError, 'snd_aloop'):
@@ -214,16 +189,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.commands, [])
         self.assertFalse(self.backup.exists())
 
-    def test_unprotected_policy_directory_refused(self):
-        self.policy.parent.mkdir(parents=True)
-        for mode in (0o777, 0o700, 0o750):  # writable, or unreachable by octet-remote
-            with self.subTest(mode=oct(mode)):
-                os.chmod(self.policy.parent, mode)
-                with self.assertRaisesRegex(RuntimeError, 'protected and searchable'):
-                    install_bluetooth.main(['--apply'])
-        self.assertFalse(self.dropin.exists())
-
-    def test_rollback_removes_dropin_unit_and_untouched_default_policy_only(self):
+    def test_rollback_removes_dropin_and_unit(self):
         install_bluetooth.main(['--apply'])
         install_bluetooth.main(['--rollback'])
         self.assertFalse(self.dropin.exists())
@@ -235,9 +201,7 @@ class InstallerTests(unittest.TestCase):
         # A verified rollback consumes its backup; the next install snapshots afresh.
         self.assertEqual(sorted(p.name for p in self.backup.iterdir()), [])
         install_bluetooth.main(['--apply'])
-        self.policy.write_text(json.dumps(dict(version=1, enabled=True, addresses=['12:34:56:78:9A:BC'])))
         install_bluetooth.main(['--rollback'])
-        self.assertTrue(self.policy.exists())
         self.assertFalse(self.dropin.exists())
 
     def test_existing_dropin_and_unit_are_backed_up_and_restored(self):

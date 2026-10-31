@@ -26,7 +26,8 @@ from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
 from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
-from bluetooth_identity import service_policy
+from bluetooth_identity import devices as bluetooth_devices
+import bluetooth_pairing
 from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
 from dac_watch import DacWatch
@@ -1019,6 +1020,7 @@ def current_status():
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
     result['airplay'] = AIRPLAY_CONTROL.status()
     result['bluetooth'] = BLUETOOTH_CONTROL.status()
+    result['bluetooth_pairing'] = dict(BLUETOOTH_PAIRING)
     if result['bluetooth']['active'] or result['bluetooth']['preparing']:
         # The Bluetooth route uses its own DSP copy, so describe it directly.
         result['sources'] = [item for item in result['sources'] if item['id'] != 'unknown']
@@ -1038,23 +1040,61 @@ def current_status():
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
 DAC_WATCH = DacWatch()
 DAC_WATCH.reported = False
-# Disabled unless the root-owned local policy is enabled; started only over the
-# root-only local socket, never over HTTP.
-# Sessions started from the web page last four hours; automatic ones have no cutoff.
+# Any paired phone may play. Sessions started from the web page last four hours;
+# automatic ones have no cutoff.
 BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__], lifetime=4 * 3600.0)
+# Refreshed every second by watch_bluetooth_pairing; read by status and the source menu.
+BLUETOOTH_PAIRING = dict(available=False, discoverable=False, devices=[], error=None)
+DISCOVERABLE_SETTING = STATE / 'bluetooth-discoverable.json'
 
 
 def bluetooth_addresses():
+    return tuple(item['address'] for item in BLUETOOTH_PAIRING['devices'])
+
+
+def wanted_discoverable():
+    # New phones can pair unless the toggle on the page has turned it off.
     try:
-        return tuple(service_policy())
-    except Exception:
-        return ()
+        return json.loads(DISCOVERABLE_SETTING.read_text())['enabled'] is True
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+
+
+def refresh_bluetooth_pairing():
+    """Trust newly paired phones, keep the chosen discoverable setting, cache for the page."""
+    try:
+        bluetooth_pairing.trust_paired()
+        discoverable = bluetooth_pairing.discoverable()
+        if discoverable != wanted_discoverable():
+            # Reapplied after a reboot or a bluetoothd restart, which both reset it.
+            discoverable = bluetooth_pairing.set_discoverable(wanted_discoverable())
+        paired = [dict(address=item['address'], name=item['name'], connected=item['connected'])
+                  for item in bluetooth_devices() if item['paired']]
+        BLUETOOTH_PAIRING.update(available=True, discoverable=discoverable, devices=paired, error=None)
+    except Exception as error:
+        BLUETOOTH_PAIRING.update(available=False, error=str(error))
+
+
+def watch_bluetooth_pairing(interval=1.0):
+    while True:
+        refresh_bluetooth_pairing()
+        time.sleep(interval)
+
+
+def set_bluetooth_discoverable(enabled):
+    if not isinstance(enabled, bool):
+        raise ValueError('Expected a discoverable setting')
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    DISCOVERABLE_SETTING.write_text(json.dumps(dict(enabled=enabled)))
+    bluetooth_pairing.set_discoverable(enabled)
+    refresh_bluetooth_pairing()
+    return current_status()
 
 
 def start_bluetooth():
     addresses = bluetooth_addresses()
     if not addresses:
-        raise RuntimeError('Bluetooth is not enabled on this Octet')
+        raise RuntimeError('Pair a phone with Octet first')
     error = None
     for address in addresses:
         try:
@@ -1066,6 +1106,9 @@ def start_bluetooth():
 
 
 def action(name, data):
+    if name == 'bluetooth-discoverable':
+        # Pairing visibility never touches audio, so it does not stop Bluetooth playback.
+        return set_bluetooth_discoverable(data.get('enabled'))
     # The ownership check and the mutation share the same lock as starting Auto mode.
     with LOCK:
         result = _action(name, data)
@@ -1584,6 +1627,7 @@ def main():
     if Path('/run/octet-bluetooth').exists():
         # RuntimeDirectory exists only with the guarded Bluetooth installer drop-in.
         threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
+        threading.Thread(target=watch_bluetooth_pairing, daemon=True).start()
         # Optional observer/worker after muted recovery; failures are contained and leave
         # the manual socket, Tidal and AirPlay running.
         # Automatic unmute is deployment-gated until the private DSP proxy and

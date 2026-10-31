@@ -177,22 +177,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(any(c[0] == 'SetVolume' for c in self.calls))
         self.assertFalse(self.state['mute'])
 
-    def test_disabled_policy_or_unlisted_phone_never_touches_audio(self):
-        def disabled():
-            raise RuntimeError('Bluetooth local policy is disabled or invalid')
-        for allowed, error in ((disabled, RuntimeError), (lambda: ('11:22:33:44:55:66',), ValueError)):
+    def test_unpaired_phone_or_bluez_down_never_touches_audio(self):
+        def none_paired():
+            raise RuntimeError('No paired Bluetooth phone')
+        def bluez_down():
+            raise OSError('busctl failed')
+        for allowed, error in ((none_paired, RuntimeError), (lambda: ('11:22:33:44:55:66',), ValueError)):
             with self.subTest(error=error):
                 self.allowed = allowed
                 with self.assertRaises(error):
                     self.control.start(MAC)
-        # A pairing-window-only policy (disabled, empty) and a policy octet-remote
-        # cannot read (not yet in octet-bluetooth) both refuse, naming the cause.
-        def unreadable():
-            raise PermissionError(13, 'Permission denied', '/etc/octet/bluetooth.json')
-        for allowed, cause in ((disabled, 'disabled or invalid'), (unreadable, 'Permission denied')):
+        for allowed, cause in ((none_paired, 'No paired'), (bluez_down, 'busctl failed')):
             with self.subTest(cause=cause):
                 self.allowed = allowed
-                with self.assertRaisesRegex(RuntimeError, 'Bluetooth is disabled.*' + cause):
+                with self.assertRaisesRegex(RuntimeError, 'Bluetooth unavailable.*' + cause):
                     self.control.start(MAC)
         self.identity.assert_not_called()
         self.assertEqual(self.calls, [])
@@ -853,13 +851,13 @@ class ServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(bluetooth_control.serve in targets, present)
                 self.assertNotIn(self.server.serve_airplay, targets)
 
-    def test_real_server_has_disabled_runtime_controller(self):
+    def test_real_server_controller_lets_any_paired_phone_play(self):
         import bluetooth_control
-        from bluetooth_identity import service_policy
+        from bluetooth_identity import paired_addresses
         control = self.real_bluetooth
         self.assertIsInstance(control, bluetooth_control.BluetoothControl)
         self.assertIs(control.server, self.server)
-        self.assertIs(control.policy, service_policy)
+        self.assertIs(control.policy, paired_addresses)
         self.assertIsNone(control.session)
 
 

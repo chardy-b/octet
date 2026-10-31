@@ -9,6 +9,11 @@
 <form id="source-form"><label class="sr-only" for="source-choice">Audio source</label><select id="source-choice" aria-describedby="source-note" disabled><option>Loading sources…</option></select><button id="source-apply" class="quiet-button" type="submit" disabled>Switch source</button></form>
 <p id="source-note" class="source-note">Your speaker filters and listening level apply to every source.</p><p id="source-status" class="source-status" role="status" aria-live="polite"></p>
 </section>
+<section class="bluetooth-panel" aria-labelledby="bluetooth-title">
+<div class="source-heading"><p class="eyebrow" id="bluetooth-title">BLUETOOTH</p><p id="bluetooth-devices">Checking paired phones…</p></div>
+<label class="switch-row" for="bluetooth-discoverable"><span><strong>Let new phones pair</strong><span class="switch-note">Paired phones can always connect and play.</span></span><input id="bluetooth-discoverable" class="switch" type="checkbox" role="switch" disabled></label>
+<p id="bluetooth-status" class="source-status" role="status" aria-live="polite"></p>
+</section>
 <section class="input-level-panel" aria-labelledby="input-level-title">
 <div class="section-top"><h2 id="input-level-title"><button id="toggle-input-levels" class="level-panel-toggle" type="button" aria-expanded="true" aria-controls="input-level-content"><span class="level-panel-chevron" aria-hidden="true">▾</span>Input levels</button></h2><button id="reset-input-clips" class="text-button" type="button" disabled>Reset clip indicators</button></div>
 <div id="input-level-content">

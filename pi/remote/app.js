@@ -7,6 +7,7 @@ function liveInput(){return Boolean(state.source&&state.source!=='tidal');}
 function render(next){
   renderPlayer(next);
   renderSources(next);
+  renderBluetooth(next);
   if(liveInput()){
     $('player-title').textContent='LIVE INPUT';$('playback-label').textContent=next.ready?(next.muted?'Muted':'Listening'):'Unavailable';
     const song=next.now_playing;
@@ -55,6 +56,20 @@ function renderSources(next){
     $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.dac_stalled));
   }
 }
+let bluetoothBusy=false;
+function renderBluetooth(next){
+  const pairing=next.bluetooth_pairing||{},toggle=$('bluetooth-discoverable'),devices=pairing.devices||[];
+  if(!bluetoothBusy)toggle.checked=Boolean(pairing.discoverable);
+  toggle.disabled=bluetoothBusy||!pairing.available;
+  $('bluetooth-devices').textContent=!pairing.available?'Bluetooth is unavailable.':devices.length?'Paired: '+devices.map(device=>device.name+(device.connected?' (connected)':'')).join(', '):'No phones paired yet.';
+  if(!bluetoothBusy){$('bluetooth-status').textContent=pairing.error||(pairing.discoverable?'New phones can find "Octet" and pair. No code is needed.':'');$('bluetooth-status').classList.toggle('error',Boolean(pairing.error));}
+}
+$('bluetooth-discoverable').onchange=async()=>{
+  const enabled=$('bluetooth-discoverable').checked;bluetoothBusy=true;renderBluetooth(state);
+  $('bluetooth-status').textContent=enabled?'Turning pairing on…':'Turning pairing off…';$('bluetooth-status').classList.remove('error');
+  try{const next=await api('/api/control/bluetooth-discoverable',{enabled});bluetoothBusy=false;render(next);}
+  catch(error){bluetoothBusy=false;await refresh();$('bluetooth-status').textContent=error.message;$('bluetooth-status').classList.add('error');}
+};
 $('source-choice').onchange=()=>{$('source-choice').dataset.dirty='true';renderSources(state);};
 $('source-form').onsubmit=async event=>{
   event.preventDefault();if(sourceBusy||$('source-apply').disabled)return;

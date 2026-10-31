@@ -23,7 +23,7 @@ import threading
 import time
 
 from bluetooth_contract import bridge_arguments
-from bluetooth_identity import local_policy, verify_identity
+from bluetooth_identity import paired_addresses, verify_identity
 
 
 @dataclass(frozen=True)
@@ -175,7 +175,7 @@ class BridgeSupervisor:
     receives playback authorization. The callback must itself be bounded; Python
     cannot impose a safe timeout on arbitrary in-process recovery code.
     """
-    def __init__(self, fail_closed, *, prepare=None, policy=local_policy, identity=verify_identity,
+    def __init__(self, fail_closed, *, prepare=None, policy=paired_addresses, identity=verify_identity,
                  owner=bus_owner, observe=read_endpoints, spawn=subprocess.Popen, task=verify_task,
                  clock=time.monotonic, interval=0.1, startup_timeout=120.0,
                  stall_timeout=2.0, lifetime=300.0, stop_timeout=2.0, deadline=None):

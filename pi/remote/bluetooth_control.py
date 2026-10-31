@@ -1,8 +1,7 @@
 """Manual BlueALSA A2DP receiver controller inside octet-remote.
 
-Disabled by default: start requires the root-owned enabled local policy, an
-allowlisted Paired+Trusted+Connected phone and a root peer on the local Unix
-socket. There is no HTTP endpoint, pairing, trust mutation or auto-reconnect.
+Any paired phone may play: start requires a Paired+Trusted+Connected phone on hci0
+(bluetooth_identity.paired_addresses). Pairing and trust live in bluetooth_pairing.
 
 One owner at a time. Bluetooth refuses to start while AirPlay (journal or
 CHANNEL_PROFILE cast, including unfinished rollback) or Auto Tune owns audio, and
@@ -47,7 +46,7 @@ from airplay_baseline import MAX_CONFIG, read_bounded
 from audio_sources import meter_channels
 from bluetooth_bridge import BridgeSupervisor
 from bluetooth_contract import bridge_arguments
-from bluetooth_identity import observe_identity, service_policy
+from bluetooth_identity import observe_identity, paired_addresses
 from bluetooth_route import BluetoothRoute
 from bluetooth_transport import CODECS, StreamGeneration, _TRANSPORT, _UNIQUE
 
@@ -80,7 +79,7 @@ class Session:
 
 
 class BluetoothControl:
-    def __init__(self, server, stop_bridge=None, *, policy=service_policy,
+    def __init__(self, server, stop_bridge=None, *, policy=paired_addresses,
                  identity=observe_identity, supervisor=BridgeSupervisor,
                  clock=time.monotonic, timeout=START_TIMEOUT, lifetime=LIFETIME,
                  interval=0.1):
@@ -262,10 +261,7 @@ class BluetoothControl:
         try:
             allowed = self.policy()
         except (OSError, ValueError, RuntimeError) as error:
-            # Missing, unprotected or disabled policy: disabled by default. The cause
-            # separates "disabled" from "octet-remote cannot read it" (e.g. not yet
-            # restarted into the octet-bluetooth group after install).
-            raise RuntimeError(f'Bluetooth is disabled: no enabled local policy ({error})') from error
+            raise RuntimeError(f'Bluetooth unavailable: {error}') from error
         address = bridge_arguments(address, allowed)[-1]
         # Bus reads outside LOCK: a disconnected or untrusted phone is refused before
         # anyone else's audio is muted. The supervisor re-verifies continuously.
