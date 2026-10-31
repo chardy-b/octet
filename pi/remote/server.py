@@ -26,6 +26,7 @@ from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
 from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
+from bluetooth_identity import service_policy
 from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
 from dac_watch import DacWatch
@@ -1017,6 +1018,15 @@ def current_status():
     except (OSError, RuntimeError, ValueError):
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
     result['airplay'] = AIRPLAY_CONTROL.status()
+    result['bluetooth'] = BLUETOOTH_CONTROL.status()
+    if result['bluetooth']['active'] or result['bluetooth']['preparing']:
+        # The Bluetooth route uses its own DSP copy, so describe it directly.
+        result['sources'] = [item for item in result['sources'] if item['id'] != 'unknown']
+        result.update(source='bluetooth', source_label='Bluetooth', ready=True,
+                      source_switching_available=True, source_switching_reason='')
+    if bluetooth_addresses() and not any(item['id'] == 'bluetooth' for item in result['sources']):
+        result['sources'].append(dict(id='bluetooth', label='Bluetooth', group='Music', available=True,
+                                      description='Play from your paired phone. Connect the phone first; the Tidal queue is kept.'))
     stalled = DAC_WATCH.stalled(result.get('dsp_state') == 'Running')
     result['dac_stalled'] = stalled
     if stalled and not DAC_WATCH.reported:
@@ -1030,7 +1040,29 @@ DAC_WATCH = DacWatch()
 DAC_WATCH.reported = False
 # Disabled unless the root-owned local policy is enabled; started only over the
 # root-only local socket, never over HTTP.
-BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__])
+# Sessions started from the web page last four hours; automatic ones have no cutoff.
+BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__], lifetime=4 * 3600.0)
+
+
+def bluetooth_addresses():
+    try:
+        return tuple(service_policy())
+    except Exception:
+        return ()
+
+
+def start_bluetooth():
+    addresses = bluetooth_addresses()
+    if not addresses:
+        raise RuntimeError('Bluetooth is not enabled on this Octet')
+    error = None
+    for address in addresses:
+        try:
+            BLUETOOTH_CONTROL.start(address)
+            return
+        except RuntimeError as failure:
+            error = failure
+    raise error
 
 
 def action(name, data):
@@ -1075,7 +1107,10 @@ def _action(name, data):
             AIRPLAY_CONTROL.invalidate()
             with DSP() as dsp:
                 dsp.call('SetMute', True)
-            select_source(data.get('id'))
+            if data.get('id') == 'bluetooth':
+                start_bluetooth()
+            else:
+                select_source(data.get('id'))
         elif name == 'unlock':
             enabled = data.get('enabled')
             if not isinstance(enabled, bool):

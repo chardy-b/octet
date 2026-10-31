@@ -570,8 +570,8 @@ class RuntimeTests(unittest.TestCase):
             self.auto()
         self.assert_untouched()
 
-    def test_auto_refuses_mpd_play_or_pause_before_mute_or_pause(self):
-        for mpd in ('play', 'pause'):
+    def test_auto_refuses_mpd_playing_before_mute_or_pause(self):
+        for mpd in ('play',):
             with self.subTest(mpd=mpd):
                 self.state['mpd'] = mpd
                 with self.assertRaisesRegex(RuntimeError, 'Music player'):
