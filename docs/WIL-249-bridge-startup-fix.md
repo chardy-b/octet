@@ -3,7 +3,7 @@
 Code: `pi/remote/bluetooth_bridge.py` (`parse_pcm`, `verify_task`, `BridgeSupervisor`).
 Status: software fix with offline tests only. **Not deployed to the Pi. Bluetooth
 playback remains BLOCKED** pending the attended physical acceptance gate in
-[`pi/remote/README.md`](../pi/remote/README.md#bluetooth-a2dp-manual-receiver-wil-249).
+[`pi/remote/README.md`](../pi/remote/README.md#bluetooth-a2dp-receiver).
 
 ## Live evidence that motivated the fix (operator-reported)
 

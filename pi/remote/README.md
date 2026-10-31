@@ -779,85 +779,42 @@ position retention, −18 dB startup at maximum phone volume, output pair mute
 retention, source round trips, tuning exclusion, stop/start and service failure.
 Do not claim end-to-end playback from mocked tests alone.
 
-## Bluetooth A2DP manual receiver (WIL-249)
+## Bluetooth A2DP receiver
 
-**Not yet hardware-validated. Disabled by default.** No phone has played through
-this path on the Pi. The Pi's loopback sub2 has been provisioned and tested
-(operator-reported; not re-observed from the software sessions). See the
-[manual receiver notes](../../docs/superpowers/specs/2026-10-27-bluetooth-manual-receiver.md)
-for exactly what is and is not verified.
+Any paired phone can play; there is no allow-list. Phones pair with "Just Works"
+(no code) while **Let new phones pair** is on in the Music page's Bluetooth panel;
+octet-remote trusts each newly paired phone, and paired phones can always reconnect.
 
-`python3 pi/remote/bluetooth_preflight.py` performs a read-only prerequisite check
-and prints JSON (exit 0 for prerequisites present, 1 for blockers). It requires
-working BlueALSA daemon/player binaries and idle, exact snd_aloop subdevice-2
-playback/capture endpoints. MPD keeps subdevice 0 and AirPlay keeps subdevice 1.
-A two-substream `snd-aloop` intentionally fails this check. `install/setup.sh` now writes
-`pcm_substreams=3`, matching the live Pi.
+**Setup:** `sudo python3 setup_bluetooth.py` (dry run) then `--apply`, from the
+staged `pi/remote/` after `install.py` and `install_airplay.py`. It installs the
+BlueALSA packages, masks Debian's `bluealsa` and `bluealsa-aplay` services,
+installs the WirePlumber fragment `pi/install/wireplumber-bluealsa.conf`, runs
+`install_bluetooth.py --apply`, starts `octet-bluealsa` at boot, turns on Auto
+mode, enables `octet-bluetooth-justworks` and removes the taskbar's Bluetooth
+applet (its pairing agent breaks Just Works). Each step is skipped when already
+done, so a set-up Pi reports every step as done and changes nothing. It never
+restarts audio services: reboot afterwards. Details and troubleshooting:
+[`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md).
 
-`sudo python3 install_bluetooth.py` is a dry run; `--apply` refuses on any preflight
-blocker. It installs only a **disabled** `/etc/octet/bluetooth.json`
-(root:octet-bluetooth 0640, never overwritten), an octet-remote drop-in for the
-root-only `/run/octet-bluetooth/control.sock`, and `octet-bluealsa.service`. That
-unit is an A2DP-sink-only daemon with no `[Install]` section, so it cannot be
-enabled and never starts at boot. Unit enable/active state is recorded before and
-re-read after; any change is reported, never altered. It never restarts
-octet-remote, enables, starts, stops or masks any unit, enables discoverability or
-changes audio. `--rollback` restores the backed-up files and likewise leaves unit
-state alone; it refuses while octet-bluealsa is running. This describes a
-disabled installation only, **not** an authorization to activate the receiver.
+`python3 bluetooth_preflight.py` is the read-only prerequisite check (BlueALSA
+binaries and idle snd_aloop subdevice-2 endpoints; MPD keeps 0, AirPlay keeps 1).
+`install_bluetooth.py` on its own installs only the receiver unit (an A2DP-sink
+daemon with no `[Install]` section) and the octet-remote drop-in for
+`/run/octet-bluetooth/control.sock`; it records unit state and never enables,
+starts or masks anything. `--rollback` restores its files.
 
-**BLOCKED — Bluetooth playback, pending attended physical acceptance:** On the
-first phone connection, BlueALSA transport churn coincided with WirePlumber
-link failures. PipeWire opened Loopback playback sub0 (reserved for MPD);
-CamillaDSP then logged ALSA capture errno 77 and became Inactive. No Bluetooth
-bridge was started or unmuted. This correlation is **not** proof of the capture
-failure's cause.
+**Who plays (Auto mode, `OCTET_BLUETOOTH_AUTO=1`).** A phone that *starts*
+streaming takes over: MPD is paused (queue and position kept), the DSP switches
+to the Bluetooth route and unmutes at no more than −18 dB once audio is flowing.
+AirPlay or Auto Tune holding the audio refuses the Bluetooth start; Bluetooth
+holding it refuses AirPlay (first owner wins). Any Music-page control stops
+Bluetooth muted. When the phone stops streaming, Octet mutes and does not resume
+Tidal. A stream already playing when octet-remote starts is not picked up until
+the phone pauses and plays again.
 
-An initial muted trial of `pi/install/wireplumber-bluealsa.conf` lost PipeWire's
-Loopback and DAC nodes when WirePlumber restarted while MPD and CamillaDSP held
-their ALSA devices. Removing the exact fragment and restarting WirePlumber
-**did not** restore those nodes. A subsequent controlled recovery paused MPD,
-stopped the muted CamillaDSP, verified all three reserved PCM endpoints had no
-owners, and restarted the `octet` user WirePlumber with the fragment absent.
-Loopback sink/source and DAC nodes returned; CamillaDSP restarted Running and
-muted on the approved baseline with the Tidal queue intact. This supports an
-ownership-sensitive WirePlumber enumeration boundary, not proof that the
-Bluetooth collision has been fixed.
-
-The same owner-free sequence was then used for a **revised configuration trial**:
-the exact hash-checked fragment disabling only WirePlumber's `monitor.bluez` was
-published with no pre-existing destination (no-replace); `octet` WirePlumber restarted
-with MPD paused and CamillaDSP stopped. Loopback sink/source and DAC nodes
-remained present, and CamillaDSP restarted Running/muted with the baseline
-semantically identical to its approved YAML. Manual `octet-bluealsa.service`
-registered its A2DP sink while policy remained disabled, without losing the
-PipeWire graph, then was stopped. The fragment remains installed; Bluetooth
-policy is disabled/empty and the phone untrusted/disconnected. **No phone audio
-or physical speaker output was tested in this trial.**
-
-Any future WirePlumber restart or fragment rollback must be a separately
-approved muted maintenance operation: preserve the queue and baseline, pause
-MPD until Loopback playback sub0 is released, stop muted CamillaDSP until its
-Loopback capture and DAC playback are released, then restart the *octet user*
-WirePlumber. Verify the named Loopback and DAC PipeWire nodes **before** starting
-CamillaDSP with startup mute; read back DSP Running/muted and the original queue.
-On failure, keep Bluetooth disabled, stop BlueALSA, remove only the exact trial
-fragment **only after** verifying it is a root-owned regular 0644 file with the
-reviewed SHA-256 `07bea466e0ed9f1b582a32faf57f7ee638cc6adf987b4a17bbc0464c77af1c71`.
-If its identity or hash differs, refuse deletion and investigate; there is no
-pre-existing fragment to restore because publication refused any destination.
-Repeat the owner-free WirePlumber restart and graph checks; never retry blindly
-or unmute to test. No pairing, trust, receiver start, or playback
-is authorized until a new attended speaker check is approved. Passing a
-no-phone service/graph trial is not end-to-end Bluetooth acceptance.
-
-The policy has exactly one valid form for every reader: `root:octet-bluetooth`,
-mode `0640`, in root-owned, non-writable, world-searchable directories. A root-only
-`0600` file is refused everywhere, because octet-remote (`upmpdcli`) could not read
-it and `start` would be impossible after a successful pairing.
-
-The unvalidated controller design preserves the MPD queue, uses only the dedicated
-Loopback sub2 pair and an approved Auto Tune baseline, and fails muted on source
-or ownership drift. It does not make a non-cooperative CamillaDSP websocket
-writer safe. The desktop graph and DSP-writer exclusion remain prerequisites
-for any future physical acceptance; passing software tests does not waive them.
+**WirePlumber.** The fragment disables only WirePlumber's BlueZ monitor so
+PipeWire never claims the phone's audio. Restarting WirePlumber while MPD and
+CamillaDSP hold their ALSA devices once lost PipeWire's Loopback and DAC nodes, so
+never restart it on a running system: reboot, or pause MPD and stop the muted
+CamillaDSP first, restart the `octet` user's WirePlumber, and check the Loopback
+and DAC nodes before starting CamillaDSP again.

@@ -3,7 +3,7 @@
 
 Installs an octet-remote drop-in providing the root-only control socket directory
 and a dedicated octet-bluealsa.service A2DP-sink daemon unit that has no [Install]
-section (DEPLOYMENT.md shows how to start it at boot). Any paired phone may play;
+section (setup_bluetooth.py, which runs this installer, starts it at boot). Any paired phone may play;
 there is no policy file or allowlist. It never installs
 packages, edits packaged BlueALSA/BlueZ units, restarts octet-remote, enables,
 starts, stops or masks any unit, makes the adapter discoverable or changes audio.

@@ -275,7 +275,6 @@ class BluetoothControl:
                 raise RuntimeError('Bluetooth stream generation is not current')
             self._idle()
             if stream is not None:
-                # Automatic playback never takes over a playing or paused queue.
                 # A playing or paused queue is paused (position kept) and the phone takes over.
                 if dict(self.server.mpd('status')[0]).get('state') not in ('stop', 'pause', 'play'):
                     raise RuntimeError('Music player state is unknown; automatic Bluetooth refused')
