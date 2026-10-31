@@ -129,6 +129,8 @@ class Visualizer(unittest.TestCase):
                 for name in ['sky.mp4', 'water.mp4', 'stars.mp4', 'solar.mp4', 'sun.mp4', 'lunar.mp4', 'edm.mp3', 'classical.mp3']:
                     url = f'http://127.0.0.1:{port}/visualizer-media/{name}'
                     size = (server.ROOT / 'visualizer-media' / name).stat().st_size
+                    if size < 1024:
+                        continue  # a Git LFS pointer: CI checks out without the large media
                     with urlopen(Request(url, headers={'Range': 'bytes=0-1023'})) as response:
                         self.assertEqual(response.status, 206)
                         self.assertEqual(response.headers['Content-Range'], f'bytes 0-1023/{size}')
