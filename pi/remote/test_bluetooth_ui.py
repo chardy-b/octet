@@ -34,6 +34,28 @@ class BluetoothUiTests(unittest.TestCase):
         self.assertIn(('SetMute', True), dsp.calls)
         self.assertNotIn(('SetMute', False), dsp.calls)
 
+    def test_bluetooth_start_runs_without_holding_the_server_lock(self):
+        control = self.control()
+        held = []
+        control.start.side_effect = lambda address: held.append(self.lock_free())
+        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control),                 patch.object(server, 'bluetooth_addresses', return_value=('AA:BB:CC:DD:EE:FF',)):
+            server.action('source', {'id': 'bluetooth'})
+        self.assertEqual(held, [True])
+
+    @staticmethod
+    def lock_free():
+        # Another thread can take LOCK only if this thread is not holding it.
+        import threading
+        got = []
+        def probe():
+            got.append(server.LOCK.acquire(timeout=1))
+            if got[-1]:
+                server.LOCK.release()
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+        return got[0]
+
     def test_start_tries_each_allowed_phone_and_reports_the_last_refusal(self):
         control = self.control()
         control.start.side_effect = [RuntimeError('first not connected'), RuntimeError('second not connected')]

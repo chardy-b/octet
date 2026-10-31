@@ -570,18 +570,12 @@ class RuntimeTests(unittest.TestCase):
             self.auto()
         self.assert_untouched()
 
-    def test_auto_refuses_mpd_playing_before_mute_or_pause(self):
-        for mpd in ('play',):
-            with self.subTest(mpd=mpd):
-                self.state['mpd'] = mpd
-                with self.assertRaisesRegex(RuntimeError, 'Music player'):
-                    self.control.start_auto(self.generation(), lambda generation: True)
-                self.assertTrue({c[0] for c in self.calls} <= {'GetConfigFilePath', 'GetState'})
-                self.assertEqual(self.mpd_calls[-1:], ['status'])
-                self.assertNotIn('pause 1', self.mpd_calls)
-                self.assertEqual(self.state['mpd'], mpd)
-                self.spawn.assert_not_called()
-                self.assertIsNone(self.control.session)
+    def test_auto_takes_over_a_playing_queue_by_pausing_it(self):
+        self.state['mpd'] = 'play'
+        self.control.start_auto(self.generation(), lambda generation: True)
+        self.assertTrue(self.control.status()['active'])
+        self.assertIn('pause 1', self.mpd_calls)
+        self.assertEqual(self.state['mpd'], 'pause')
 
     def test_auto_refuses_unless_mpd_explicitly_stopped(self):
         for label, status in (('missing state', [['volume', '50']]), ('empty status', []),

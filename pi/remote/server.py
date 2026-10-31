@@ -1068,7 +1068,12 @@ def start_bluetooth():
 def action(name, data):
     # The ownership check and the mutation share the same lock as starting Auto mode.
     with LOCK:
-        return _action(name, data)
+        result = _action(name, data)
+    if name == 'source' and isinstance(data, dict) and data.get('id') == 'bluetooth':
+        # The Bluetooth bridge needs LOCK to prepare, so the wait for it happens outside.
+        start_bluetooth()
+        return current_status()
+    return result
 
 
 def _action(name, data):
@@ -1107,9 +1112,7 @@ def _action(name, data):
             AIRPLAY_CONTROL.invalidate()
             with DSP() as dsp:
                 dsp.call('SetMute', True)
-            if data.get('id') == 'bluetooth':
-                start_bluetooth()
-            else:
+            if data.get('id') != 'bluetooth':  # action() starts Bluetooth after releasing LOCK
                 select_source(data.get('id'))
         elif name == 'unlock':
             enabled = data.get('enabled')

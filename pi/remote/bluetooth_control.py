@@ -280,8 +280,9 @@ class BluetoothControl:
             self._idle()
             if stream is not None:
                 # Automatic playback never takes over a playing or paused queue.
-                if dict(self.server.mpd('status')[0]).get('state') not in ('stop', 'pause'):
-                    raise RuntimeError('Music player is playing; automatic Bluetooth refused')
+                # A playing or paused queue is paused (position kept) and the phone takes over.
+                if dict(self.server.mpd('status')[0]).get('state') not in ('stop', 'pause', 'play'):
+                    raise RuntimeError('Music player state is unknown; automatic Bluetooth refused')
             session = Session(address, deadline, stream, is_current)
             self.session = session
             self.error = None
