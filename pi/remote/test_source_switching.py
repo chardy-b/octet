@@ -194,6 +194,38 @@ class SourceSwitching(unittest.TestCase):
                 self.assertEqual(list(target.parent.glob('*.candidate.yml')), [])
                 self.assert_tuning_available(dsp, tuning, usb()['id'] if existing else 'tidal')
 
+    def test_profile_switch_keeps_playing_and_limits_the_master(self):
+        for source in ('tidal', usb()['id']):
+            with self.subTest(source=source), self.system() as (
+                    origin, baseline, tuning, dsp, validation, mpd, record, target):
+                other = origin.with_name('other.yml')
+                changed = copy.deepcopy(baseline)
+                changed['title'] = 'Other tuning'
+                changed['filters']['output_2_polarity']['parameters'].update(inverted=False)
+                other.write_text(yaml.safe_dump(changed, sort_keys=False), encoding='utf-8')
+                presets = origin.parent / 'autotune' / 'presets'
+                presets.mkdir()
+                (presets / 'other.json').write_text(json.dumps(dict(
+                    id='other', name='Other tuning', kind='tuned', config_path=str(other))))
+                if source != 'tidal':
+                    server.select_source(source)
+                dsp.muted, dsp.volume = False, -10.0
+                dsp.calls.clear()
+                mpd.reset_mock()
+                with patch.object(server.BLUETOOTH_CONTROL, 'owns_audio', return_value=False), \
+                     patch.object(server.AIRPLAY_CONTROL.baseline, 'exists', return_value=False):
+                    status = server.action('auto-select', {'id': 'other'})
+                self.assertFalse(dsp.muted)
+                self.assertNotIn(('SetMute', True), dsp.calls)
+                mpd.assert_not_called()
+                self.assertEqual(dsp.volume, server.MAX_DB)
+                self.assertEqual(dsp.document['title'], 'Other tuning')
+                self.assertEqual(audio_sources.source_metadata(dsp.document)['id'], source)
+                self.assertEqual(dsp.path, str(other if source == 'tidal' else target))
+                self.assertEqual(server.profile_path(dsp.path), str(other))
+                self.assertEqual(status['active']['id'], 'other')
+                self.assertEqual(origin.read_text(encoding='utf-8'), yaml.safe_dump(baseline, sort_keys=False))
+
     def test_unapproved_configuration_cannot_switch_sources_or_unmute(self):
         with self.system() as (origin, baseline, tuning, dsp, validation, mpd, profiles, target):
             dsp.path = str(origin.with_name('unapproved.yml'))

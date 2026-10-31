@@ -489,7 +489,8 @@ def original_profile(path):
     if path in PROFILES:
         label, description = PROFILES[path]
         return dict(label=label, description=description, tuning=None, origin_path=path)
-    tuned = TUNING.active(path)
+    # Any saved profile, not only the one Auto Tune last applied.
+    tuned = TUNING.active(path) or TUNING.saved(path)
     if tuned:
         return dict(label=tuned['name'], description='Saved system tuning · tweeter safety high-pass active',
                     tuning=tuned, origin_path=path)
@@ -550,8 +551,6 @@ def select_source(identifier):
     Tidal runs the profile file itself when it already uses Tidal; every other
     input runs from running_file(). Ends muted with MPD paused; Unmute/Play is explicit.
     """
-    global ACTIVE_CAPTURE_CHANNELS
-    import yaml
     if not isinstance(identifier, str):
         raise ValueError('Choose an audio source')
     source = next((item for item in discover_sources() if item['id'] == identifier), None)
@@ -567,12 +566,54 @@ def select_source(identifier):
     profile = details['origin_path']
     if source_metadata(config)['id'] == identifier and running and previous_path in (profile, str(running_file())):
         return
+    _load_profile_input(profile, source, previous_path, config, interrupt=True)
+
+
+def switch_profile(identifier):
+    """Play another saved profile from the input in use, without interrupting playback.
+
+    CamillaDSP reloads in place (same input, so the stream keeps running); nothing
+    is muted or paused. Profiles differ in level, so the master is first limited to
+    MAX_DB. An AirPlay or Bluetooth session carries on with the new profile.
+    """
+    tuning = TUNING.status()
+    if tuning.get('running') or tuning.get('audio_owned') is not False:
+        raise RuntimeError('Stop Auto mode before changing profiles.')
+    record = TUNING.saved(identifier=identifier) if isinstance(identifier, str) else None
+    if record is None:
+        raise ValueError('Select a saved profile.')
+    profile = record['config_path']
+    with LOCK:
+        with DSP() as dsp:
+            if dsp.call('GetVolume') > MAX_DB:
+                dsp.call('SetVolume', MAX_DB)
+        if BLUETOOTH_CONTROL.owns_audio():
+            return BLUETOOTH_CONTROL.switch_profile(profile)
+        if AIRPLAY_CONTROL.baseline.exists():
+            return AIRPLAY_CONTROL.switch_profile(profile)
+        with DSP() as dsp:
+            previous_path = dsp.call('GetConfigFilePath')
+            config = json.loads(dsp.call('GetConfigJson'))
+        identifier = source_metadata(config)['id']
+        source = 'tidal' if identifier == 'tidal' else next(
+            (item for item in discover_sources() if item['id'] == identifier), None)
+        if source is None:
+            raise RuntimeError('The current input is not available; choose a source first.')
+        _load_profile_input(profile, source, previous_path, config, interrupt=False)
+
+
+def _load_profile_input(profile, source, previous_path, config, *, interrupt):
+    """Load profile fed from source. interrupt: mute and pause MPD first (source change);
+    otherwise reload in place while playing (profile change, same input)."""
+    global ACTIVE_CAPTURE_CHANNELS
+    import yaml
+    identifier = source if isinstance(source, str) else source['id']
     with DSP() as dsp:
         base = yaml.safe_load(dsp.call('ReadConfig', Path(profile).read_text()))
     if identifier == 'tidal' and source_metadata(base)['id'] == 'tidal':
         target, updated = Path(profile), base
     else:
-        target, updated = running_file(), with_input(base, 'tidal' if identifier == 'tidal' else source)
+        target, updated = running_file(), with_input(base, source)
     previous = running_file().read_bytes() if running_file().exists() else None
     previous_record = running_record().read_bytes() if running_record().exists() else None
     candidate = running_file().with_suffix('.candidate.yml')
@@ -584,12 +625,14 @@ def select_source(identifier):
                                         capture_output=True, timeout=10)
             if validation.returncode:
                 raise RuntimeError('DSP rejected the source; the previous source was retained')
-        INPUT_LEVELS.release()
-        with DSP() as dsp:
-            dsp.call('SetMute', True)
+        if interrupt:
+            INPUT_LEVELS.release()
+            with DSP() as dsp:
+                dsp.call('SetMute', True)
         try:
-            # Retain the queue and its position, but never play Tidal in the background.
-            mpd('pause 1')
+            if interrupt:
+                # Retain the queue and its position, but never play Tidal in the background.
+                mpd('pause 1')
             if target == running_file():
                 candidate.replace(running_file())
                 running_record().write_text(json.dumps(dict(profile=profile, input=identifier)))
@@ -608,7 +651,7 @@ def select_source(identifier):
                                     for key, value in updated['devices']['capture'].items())
                             and dsp.call('GetState') == 'Running'):
                         ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
-                        return  # Explicit Unmute/Play is required after a source change.
+                        return  # After a source change, Unmute/Play is explicit.
             raise RuntimeError('The selected input did not start')
         except Exception:
             AIRPLAY_CONTROL.invalidate(manual=False)
@@ -623,7 +666,7 @@ def select_source(identifier):
                     dsp.call('SetConfigFilePath', previous_path)
                 dsp.call('Reload')
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
-            raise RuntimeError('Source change failed; the previous source was restored and output is muted')
+            raise RuntimeError('Change failed; the previous source was restored and output is muted')
     finally:
         candidate.unlink(missing_ok=True)
 
@@ -1077,10 +1120,31 @@ def start_bluetooth():
     raise error
 
 
+def auto_status():
+    """Auto Tune status, with 'active' naming the saved profile actually playing.
+
+    Profiles switched here never pass through Auto Tune, so its own record of the
+    active profile can be older."""
+    status = TUNING.status()
+    try:
+        with DSP() as dsp:
+            profile = profile_path(dsp.call('GetConfigFilePath'))
+        record = TUNING.saved(profile) if profile else None
+    except (OSError, RuntimeError, ValueError):
+        record = None
+    if record:
+        status['active'] = record
+    return status
+
+
 def action(name, data):
     if name == 'bluetooth-discoverable':
         # Pairing visibility never touches audio, so it does not stop Bluetooth playback.
         return set_bluetooth_discoverable(data.get('enabled'))
+    if name == 'auto-select':
+        # Changing profile keeps the current input playing: no mute, pause or stop.
+        switch_profile(data.get('id') if isinstance(data, dict) else None)
+        return auto_status()
     # The ownership check and the mutation share the same lock as starting Auto mode.
     with LOCK:
         result = _action(name, data)
@@ -1415,7 +1479,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == '/api/auto':
-                return self.send(TUNING.status())
+                return self.send(auto_status())
             measurement = re.fullmatch(r'/api/auto/profiles/([A-Za-z0-9-]{1,100})/measurements', parsed.path)
             if measurement:
                 return self.send(TUNING.measurements(measurement.group(1)))

@@ -259,6 +259,21 @@ class BluetoothControl:
     def start(self, address):
         return self._start(address)
 
+    def switch_profile(self, profile):
+        """Carry the playing session onto another saved profile without interrupting it."""
+        with self.server.LOCK:
+            session = self.session
+            if session is None or session.expected is None or session.format is None:
+                raise RuntimeError('Bluetooth is still starting; change the profile in a moment')
+            rate, sample_format, _ = session.format
+            try:
+                session.expected = self.route.retarget(profile, rate, sample_format)
+                session.candidate = read_bounded(self.route.candidate, MAX_CONFIG)
+            except Exception as error:
+                self.fail(f'Bluetooth profile change failed: {error}')
+                raise
+            return self.status()
+
     def _start(self, address, stream=None, is_current=None):
         deadline = self.clock() + self.timeout
         if self.session is not None or self._bridges or self.route.exists():

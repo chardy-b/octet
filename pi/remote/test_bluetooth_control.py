@@ -500,6 +500,24 @@ class PrepareTests(unittest.TestCase):
     def load(self):
         return self.control.route.prepare(44100, 'S16_LE')
 
+    def test_retarget_carries_the_route_onto_another_profile_in_place(self):
+        self.load()
+        changed = copy.deepcopy(self.config)
+        changed['filters']['0']['gain'] = -3
+        other = self.root / 'baselines/other.yml'
+        other.write_text(yaml.safe_dump(changed))
+        self.calls.clear()
+        expected = self.control.route.retarget(str(other), 44100, 'S16_LE')
+        self.assertEqual(expected['filters']['0']['gain'], -3)
+        self.assertEqual(expected['devices']['capture']['device'], 'hw:Loopback,1,2')
+        self.assertEqual(self.state['config'], expected)
+        self.assertEqual(self.state['path'], str(self.control.route.candidate))
+        self.assertFalse(any(c[0] in ('SetConfigFilePath', 'SetMute') for c in self.calls))
+        self.assertEqual(self.control.route.read_record()['original'], str(other))
+        self.control.stop()  # recovery now restores the new profile
+        self.assertEqual(self.state['path'], str(other))
+        self.assertTrue(self.state['mute'])
+
     def test_checked_exact_candidate_and_crash_recovery(self):
         expected = self.load()
         self.run_check.assert_called_once_with(

@@ -140,6 +140,15 @@ class AirPlayController:
                     candidate.unlink(missing_ok=True)
         self.needs_mute = False
 
+    def switch_profile(self, profile):
+        """Carry the cast onto another saved profile without interrupting it."""
+        with self.server.LOCK:
+            try:
+                self.expected = self.baseline.retarget(profile)
+            except Exception as error:
+                self.fail(str(error) if isinstance(error, RuntimeError) else 'AirPlay profile change failed')
+                raise
+
     def end(self):
         self.invalidate(manual=False)
         self.error = None

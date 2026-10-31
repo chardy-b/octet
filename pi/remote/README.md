@@ -170,6 +170,16 @@ remains muted. Each candidate is checked by CamillaDSP before activation. A fail
 activation restores the previous source and stays muted. A disconnected source is
 shown as unavailable.
 
+Choosing another saved profile on the DSP page does not interrupt playback: the
+remote builds the new profile with the input in use and CamillaDSP reloads it in
+place (same input, so the stream keeps running). Nothing is muted, paused or
+stopped, including an active AirPlay cast or Bluetooth session, whose journal then
+names the new profile. Profiles differ in level, so the master is first limited to
+−18 dB. A failed change restores the previous profile, muted. Auto Tune runs and
+**Restore previous settings** still go through the Auto Tune service, which stops
+and restarts audio muted. `/api/auto` reports the profile actually playing as
+`active`.
+
 The initial `exciter-audition.yml` preset routes left/right to outputs 1/2
 (EX30HESF2-4) and 3/4 (EX32VBDS-4). Outputs 5–8 receive digital silence. Both
 exciter types play a temporary 500 Hz–3.5 kHz band with LR4 filters. There is no

@@ -105,6 +105,29 @@ class AirPlayTests(unittest.TestCase):
             self.control.end()
             self.assertEqual(self.path, str(self.profile))
 
+    def test_profile_switch_carries_the_cast_without_interrupting_it(self):
+        import yaml
+        other = self.profile.with_name('other.yml')
+        changed = config()
+        changed['filters']['output_2_polarity']['parameters']['inverted'] = True
+        other.write_text(yaml.safe_dump(changed))
+        presets = self.profile.parent / 'presets'
+        presets.mkdir()
+        (presets / 'other.json').write_text(json.dumps(dict(id='other', name='Other', config_path=str(other))))
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        self.assertTrue(self.control.active)
+        self.dsp.call.reset_mock()
+        self.control.switch_profile(str(other))
+        self.assertTrue(self.control.active)
+        self.assertEqual(self.path, str(self.control.baseline.candidate))
+        self.assertTrue(self.loaded['filters']['output_2_polarity']['parameters']['inverted'])
+        self.assertFalse(any(c[0] in ('SetMute', 'SetConfigFilePath') for c in self.calls()))
+        self.control.tick(now=2)
+        self.assertTrue(self.control.active)
+        self.control.end()
+        self.assertEqual(self.path, str(other))  # recovery restores the new profile
+
     def test_tuning_and_failed_prerequisites_never_unmute(self):
         for failure in ('tuning', 'device', 'receiver', 'preset', 'check'):
             with self.subTest(failure=failure):

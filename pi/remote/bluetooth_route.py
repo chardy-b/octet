@@ -155,6 +155,47 @@ class BluetoothRoute(BaselineRoute):
                 self.release()
             raise
 
+    def retarget(self, profile, rate, format):
+        """Carry the running route onto another saved profile; returns the new expected config.
+
+        The journal names the new profile before the candidate changes, so any later
+        recovery restores it. CamillaDSP reloads the candidate in place: same path,
+        same stream format, no mute.
+        """
+        self.ownership()
+        self.original()
+        path = Path(profile)
+        if path.suffix != '.yml' or path.resolve() != path or not self.server.listening_profile(str(path)):
+            raise RuntimeError('Not a saved speaker profile')
+        expected = routed(self.as_loaded(read_bounded(path, MAX_CONFIG)),
+                          rate=rate, sample_format=format, channels=2)
+        staged = self.candidate.with_name(self.candidate.stem + '-next.yml')
+        try:
+            persist(staged, yaml.safe_dump(expected, sort_keys=False).encode(), 0o640)
+            check = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(staged)],
+                                   capture_output=True, timeout=10, shell=False)
+            if check.returncode:
+                raise RuntimeError('DSP rejected the profile for Bluetooth; the current profile keeps playing')
+            record = dict(self.record, original=str(path))
+            raw = json.dumps(record).encode()
+            replace_file(self.journal, raw, 0o600)
+            current = self.journal.lstat()
+            self.record, self._journal_bytes = record, raw
+            self._journal_identity = (current.st_dev, current.st_ino)
+            self.original()
+            staged.replace(self.candidate)
+        finally:
+            staged.unlink(missing_ok=True)
+        with self.server.DSP() as dsp:
+            dsp.call('Reload')
+            for _ in range(20):
+                if (dsp.call('GetConfigFilePath') == str(self.candidate)
+                        and json.loads(dsp.call('GetConfigJson')) == expected
+                        and dsp.call('GetState') == 'Running'):
+                    return expected
+                time.sleep(.1)
+        raise RuntimeError('Bluetooth profile change not verified')
+
     def prepare(self, rate, format):
         """Load a checked sub2 candidate while muted; retain evidence until recovery."""
         with self.server.LOCK:

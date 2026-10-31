@@ -50,6 +50,20 @@ class TuningProxy:
         except (OSError, URLError) as error:
             raise RuntimeError('Could not load the saved measurements. The profile has not been changed.') from error
 
+    def saved(self, path=None, identifier=None):
+        """The saved-profile record (presets/*.json) for a config path or profile id."""
+        try:
+            records = [json.loads(item.read_text()) for item in sorted((self.root/'presets').glob('*.json'))]
+        except (OSError, ValueError):
+            return None
+        for record in records:
+            if not isinstance(record, dict) or not isinstance(record.get('config_path'), str):
+                continue
+            if ((path is not None and record['config_path'] == str(path))
+                    or (identifier is not None and record.get('id') == identifier)):
+                return record if Path(record['config_path']).is_file() else None
+        return None
+
     def active(self, path):
         try:
             record = json.loads((self.root/'active.json').read_text())
