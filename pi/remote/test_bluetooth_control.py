@@ -38,10 +38,12 @@ class RecoveryTests(unittest.TestCase):
         self.dsp.__exit__ = Mock(return_value=False)
         self.dsp.call.side_effect = self.call
         self.server = SimpleNamespace(LOCK=threading.RLock(), DSP=lambda: self.dsp,
+            CHANNEL_PROFILE=self.root / 'channel-dsp.yml', select_source=Mock(),
             TUNING=SimpleNamespace(root=self.root, active=lambda p: {'sha256': digest(self.data)},
                                    status=lambda: {'audio_owned': False}),
             AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, restore_pending=None,
-                                            needs_mute=False, baseline=SimpleNamespace(exists=lambda: False)))
+                                            needs_mute=False, hook_busy=threading.Lock(),
+                                            baseline=SimpleNamespace(exists=lambda: False)))
         self.stop_bridge = Mock()
         self.control = self.controller()
         self.addCleanup(self.control.route.release)
@@ -210,6 +212,25 @@ class RecoveryTests(unittest.TestCase):
         self.server.TUNING.active = lambda p: None
         with self.assertRaisesRegex(RuntimeError, 'approved'):
             self.prepare()
+
+    def test_source_working_copy_returns_to_the_approved_profile_first(self):
+        from source_profiles import SourceProfiles
+        profiles = SourceProfiles(self.root)
+        working = profiles.target(self.path)
+        working.write_bytes(self.data)
+        profiles.save(working, self.path)
+        self.state['path'] = str(working)
+        self.server.TUNING.active = lambda p: {'sha256': digest(self.data)} if p == str(self.path) else None
+        self.server.select_source.side_effect = lambda source: self.state.update(path=str(self.path))
+        self.control._idle()
+        self.server.select_source.assert_called_once_with('tidal')
+        # AirPlay owning audio is refused before anything is switched.
+        self.state['path'] = str(working)
+        self.server.select_source.reset_mock()
+        self.server.AIRPLAY_CONTROL.active = True
+        with self.assertRaisesRegex(RuntimeError, 'AirPlay'):
+            self.control._idle()
+        self.server.select_source.assert_not_called()
 
     def test_real_server_airplay_interface_guards_bluetooth_ownership(self):
         import server

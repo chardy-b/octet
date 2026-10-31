@@ -49,6 +49,7 @@ from bluetooth_contract import bridge_arguments
 from bluetooth_identity import observe_identity, paired_addresses
 from bluetooth_route import BluetoothRoute
 from bluetooth_transport import CODECS, StreamGeneration, _TRANSPORT, _UNIQUE
+from source_profiles import SourceProfiles
 
 SOCKET = '/run/octet-bluetooth/control.sock'
 START_TIMEOUT = 120.0
@@ -193,6 +194,12 @@ class BluetoothControl:
             raise RuntimeError('AirPlay owns audio; Bluetooth start refused')
         if self.server.TUNING.status().get('audio_owned') is not False:
             raise RuntimeError('Auto Tune owns audio or ownership is unknown')
+        with self.server.DSP() as dsp:
+            path = dsp.call('GetConfigFilePath')
+        if SourceProfiles(Path(self.server.CHANNEL_PROFILE).parent).origin(path):
+            # On a source working copy (another input picked on the Music page): go back
+            # to the approved profile, as AirPlay does, rather than refusing the phone.
+            self.server.select_source('tidal')
         with self.server.DSP() as dsp:
             path = dsp.call('GetConfigFilePath')
             if (path == str(self.server.CHANNEL_PROFILE) or not self.server.TUNING.active(path)
