@@ -50,7 +50,8 @@ function renderSources(next){
     $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
     if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':'AirPlay selected · waiting for a cast.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
-    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error));
+    if(next.dac_stalled)$('source-status').textContent='The speaker output is stalled (no sound will play). Reboot the Pi.';
+    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.dac_stalled));
   }
 }
 $('source-choice').onchange=()=>{$('source-choice').dataset.dirty='true';renderSources(state);};

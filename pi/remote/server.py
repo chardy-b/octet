@@ -28,6 +28,7 @@ from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
 from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
+from dac_watch import DacWatch
 from source_profiles import SourceProfiles
 
 BIND = os.environ.get('OCTET_BIND', '0.0.0.0')
@@ -1016,10 +1017,17 @@ def current_status():
     except (OSError, RuntimeError, ValueError):
         result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
     result['airplay'] = AIRPLAY_CONTROL.status()
+    stalled = DAC_WATCH.stalled(result.get('dsp_state') == 'Running')
+    result['dac_stalled'] = stalled
+    if stalled and not DAC_WATCH.reported:
+        logging.warning('DAC output stalled while the DSP reports Running; a reboot clears a wedged I2S DMA channel')
+    DAC_WATCH.reported = stalled
     return result
 
 
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
+DAC_WATCH = DacWatch()
+DAC_WATCH.reported = False
 # Disabled unless the root-owned local policy is enabled; started only over the
 # root-only local socket, never over HTTP.
 BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__])

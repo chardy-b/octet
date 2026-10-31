@@ -9,6 +9,8 @@ sudo mkdir -p /opt/camilladsp/gui && sudo tar xzf bundle_linux_aarch64.tar.gz -C
 sudo chmod +x /opt/camilladsp/camilladsp
 ls /opt/camilladsp /opt/camilladsp/gui
 # loopback for player input
+# Keep logs across reboots so a hardware fault can be diagnosed afterwards.
+sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald
 echo snd-aloop | sudo tee /etc/modules-load.d/snd-aloop.conf >/dev/null
 echo 'options snd-aloop index=10 pcm_substreams=3' | sudo tee /etc/modprobe.d/snd-aloop.conf >/dev/null
 sudo modprobe snd-aloop index=10 pcm_substreams=3 || true
