@@ -496,10 +496,18 @@ class CoverLookup(unittest.TestCase):
                          'https://resources.tidal.com/images/cc/dd/640x640.jpg')
         session = self.search(tracks=[self.track('Song', 'Other Artist', self.album('Song', 'Other Artist', 'xx'))])
         self.assertEqual(server.cover_for('Nobody', 'Nothing', 'Song'), '')
+        searches = session.search.call_count
         self.assertEqual(server.cover_for('Nobody', 'Nothing', 'Song'), '')
-        session.search.assert_called_once()
         self.assertEqual(server.cover_for('', '', 'Song'), '')
-        session.search.assert_called_once()
+        self.assertEqual(session.search.call_count, searches)
+
+    def test_a_romanized_suffix_and_a_long_query_still_find_the_song(self):
+        single = self.album('水面に、アイス', 'YeYe', 'ee-ff')
+        session = self.search()
+        session.search.side_effect = lambda query, **options: {
+            'tracks': [self.track('水面に、アイス', 'YeYe', single)] if query == '水面に、アイス' else [], 'albums': []}
+        self.assertEqual(server.cover_for('YeYe & Ginger Root', 'minamo ni, ice', '水面に、アイス - minamo ni, ice'),
+                         'https://resources.tidal.com/images/ee/ff/640x640.jpg')
 
 
 if __name__ == '__main__':

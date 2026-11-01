@@ -249,23 +249,31 @@ def cover_for(artist, album, title):
     the wrong cover. Finds are kept; misses are retried after ten minutes.
     """
     words = lambda value: ' '.join(re.sub(r'\W+', ' ', value.casefold()).split())
-    artist, album, title = (words(str(value or ''))[:200] for value in (artist, album, title))
-    key = (artist, album, title)
+    # Some apps add a romanized or translated name: "水面に、アイス - minamo ni, ice".
+    names = lambda value: list(dict.fromkeys(part for part in [value, *re.split(r'\s+[-–—]\s+', value)] if words(part)))
+    artist, album, title = (str(value or '')[:200] for value in (artist, album, title))
+    key = (words(artist), words(album), words(title))
     found = COVERS.get(key)
     if found and (found[1] or time.monotonic() < found[0]):
         return found[1]
     cover = ''
-    if artist and (album or title):
+    if key[0] and (key[1] or key[2]):
         import tidalapi
-        same_artist = lambda item: any(words(a.name) and (words(a.name) in artist or artist in words(a.name))
+        artists, titles, albums = key[0], {words(n) for n in names(title)}, {words(n) for n in names(album)}
+        same_artist = lambda item: any(words(a.name) and (words(a.name) in artists or artists in words(a.name))
                                        for a in getattr(item, 'artists', None) or [item.artist])
-        with TIDAL_LOCK:
-            results = tidal().search(f'{artist} {title or album}', models=[tidalapi.Track, tidalapi.Album], limit=10)
-        tracks = [t for t in results.get('tracks', []) if words(t.name) == title and same_artist(t)]
-        albums = [t.album for t in tracks if words(t.album.name) == album] + [
-            a for a in results.get('albums', []) if words(a.name) == album and same_artist(a)] + [t.album for t in tracks]
-        image = next((a.cover for a in albums if getattr(a, 'cover', None)), None)
-        cover = 'https://resources.tidal.com/images/' + image.replace('-', '/') + '/640x640.jpg' if image else ''
+        # Tidal matches every word, so a long query can find nothing; fall back to fewer words.
+        queries = [f'{artist} {name}' for name in names(title)] + names(title) + names(album)
+        for query in dict.fromkeys(queries):
+            with TIDAL_LOCK:
+                results = tidal().search(query, models=[tidalapi.Track, tidalapi.Album], limit=10)
+            tracks = [t for t in results.get('tracks', []) if words(t.name) in titles and same_artist(t)]
+            candidates = [t.album for t in tracks if words(t.album.name) in albums] + [
+                a for a in results.get('albums', []) if words(a.name) in albums and same_artist(a)] + [t.album for t in tracks]
+            image = next((a.cover for a in candidates if getattr(a, 'cover', None)), None)
+            if image:
+                cover = 'https://resources.tidal.com/images/' + image.replace('-', '/') + '/640x640.jpg'
+                break
     if len(COVERS) >= 64:
         COVERS.clear()
     COVERS[key] = (time.monotonic() + 600, cover)
