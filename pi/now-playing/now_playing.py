@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlencode, urlparse, unquote
 from urllib.request import urlopen, build_opener, HTTPRedirectHandler
 
 
@@ -45,7 +45,7 @@ def read_artwork(source, uri):
             raise ValueError('Invalid AirPlay cover path')
         with path.open('rb') as stream:
             data = stream.read(MAX_ART_BYTES + 1)
-    elif source == 'tidal':
+    elif source in ('tidal', 'bluetooth'):
         if (parsed.scheme != 'https' or parsed.netloc != 'resources.tidal.com'
                 or not parsed.path.startswith('/images/') or parsed.query or parsed.fragment):
             raise ValueError('Not a Tidal cover')
@@ -118,7 +118,8 @@ def mpris_property(name):
 def bluez_player():
     """AVRCP track info a phone sends over Bluetooth: the playing BlueZ MediaPlayer1, if any.
 
-    Phones send title, artist, album, duration and position, but no cover art.
+    Phones send title, artist, album, duration and position, but no cover art;
+    tidal_cover finds the album's cover instead.
     """
     result = subprocess.run([
         'busctl', '--system', '--json=short', '--timeout=2', 'call', 'org.bluez', '/',
@@ -133,6 +134,13 @@ def bluez_player():
     return (playing or players)[0]
 
 
+def tidal_cover(artist, album, title):
+    """The remote's Tidal search for this song's album cover URL, or ''."""
+    query = urlencode(dict(artist=artist, album=album, title=title))
+    with urlopen('http://127.0.0.1:8767/api/cover?' + query, timeout=4) as response:
+        return json.loads(response.read(10_000)).get('cover') or ''
+
+
 def text(value):
     return value[:512] if isinstance(value, str) else ''
 
@@ -145,7 +153,7 @@ def number(value):
         return 0
 
 
-def describe(status, read_mpris=mpris_property, artwork=None, read_bluetooth=bluez_player):
+def describe(status, read_mpris=mpris_property, artwork=None, read_bluetooth=bluez_player, find_cover=tidal_cover):
     source = status.get('source', 'unknown')
     result = dict(version=1, source=source, source_label=text(status.get('source_label')),
                   state='stopped', title='', artist='', album='', elapsed=0, duration=0,
@@ -187,6 +195,11 @@ def describe(status, read_mpris=mpris_property, artwork=None, read_bluetooth=blu
                               elapsed=number(player.get('Position', {}).get('data')) / 1000)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
             result['metadata_available'] = False
+        if artwork and result['title']:
+            try:
+                art_uri = text(find_cover(result['artist'], result['album'], result['title']))
+            except (OSError, ValueError, AttributeError):
+                pass
     elif source == 'tidal':
         if status.get('player_error'):
             raise RuntimeError('Music player unavailable')

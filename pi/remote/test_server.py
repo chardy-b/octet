@@ -460,5 +460,47 @@ class InitializationSafety(unittest.TestCase):
                 self.assertTrue(self.control.needs_mute)
 
 
+class CoverLookup(unittest.TestCase):
+    """Bluetooth sends no art; the cover comes from an exact Tidal match by the same artist."""
+    def search(self, tracks=(), albums=()):
+        session = MagicMock()
+        session.search.return_value = {'tracks': list(tracks), 'albums': list(albums)}
+        for item in (patch.object(server, 'COVERS', {}), patch.object(server, 'tidal', return_value=session),
+                     patch.dict('sys.modules', tidalapi=MagicMock())):
+            item.start()
+            self.addCleanup(item.stop)
+        return session
+
+    @staticmethod
+    def album(name, artist, cover):
+        return types.SimpleNamespace(name=name, cover=cover, artist=types.SimpleNamespace(name=artist),
+                                     artists=[types.SimpleNamespace(name=artist)])
+
+    def track(self, name, artist, album):
+        return types.SimpleNamespace(name=name, album=album, artists=[types.SimpleNamespace(name=artist)])
+
+    def test_exact_title_and_album_by_the_same_artist(self):
+        single = self.album('Be Nobody', 'KIKI', 'aa-bb')
+        session = self.search(tracks=[
+            self.track('Be Nobody', 'Someone Else', self.album('Be Nobody', 'Someone Else', 'xx')),
+            self.track('Be Nobody (Remix)', 'KIKI', self.album('Remixes', 'KIKI', 'yy')),
+            self.track('Be Nobody', 'KIKI', single)])
+        url = 'https://resources.tidal.com/images/aa/bb/640x640.jpg'
+        self.assertEqual(server.cover_for('KIKI', 'Be Nobody', 'Be Nobody'), url)
+        self.assertEqual(server.cover_for('kiki', 'be nobody', 'Be Nobody!'), url)
+        session.search.assert_called_once()
+
+    def test_album_match_without_the_track_and_misses_are_cached(self):
+        self.search(albums=[self.album('Other', 'KIKI', 'xx'), self.album('The High Road', 'JoJo', 'cc-dd')])
+        self.assertEqual(server.cover_for('JoJo', 'The High Road', 'Unlisted'),
+                         'https://resources.tidal.com/images/cc/dd/640x640.jpg')
+        session = self.search(tracks=[self.track('Song', 'Other Artist', self.album('Song', 'Other Artist', 'xx'))])
+        self.assertEqual(server.cover_for('Nobody', 'Nothing', 'Song'), '')
+        self.assertEqual(server.cover_for('Nobody', 'Nothing', 'Song'), '')
+        session.search.assert_called_once()
+        self.assertEqual(server.cover_for('', '', 'Song'), '')
+        session.search.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

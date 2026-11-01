@@ -239,6 +239,39 @@ def remember(track):
     return item
 
 
+COVERS = {}
+
+
+def cover_for(artist, album, title):
+    """Tidal cover for a song another source plays (Bluetooth sends no art), or ''.
+
+    Only an exact title or album match by the same artist counts; a guess would show
+    the wrong cover. Finds are kept; misses are retried after ten minutes.
+    """
+    words = lambda value: ' '.join(re.sub(r'\W+', ' ', value.casefold()).split())
+    artist, album, title = (words(str(value or ''))[:200] for value in (artist, album, title))
+    key = (artist, album, title)
+    found = COVERS.get(key)
+    if found and (found[1] or time.monotonic() < found[0]):
+        return found[1]
+    cover = ''
+    if artist and (album or title):
+        import tidalapi
+        same_artist = lambda item: any(words(a.name) and (words(a.name) in artist or artist in words(a.name))
+                                       for a in getattr(item, 'artists', None) or [item.artist])
+        with TIDAL_LOCK:
+            results = tidal().search(f'{artist} {title or album}', models=[tidalapi.Track, tidalapi.Album], limit=10)
+        tracks = [t for t in results.get('tracks', []) if words(t.name) == title and same_artist(t)]
+        albums = [t.album for t in tracks if words(t.album.name) == album] + [
+            a for a in results.get('albums', []) if words(a.name) == album and same_artist(a)] + [t.album for t in tracks]
+        image = next((a.cover for a in albums if getattr(a, 'cover', None)), None)
+        cover = 'https://resources.tidal.com/images/' + image.replace('-', '/') + '/640x640.jpg' if image else ''
+    if len(COVERS) >= 64:
+        COVERS.clear()
+    COVERS[key] = (time.monotonic() + 600, cover)
+    return cover
+
+
 def track_id(value):
     value = str(value)
     if not re.fullmatch(r'[0-9]{1,12}', value):
@@ -1531,6 +1564,9 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     return self.send({'error': 'Artwork unavailable'}, 404)
                 return self.send(body, content_type=kind)
+            if parsed.path == '/api/cover':
+                query = parse_qs(parsed.query)
+                return self.send({'cover': cover_for(*(query.get(name, [''])[0] for name in ('artist', 'album', 'title')))})
             if parsed.path == '/api/input-levels':
                 return self.send(INPUT_LEVELS.snapshot())
             if parsed.path == '/api/dsp':

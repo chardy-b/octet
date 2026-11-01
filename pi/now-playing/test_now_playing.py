@@ -61,6 +61,29 @@ class NowPlayingTests(unittest.TestCase):
         status['bluetooth'] = {'active': False}
         self.assertEqual(publisher.describe(status, read_bluetooth=lambda: player)['state'], 'stopped')
 
+    def test_bluetooth_cover_comes_from_the_tidal_lookup(self):
+        player = {'Status': {'data': 'playing'},
+                  'Track': {'data': {'Title': {'data': 'Be Nobody'}, 'Artist': {'data': 'KIKI'},
+                                     'Album': {'data': 'Be Nobody'}}}}
+        status = dict(source='bluetooth', source_label='Bluetooth', bluetooth={'active': True})
+        cover = 'https://resources.tidal.com/images/a/b/640x640.jpg'
+        data = b'\xff\xd8\xff' + b'cover bytes'
+        lookups = []
+        def find(*song):
+            lookups.append(song)
+            return cover
+        with patch.object(publisher, 'read_artwork', return_value=(data, 'image/jpeg')) as read:
+            song = publisher.describe(status, artwork=publisher.Artwork(), read_bluetooth=lambda: player, find_cover=find)
+        self.assertEqual(lookups, [('KIKI', 'Be Nobody', 'Be Nobody')])
+        read.assert_called_once_with('bluetooth', cover)
+        self.assertEqual(song['artwork'], '/api/artwork/' + hashlib.sha256(data).hexdigest())
+        def offline(*song):
+            raise OSError('Remote unavailable')
+        song = publisher.describe(status, artwork=publisher.Artwork(), read_bluetooth=lambda: player, find_cover=offline)
+        self.assertEqual((song['title'], song['artwork']), ('Be Nobody', None))
+        with self.assertRaises(ValueError):
+            publisher.read_artwork('bluetooth', 'https://evil.example/images/a.jpg')
+
     def test_only_same_wifi_subnet_and_wifi_destination_allowed(self):
         wifi = [ipaddress.ip_interface('192.168.68.63/22')]
         self.assertTrue(publisher.allowed_peer('192.168.68.61', '192.168.68.63', wifi))

@@ -36,6 +36,9 @@ AirPlay artwork is read from Shairport's cover cache through a read-only systemd
 bind mount at `/run/octet-shairport`; the publisher keeps its private `/tmp`.
 For Tidal, only HTTPS artwork on `resources.tidal.com/images/` is fetched and
 cached by Octet, without redirects. The mirror never contacts the artwork provider.
+Phones send no artwork over Bluetooth, so for Bluetooth the publisher asks the
+remote's `/api/cover`, which searches Tidal for the same title or album by the same
+artist and returns that cover; with no exact match the song shows without art.
 JPEG, PNG and WebP covers are limited to 2 MiB; unsupported or unavailable images
 do not hide song details. Only the current image is kept in memory and published
 under its SHA-256 hash. Switching source or stopping playback clears it.
