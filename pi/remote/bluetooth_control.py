@@ -187,6 +187,9 @@ class BluetoothControl:
     def _idle(self):
         """Non-mutating ownership precheck so a refused start never mutes others."""
         airplay = self.server.AIRPLAY_CONTROL
+        # An AirPlay route left loaded between apps is silent: the phone takes over.
+        # Its muted restore is the only mutation before the refusal checks below.
+        airplay.release_idle()
         if (airplay.active or airplay.pending is not None or airplay.baseline.exists()
                 or airplay.restore_pending is not None or airplay.needs_mute
                 or airplay.hook_busy.locked()):

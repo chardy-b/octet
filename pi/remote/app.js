@@ -18,7 +18,7 @@ function render(next){
       if(song.artwork){if($('cover').getAttribute('src')!==song.artwork)$('cover').src=song.artwork;$('cover').hidden=false;$('cover-placeholder').hidden=true;}
       else{$('cover').hidden=true;$('cover-placeholder').hidden=false;}
     }else{
-      $('song-title').textContent=next.source_label;$('song-artist').textContent=next.source==='airplay'?(next.airplay?.active?'AirPlay cast active.':'Waiting for an AirPlay cast.'):'Playing through your speaker DSP.';
+      $('song-title').textContent=next.source_label;$('song-artist').textContent=next.source==='airplay'?(next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'Waiting for an AirPlay cast.'):'Playing through your speaker DSP.';
       $('song-album').textContent='';$('cover').hidden=true;$('cover-placeholder').hidden=false;
     }
     if(next.player_error)notice();
@@ -49,7 +49,7 @@ function renderSources(next){
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
   if(!sourceBusy){
     $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
-    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':'AirPlay selected · waiting for a cast.');
+    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
     if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth · muted.':next.muted?'Bluetooth active · muted. Unmute when ready.':'Bluetooth playing from your phone.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
     if(next.dac_stalled)$('source-status').textContent='The speaker output is stalled (no sound will play). Reboot the Pi.';

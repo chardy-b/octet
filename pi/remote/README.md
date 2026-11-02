@@ -160,7 +160,9 @@ use. Profile files are never edited when the input changes.
 Tidal runs the profile file itself. Any other input picked on the Music page runs
 from `/var/lib/octet-dsp/running.yml`, with `running.json` naming the profile it
 was built from. AirPlay and Bluetooth casts run from their own journalled
-candidates (below) and always restore the profile on stop, failure or restart. A
+candidates (below) and restore the profile on failure, restart or a manual
+override. Bluetooth also restores it when the phone stops; AirPlay keeps its route
+loaded between apps. A
 cast or phone that starts while another input is selected first returns to the
 profile's Tidal input. A USB source mixer feeds the stereo speaker pipeline and
 captures all ten iD14 channels in the hardware's native format; non-Tidal inputs
@@ -678,7 +680,13 @@ are RUNNING at 44100 Hz / S32_LE / stereo, capture application and hardware
 pointers advance, and DSP readiness checks pass. Phone volume is Shairport software attenuation; 100% phone
 volume does not raise the DSP master. Deliberate remote volume changes remain
 available. Output pair mutes, crossover, protection filters and EQ are preserved.
-Ending playback mutes and returns to the profile; Tidal never resumes itself.
+Switching apps on the phone never mutes. When the phone's session ends (stop
+hook) or its audio stops for a second, the AirPlay route stays loaded and
+unmuted and the cast shows as idle. The next app's start hook, or audio returning
+in the same session, carries on without a mute, reload or volume change. If the
+route changed in the meantime, the next start rebuilds it muted as a new cast. An
+idle cast ends, muted, back on the profile when a manual Music-page control,
+Auto Tune or a Bluetooth phone takes over. Tidal never resumes itself.
 
 The UI distinguishes selected/waiting, preparing, active, and failed AirPlay.
 Manual source selection stays muted. Auto Tune excludes automatic playback;
@@ -819,8 +827,9 @@ starts or masks anything. `--rollback` restores its files.
 **Who plays (Auto mode, `OCTET_BLUETOOTH_AUTO=1`).** A phone that *starts*
 streaming takes over: MPD is paused (queue and position kept), the DSP switches
 to the Bluetooth route and unmutes at no more than −18 dB once audio is flowing.
-AirPlay or Auto Tune holding the audio refuses the Bluetooth start; Bluetooth
-holding it refuses AirPlay (first owner wins). Any Music-page control stops
+An AirPlay cast that is idle between apps is ended (muted, back to the profile)
+and the phone takes over. A playing or preparing AirPlay cast, or Auto Tune,
+refuses the Bluetooth start; Bluetooth holding the audio refuses AirPlay. Any Music-page control stops
 Bluetooth muted. When the phone stops streaming, Octet mutes and does not resume
 Tidal. A phone already playing when octet-remote (or BlueZ/BlueALSA) starts is
 picked up once, after the same identity checks. Any saved profile works; the

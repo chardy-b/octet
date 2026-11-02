@@ -43,6 +43,7 @@ class RecoveryTests(unittest.TestCase):
                                    status=lambda: {'audio_owned': False}),
             AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, restore_pending=None,
                                             needs_mute=False, hook_busy=threading.Lock(),
+                                            release_idle=lambda: None,
                                             baseline=SimpleNamespace(exists=lambda: False)))
         # A saved profile is whatever the (patchable) Auto Tune proxy reports as active.
         self.server.listening_profile = lambda path: self.server.TUNING.active(path)

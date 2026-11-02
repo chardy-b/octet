@@ -73,23 +73,56 @@ class AirPlayTests(unittest.TestCase):
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
         server.mpd.assert_called_once_with('pause 1')
 
-    def test_end_debounce_stale_stop_and_manual_override(self):
+    def test_app_switch_keeps_the_route_loaded_and_unmuted(self):
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        self.dsp.call.reset_mock()
+        candidate = str(self.control.baseline.candidate)
+        # The phone ends its session to switch apps: nothing is muted or reloaded.
+        self.control.event('stop', now=2)
+        self.assertTrue(self.control.idle)
+        with patch('airplay_control.pcm_running', return_value=False):
+            self.control.tick(now=4)
+        self.assertTrue(self.control.idle)
+        self.control.event('start', now=5)
+        self.assertTrue(self.control.active)
+        # Silence without a stop hook, then audio back without a start hook.
+        with patch('airplay_control.pcm_running', return_value=False):
+            self.control.tick(now=6)
+            self.control.tick(now=7.5)
+        self.assertTrue(self.control.idle)
+        self.control.tick(now=8)
+        self.assertTrue(self.control.active)
+        self.assertEqual(self.path, candidate)
+        self.assertFalse(any(c[0] in ('SetMute', 'SetVolume', 'SetConfigFilePath', 'Reload')
+                             for c in self.calls()))
+        server.mpd.assert_called_once_with('pause 1')
+        self.control.invalidate()  # a manual override still ends it muted on the profile
+        self.assertIn(('SetMute', True), self.calls())
+        self.assertEqual(self.path, str(self.profile))
+
+    def test_changed_idle_route_is_rebuilt_muted(self):
         self.control.event('start', now=0)
         self.control.tick(now=1)
         self.control.event('stop', now=2)
-        self.control.tick(now=4)  # live PCM: stale stop
-        self.assertTrue(self.control.active)
-        self.control.event('stop', now=5)
+        self.loaded['filters']['output_2_polarity']['parameters']['mute'] = True
         self.dsp.call.reset_mock()
-        with patch('airplay_control.pcm_running', return_value=False):
-            self.control.tick(now=7)
+        self.control.event('start', now=3)
         self.assertFalse(self.control.active)
+        self.assertIsNotNone(self.control.pending)
         self.assertIn(('SetMute', True), self.calls())
+
+    def test_bluetooth_takes_over_an_idle_cast_on_the_profile(self):
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        self.control.release_idle()  # still playing: left alone
+        self.assertTrue(self.control.active)
+        self.control.event('stop', now=2)
+        self.control.release_idle()
+        self.assertFalse(self.control.idle)
+        self.assertFalse(self.control.baseline.exists())
         self.assertEqual(self.path, str(self.profile))
-        self.control.event('start', now=8)
-        self.control.invalidate()
-        self.control.tick(now=9)
-        self.assertNotIn(('SetMute', False), self.calls())  # the manual override won
+        self.assertIn(('SetMute', True), self.calls())
 
     def test_any_saved_profile_and_any_input_are_cast_from_the_profile(self):
         from audio_sources import source_metadata
@@ -195,14 +228,15 @@ class IntegrationSafetyTests(AirPlayTests):
         self.assertFalse(self.control.baseline.exists())
         self.assertNotIn(('SetMute', False), self.calls())
 
-    def test_rapid_stop_start_reapplies_safe_master(self):
+    def test_rapid_stop_start_keeps_playing(self):
         self.control.event('start', now=0)
         self.control.tick(now=1)
         self.control.event('stop', now=2)
         self.control.event('start', now=2.1)
-        self.assertFalse(self.control.active)
+        self.assertTrue(self.control.active)
         self.control.tick(now=2.2)
-        self.assertEqual(self.calls().count(('SetVolume', -18.0)), 2)
+        self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
+        self.assertEqual(self.calls().count(('SetMute', False)), 1)
 
     def test_manual_override_rejects_duplicate_live_start(self):
         self.control.event('start', now=0)
@@ -603,6 +637,8 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.control.event('stop', now=2)
         with patch('airplay_control.pcm_running', return_value=False):
             self.control.tick(now=4)
+        self.assertEqual(self.path, str(self.control.baseline.candidate))  # kept between apps
+        self.control.end()
         self.restored()
 
     def test_capture_timeout_and_receiver_failure_restore(self):

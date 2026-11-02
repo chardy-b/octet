@@ -63,6 +63,9 @@ class AirPlayController:
         self.server = server
         self.baseline = BaselineRoute(server)
         self.active = False
+        # The cast's route stays loaded and unmuted between apps (stop hook or silence);
+        # the next start or audio just continues on it.
+        self.idle = False
         self.pending = None
         self.stop_at = None
         self.error = None
@@ -92,7 +95,7 @@ class AirPlayController:
         if manual:
             self.error = None
             self.restore_pending = None
-        self.active = False
+        self.active = self.idle = False
         self.pending = self.stop_at = self.previous = self.expected = None
         self.silent_since = None
 
@@ -155,16 +158,43 @@ class AirPlayController:
         self.needs_mute = True
         self.recover()
 
+    def pause(self):
+        """The phone stopped (an app switch, a pause): keep the route loaded and unmuted."""
+        if not self.baseline.exists():
+            self.end()
+            return
+        self.active, self.idle = False, True
+        self.stop_at = self.silent_since = None
+
+    def release_idle(self):
+        """Hand an idle cast's outputs to another source (caller holds server.LOCK)."""
+        if self.idle and not self.active and self.pending is None:
+            self.end()
+
+    def resume(self):
+        """A start on the idle route: carry on if it is still exactly the cast's route."""
+        with self.server.DSP() as dsp:
+            loaded = json.loads(dsp.call('GetConfigJson'))
+            ready = self.expected is not None and self.baseline.ready(dsp, loaded, self.expected)
+        if not ready:
+            return False
+        self.active, self.idle = True, False
+        self.error = None
+        return True
+
     def event(self, event, now=None, cancelled=None, acknowledged=None):
         supplied_now = now
         now = time.monotonic() if now is None else now
         with self.server.LOCK:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError('AirPlay preparation timed out')
-            if self.needs_mute or (self.baseline.exists() and not self.active and self.pending is None):
+            if self.needs_mute or (self.baseline.exists() and not self.active
+                                   and not self.idle and self.pending is None):
                 self.recover()
             if event == 'stop':
-                if self.active or self.pending is not None:
+                if self.active:
+                    self.pause()
+                elif self.pending is not None:
                     self.stop_at = now + 1.0
                 return
             if event != 'start':
@@ -178,8 +208,13 @@ class AirPlayController:
                 if pcm_running():
                     return
                 self.suppressed = False
-            if self.stop_at is not None and self.active:
-                # A stop/start pair is a new cast even within the debounce window.
+            if self.idle:
+                # The next app on the phone: no mute, no reload, no volume change.
+                try:
+                    if self.resume():
+                        return
+                except Exception:
+                    logging.warning('AirPlay idle route check failed; preparing a new cast')
                 self.end()
             if self.active or self.pending is not None:
                 self.stop_at = None
@@ -229,7 +264,7 @@ class AirPlayController:
                 self.recover()
             if self.suppressed and not pcm_running():
                 self.suppressed = False
-            if not self.active and self.pending is None:
+            if not self.active and not self.idle and self.pending is None:
                 return
             try:
                 if self.cancelled is not None and self.cancelled.is_set():
@@ -243,7 +278,7 @@ class AirPlayController:
                 if not receiver_running():
                     self.fail('AirPlay receiver stopped')
                     return
-                if self.active and self.baseline.exists():
+                if (self.active or self.idle) and self.baseline.exists():
                     with self.server.DSP() as dsp:
                         loaded = json.loads(dsp.call('GetConfigJson'))
                         if not self.baseline.ready(dsp, loaded, self.expected):
@@ -286,11 +321,15 @@ class AirPlayController:
                             return
                     if now - self.pending >= 10:
                         self.fail('AirPlay capture did not become ready; previous source restored')
+                elif self.idle:
+                    if live:
+                        # Audio came back in the same session (no start hook): carry on.
+                        self.active, self.idle = True, False
                 elif not live:
                     if self.silent_since is None:
                         self.silent_since = now
                     elif now - self.silent_since >= 1:
-                        self.end()
+                        self.pause()
                 else:
                     self.silent_since = None
             except Exception:
@@ -298,7 +337,8 @@ class AirPlayController:
 
     def status(self):
         with self.server.LOCK:
-            return dict(active=self.active, preparing=self.pending is not None, error=self.error)
+            return dict(active=self.active, idle=self.idle, preparing=self.pending is not None,
+                        error=self.error)
 
 
 def serve(controller):
