@@ -172,11 +172,16 @@ class Controller:
                 raise ValueError('Place the EMM-6 at the listening position and confirm the microphone is ready.')
             cfg = config.parse(self.runner.profile())
             name = str(body.get('name', '')).strip()[:80]
+            # One-sided runs leave the other side's outputs silent and muted in the profile.
+            sides = body.get('sides', ['L', 'R'])
+            if (not isinstance(sides, list) or not sides or len(set(sides)) != len(sides)
+                    or not set(sides) <= {'L', 'R'}):
+                raise ValueError('sides must list L, R or both.')
             cfg.update(automatic=True, auto_apply=True, room_positions=1,
                        measurement_repeats=3, stereo_alignment=True, capture_baseline=True,
                        name=name or 'Auto · '+datetime.now().strftime('%b %d %H:%M'),
                        test_attenuation_db=body.get('test_attenuation_db',self.test_attenuation()),
-                       excluded_drivers=[],
+                       excluded_drivers=[d['id'] for d in cfg['drivers'] if d['side'] not in sides],
                        selected_pairs=body.get('selected_pairs', self.selection()))
             cfg = config.validate(cfg, hardware=not self.demo)
             self.snapshot(cfg)

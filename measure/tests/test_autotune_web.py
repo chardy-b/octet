@@ -110,6 +110,30 @@ def test_automatic_run_saves_and_recalls_complete_profile(tmp_path, monkeypatch)
         controller.activate(saved['id'])
 
 
+def test_left_only_run_leaves_the_right_side_silent(tmp_path, monkeypatch):
+    monkeypatch.setattr(dsp, 'search', lambda *a, **k: [candidate()])
+    controller = Controller(tmp_path, demo=True)
+    cfg = config.example()
+    cfg.update(duration=1, peq_bands=1)
+    for driver in cfg['drivers']:
+        driver.update(start_db=-30, max_db=-30)
+    controller.runner.set_profile(yaml.safe_dump(cfg))
+    for sides in ([], ['L', 'L'], ['left'], 'L'):
+        with pytest.raises(ValueError, match='sides'):
+            controller.start(dict(microphone_ready=True, sides=sides))
+    controller.start(dict(microphone_ready=True, name='Left', sides=['L']))
+    controller.runner.thread.join(180)
+    state = controller.status()
+    assert state['status'] == 'applied', state['message']
+    saved = yaml.safe_load(Path(state['profiles'][0]['config_path']).read_text())
+    routed = {m['dest'] for m in saved['mixers']['drivers']['mapping'] if m['sources']}
+    left = {d['output'] - 1 for d in cfg['drivers'] if d['side'] == 'L'}
+    assert routed == left
+    for d in cfg['drivers']:
+        if d['side'] == 'R':
+            assert saved['filters'][d['id'] + '_gain']['parameters']['mute'] is True
+
+
 def test_api_rejects_arbitrary_actions_and_profile_paths(tmp_path):
     from fastapi.testclient import TestClient
     with TestClient(create_app(tmp_path, demo=True)) as client:
