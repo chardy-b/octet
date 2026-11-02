@@ -125,6 +125,7 @@ def test_left_only_run_leaves_the_right_side_silent(tmp_path, monkeypatch):
     controller.runner.thread.join(180)
     state = controller.status()
     assert state['status'] == 'applied', state['message']
+    assert controller.runner.status()['cfg']['measurement_repeats'] == 1
     saved = yaml.safe_load(Path(state['profiles'][0]['config_path']).read_text())
     routed = {m['dest'] for m in saved['mixers']['drivers']['mapping'] if m['sources']}
     left = {d['output'] - 1 for d in cfg['drivers'] if d['side'] == 'L'}

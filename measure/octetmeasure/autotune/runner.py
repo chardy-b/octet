@@ -283,9 +283,10 @@ class Runner:
             ramp = config.measurement_driver(cfg,d)
             prior = reference.get(d['id'])
             if prior:
-                # Start where this driver was actually measured. Current room
-                # noise decides whether more level is needed, not the ceiling.
-                ramp['start_db'] = float(np.clip(prior['output_db'],ramp['start_db'],ramp['max_db']))
+                # Start at the quietest level the last measurement says reaches the
+                # target; current room noise decides whether more level is needed.
+                spare = max(0., prior['margin_db']-target_margin)
+                ramp['start_db'] = float(np.clip(prior['output_db']-spare,ramp['start_db'],ramp['max_db']))
             checks = 0
             for level in config.ramp(ramp):
                 self._message(f"{d['id']}: {level:g} dBFS; amp group {d.get('amp_group',d['id'])}")

@@ -85,7 +85,7 @@
     }
     if(data.active?.stereo_verification?.passed) {
       const check = data.active.active_stereo_verification || data.active.stereo_verification;
-      el('auto-summary').textContent += ` Stereo timing, balance and polarity verified (${check.right_minus_left_ms.toFixed(2)} ms, ${check.right_minus_left_db.toFixed(1)} dB). Three captures averaged at each measurement stage.`;
+      el('auto-summary').textContent += ` Stereo timing, balance and polarity verified (${check.right_minus_left_ms.toFixed(2)} ms, ${check.right_minus_left_db.toFixed(1)} dB).`+(data.active.measurement_repeats>1?` ${data.active.measurement_repeats} captures averaged at each measurement stage.`:'');
     }
     if(data.active?.stereo_skipped) el('auto-summary').textContent += ' Stereo alignment skipped: '+data.active.stereo_skipped;
     if(data.active?.measurement_mode === 'magnitude_only_recovery') el('auto-summary').textContent = data.active.verification_basis;

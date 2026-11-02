@@ -112,7 +112,8 @@ def test_automatic_subset_reuses_levels_and_verifies_without_b(tmp_path, monkeyp
     controller = Controller(tmp_path, demo=True)
     controller.runner.set_profile(yaml.safe_dump(cfg))
     controller.runner.backend_factory = DisconnectedB
-    controller.start(dict(microphone_ready=True, selected_pairs=['a', 'sub', 'tweeter'], name='No B'))
+    controller.start(dict(microphone_ready=True, selected_pairs=['a', 'sub', 'tweeter'], name='No B',
+                          measurement_repeats=3))
     controller.runner.thread.join(180)
     state = controller.runner.status()
     assert not controller.runner.running
@@ -133,7 +134,8 @@ def test_automatic_subset_reuses_levels_and_verifies_without_b(tmp_path, monkeyp
     for d in config.active_drivers(state['cfg']):
         reading = state['level_report'][d['id']]
         assert reading['checks'] == 1 and reading['reused_recording']
-        expected = -30
+        # The reused level drops by the margin it had beyond the target.
+        expected = -30 - (report[d['id']]['margin_db'] - state['cfg']['target_snr_db'])
         assert reading['output_db'] == expected
         assert max(b[d['output']-1] for b in buffers) <= 10**(expected/20)*1.00001
     saved = controller.status()['profiles'][0]

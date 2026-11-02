@@ -35,18 +35,21 @@ outputs again; skipped drivers are not silently excluded from future runs.
 The last successful start remembers the pair selection. Existing saved profiles
 keep their original selection; profiles predating this option include all pairs.
 
-Auto mode takes **three captures per measurement stage** at the same microphone
-position: driver sweeps, the untuned baseline, every crossover candidate, room EQ,
-final responses, and active-path verification. Short level-setting checks are
+Auto mode takes **one capture per measurement stage** by default at the same
+microphone position: driver sweeps, the untuned baseline, every crossover candidate,
+room EQ, final responses, and active-path verification. A start request may set
+`measurement_repeats` from 1 to 5. Short level-setting checks are
 single pilots. Each driver repeat is aligned using its shared acoustic markers;
 complex responses are averaged coherently and magnitude responses are power averaged.
 Raw repeats and per-repeat signal checks remain in the saved run. A weak repeat
-cannot be hidden by averaging; an unusable driver is excluded. Three repeats improve repeatability; they do not
-replace spatial measurements or guarantee a particular acoustic SNR.
+cannot be hidden by averaging; an unusable driver is excluded. Repeats improve
+repeatability and let stereo checks reject disagreeing captures; with one capture
+that agreement check cannot fail. They do not replace spatial measurements or
+guarantee a particular acoustic SNR.
 
 After room EQ, the stereo pass records **left, right, and mono (L+R)** sweeps in
-one continuous capture with common midrange timing markers. It repeats this three
-times, estimates direct-arrival timing and relative acoustic polarity over
+one continuous capture with common midrange timing markers. It takes one such
+capture per measurement repeat, estimates direct-arrival timing and relative acoustic polarity over
 300–3000 Hz, and checks level balance and actual mono summation. It delays the
 earlier speaker and attenuates the louder speaker, applying any confident overall
 polarity correction to the entire speaker. Driver-to-driver alignment is retained.
@@ -75,8 +78,10 @@ only a before-room-EQ curve; the viewer labels that distinction explicitly.
 
 Automatic level checks reuse a compatible previous driver recording, including
 recordings from runs that stopped on a disconnected driver. They start at the
-last recorded level and play a short protected check, increasing in three-dB
-steps only until `target_snr_db` is reached (24 dB by default). The complete
+last recorded level, lowered by any margin it had beyond `target_snr_db`, and play
+a short protected check, increasing in three-dB steps only until `target_snr_db`
+is reached (24 dB by default). Setting the target equal to `min_snr_db` stops each
+ramp as soon as the minimum is met. The complete
 driver sequence also checks the target and repeats with increased levels only
 for weak drivers if needed. These are conservative signal-margin estimates,
 not calibrated band-by-band acoustic SNR. The target is separate from the
