@@ -178,7 +178,9 @@ class Controller:
                     or not set(sides) <= {'L', 'R'}):
                 raise ValueError('sides must list L, R or both.')
             cfg.update(automatic=True, auto_apply=True, room_positions=1,
-                       measurement_repeats=body.get('measurement_repeats', 1), stereo_alignment=True, capture_baseline=True,
+                       measurement_repeats=body.get('measurement_repeats', 1),
+                       # Diffuse panels can defeat left/right timing; a run may skip it.
+                       stereo_alignment=body.get('stereo_alignment', True), capture_baseline=True,
                        name=name or 'Auto · '+datetime.now().strftime('%b %d %H:%M'),
                        test_attenuation_db=body.get('test_attenuation_db',self.test_attenuation()),
                        excluded_drivers=[d['id'] for d in cfg['drivers'] if d['side'] not in sides],

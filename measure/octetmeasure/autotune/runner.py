@@ -238,9 +238,9 @@ class Runner:
                 compatible = {d['id'] for d in config.active_drivers(cfg) if any(
                     all(other.get(k) == d.get(k) for k in ('id', 'output', 'min_hz', 'max_hz', 'order'))
                     for other in config.active_drivers(old))}
+                # A weak reading still tells _levels where to start; it is never reused as a result.
                 report = {key:value for key,value in report.items() if key in compatible
-                          and np.isfinite([value['margin_db'], value['output_db']]).all()
-                          and value['margin_db'] >= cfg['min_snr_db']}
+                          and np.isfinite([value['margin_db'], value['output_db']]).all()}
                 if report:
                     self.state['level_reference'] = previous['id']
                     return report
@@ -283,10 +283,10 @@ class Runner:
             ramp = config.measurement_driver(cfg,d)
             prior = reference.get(d['id'])
             if prior:
-                # Start at the quietest level the last measurement says reaches the
-                # target; current room noise decides whether more level is needed.
-                spare = max(0., prior['margin_db']-target_margin)
-                ramp['start_db'] = float(np.clip(prior['output_db']-spare,ramp['start_db'],ramp['max_db']))
+                # Start at the level the last measurement says just reaches the target,
+                # lower or higher; current room noise decides whether more is needed.
+                ramp['start_db'] = float(np.clip(prior['output_db']-(prior['margin_db']-target_margin),
+                                                 ramp['start_db'],ramp['max_db']))
             checks = 0
             for level in config.ramp(ramp):
                 self._message(f"{d['id']}: {level:g} dBFS; amp group {d.get('amp_group',d['id'])}")

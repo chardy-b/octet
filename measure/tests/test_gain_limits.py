@@ -95,11 +95,11 @@ def test_level_check_starts_at_known_level_and_stops_at_target(tmp_path,monkeypa
     monkeypatch.setattr(dsp,'_arrival',lambda *a:0)
     monkeypatch.setattr(dsp,'transfer',lambda rec,x,fs,f:(np.full(len(f),.1+0j),np.zeros(10)))
     runner._levels()
+    # 21 dB at -39 dBFS was 3 dB short of the 24 dB target: start straight at -36.
     assert runner.state['levels']=={'L_a':-36,'R_a':-36}
-    assert len(checks)==4
+    assert len(checks)==2
     for reading in runner.state['level_report'].values():
-        assert reading['checks']==2 and reading['signal_margin_db']>=24
-    assert checks[1]/checks[0] == pytest.approx(10**(3/20))
+        assert reading['checks']==1 and reading['signal_margin_db']>=24
 
 
 def test_full_measurement_rechecks_margin_and_only_raises_weak_drivers(tmp_path,monkeypatch):

@@ -110,6 +110,23 @@ def test_automatic_run_saves_and_recalls_complete_profile(tmp_path, monkeypatch)
         controller.activate(saved['id'])
 
 
+def test_a_run_can_skip_stereo_alignment(tmp_path, monkeypatch):
+    monkeypatch.setattr(dsp, 'search', lambda *a, **k: [candidate()])
+    controller = Controller(tmp_path, demo=True)
+    cfg = config.example()
+    cfg.update(duration=1, peq_bands=1)
+    for driver in cfg['drivers']:
+        driver.update(start_db=-30, max_db=-30)
+    controller.runner.set_profile(yaml.safe_dump(cfg))
+    controller.start(dict(microphone_ready=True, name='No stereo', stereo_alignment=False))
+    controller.runner.thread.join(180)
+    state = controller.runner.status()
+    assert state['status'] == 'applied', state['message']
+    assert state['cfg']['stereo_alignment'] is False
+    assert not state.get('stereo') and not state.get('stereo_verification')
+    assert 'stereo' not in [row.get('stage') for row in state.get('history', []) if isinstance(row, dict)]
+
+
 def test_left_only_run_leaves_the_right_side_silent(tmp_path, monkeypatch):
     monkeypatch.setattr(dsp, 'search', lambda *a, **k: [candidate()])
     controller = Controller(tmp_path, demo=True)
@@ -121,6 +138,8 @@ def test_left_only_run_leaves_the_right_side_silent(tmp_path, monkeypatch):
     for sides in ([], ['L', 'L'], ['left'], 'L'):
         with pytest.raises(ValueError, match='sides'):
             controller.start(dict(microphone_ready=True, sides=sides))
+    with pytest.raises(ValueError, match='stereo_alignment'):
+        controller.start(dict(microphone_ready=True, stereo_alignment='no'))
     controller.start(dict(microphone_ready=True, name='Left', sides=['L']))
     controller.runner.thread.join(180)
     state = controller.status()

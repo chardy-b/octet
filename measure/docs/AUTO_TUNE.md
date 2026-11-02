@@ -78,7 +78,8 @@ only a before-room-EQ curve; the viewer labels that distinction explicitly.
 
 Automatic level checks reuse a compatible previous driver recording, including
 recordings from runs that stopped on a disconnected driver. They start at the
-last recorded level, lowered by any margin it had beyond `target_snr_db`, and play
+last recorded level, moved by however far its margin was above or below
+`target_snr_db` (a weak earlier reading only sets the start), and play
 a short protected check, increasing in three-dB steps only until `target_snr_db`
 is reached (24 dB by default). Setting the target equal to `min_snr_db` stops each
 ramp as soon as the minimum is met. The complete
