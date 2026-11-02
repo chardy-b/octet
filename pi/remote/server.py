@@ -1081,7 +1081,8 @@ def current_status():
         # The Bluetooth route uses its own DSP copy, so describe it directly.
         result['sources'] = [item for item in result['sources'] if item['id'] != 'unknown']
         result.update(source='bluetooth', source_label='Bluetooth', ready=True,
-                      source_switching_available=True, source_switching_reason='')
+                      source_switching_available=True, source_switching_reason='',
+                      max_db=min(volume_ceiling(), -18.0))  # BluetoothControl's cap
     if bluetooth_addresses() and not any(item['id'] == 'bluetooth' for item in result['sources']):
         result['sources'].append(dict(id='bluetooth', label='Bluetooth', group='Music', available=True,
                                       description='Play from your paired phone. Connect the phone first; the Tidal queue is kept.'))
@@ -1196,8 +1197,28 @@ def action(name, data):
     return result
 
 
+def cast_level(name, data):
+    """Volume or mute on a playing AirPlay cast or Bluetooth phone, in place; None if neither."""
+    if name == 'volume':
+        volume, muted = float(data['db']), None
+        if not math.isfinite(volume) or not MIN_DB <= volume <= volume_ceiling():
+            raise ValueError('Volume is outside the currently unlocked range')
+    else:
+        volume, muted = None, data.get('muted')
+        if not isinstance(muted, bool):
+            raise ValueError('Expected a mute setting')
+    if AIRPLAY_CONTROL.set_level(volume, muted) or BLUETOOTH_CONTROL.set_level(volume, muted):
+        return current_status()
+    return None
+
+
 def _action(name, data):
     global LEVELS_UNLOCKED
+    if name in ('volume', 'mute') and not AIRPLAY_CONTROL.needs_mute and TUNING.status().get('audio_owned') is False:
+        # Turning a cast or phone up, down or muted never ends it.
+        result = cast_level(name, data)
+        if result is not None:
+            return result
     if AIRPLAY_CONTROL.needs_mute or AIRPLAY_CONTROL.baseline.exists():
         if (name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True)) and TUNING.status().get('audio_owned'):
             AIRPLAY_CONTROL.mute()

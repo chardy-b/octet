@@ -171,6 +171,24 @@ class AirPlayController:
         if self.idle and not self.active and self.pending is None:
             self.end()
 
+    def set_level(self, volume=None, muted=None):
+        """Music-page volume or mute on a loaded cast (playing or between apps): it stays.
+
+        Returns False when there is no verified cast route (the caller then ends it).
+        """
+        with self.server.LOCK:
+            if (not (self.active or self.idle) or self.pending is not None
+                    or not self.baseline.exists()):
+                return False
+            with self.server.DSP() as dsp:
+                if not self.baseline.ready(dsp, json.loads(dsp.call('GetConfigJson')), self.expected):
+                    return False
+                if volume is not None:
+                    dsp.call('SetVolume', volume)
+                if muted is not None:
+                    dsp.call('SetMute', muted)
+            return True
+
     def resume(self):
         """A start on the idle route: carry on if it is still exactly the cast's route."""
         with self.server.DSP() as dsp:

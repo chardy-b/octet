@@ -327,6 +327,20 @@ class RuntimeTests(unittest.TestCase):
                 self.calls.clear()
                 self.state.update(volume=-18.0)
 
+    def test_music_page_volume_and_mute_keep_the_phone_playing(self):
+        self.assertFalse(self.control.set_level(volume=-24.0))  # nothing playing
+        self.control.start(MAC)
+        self.assertTrue(self.control.set_level(volume=-24.0))
+        self.assertTrue(self.control.set_level(muted=True))
+        self.control.tick()
+        self.assertTrue(self.control.status()['active'])
+        self.assertTrue(self.state['mute'])
+        self.assertEqual(self.state['volume'], -24.0)
+        with self.assertRaisesRegex(ValueError, '-18'):
+            self.control.set_level(volume=-6.0)
+        self.assertTrue(self.control.status()['active'])
+        self.assertEqual(self.state['path'], str(self.control.route.candidate))
+
     def test_stopped_dsp_fails_closed_and_retains_recovery_evidence(self):
         self.control.start(MAC)
         self.state['running'] = 'Paused'
@@ -777,6 +791,7 @@ class ServerIntegrationTests(unittest.TestCase):
         self.order = Mock()
         self.bluetooth = self.order.bluetooth
         self.bluetooth.owns_audio.return_value = True
+        self.bluetooth.set_level.return_value = False  # still preparing: overridden
         for item in (patch.object(server, 'DSP', return_value=self.dsp),
                      patch.object(server, 'mpd', self.order.mpd),
                      patch.object(server, 'BLUETOOTH_CONTROL', self.bluetooth),
@@ -804,6 +819,16 @@ class ServerIntegrationTests(unittest.TestCase):
         names = [call[0] for call in self.order.mock_calls]
         self.assertLess(names.index('bluetooth.stop'), names.index('mpd'))
         self.bluetooth.stop.assert_called_once_with('Manual control override')
+
+    def test_volume_and_mute_on_a_playing_phone_are_not_an_override(self):
+        self.bluetooth.set_level.return_value = True
+        with patch.object(self.server, 'AIRPLAY_CONTROL', self.airplay):
+            self.server.action('volume', {'db': -24})
+            self.server.action('mute', {'muted': True})
+        self.assertEqual(self.bluetooth.set_level.call_args_list,
+                         [((-24.0, None),), ((None, True),)])
+        self.bluetooth.stop.assert_not_called()
+        self.dsp.call.assert_not_called()
 
     def test_failed_bluetooth_override_blocks_the_manual_action(self):
         self.bluetooth.stop.side_effect = RuntimeError('Bluetooth restore not verified')

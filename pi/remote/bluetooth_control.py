@@ -5,10 +5,12 @@ Any paired phone may play: start requires a Paired+Trusted+Connected phone on hc
 
 One owner at a time. Bluetooth refuses to start while AirPlay (journal or
 CHANNEL_PROFILE cast, including unfinished rollback) or Auto Tune owns audio, and
-AirPlay refuses to start while Bluetooth owns it. Any manual control is an
-override that stops Bluetooth muted. Start, stop, failure and recovery never
-resume MPD. The only unmute is the guarded one in _activate (at most -18 dB on a
-verified live candidate with fresh PCM progress on both sub2 endpoints).
+AirPlay refuses to start while Bluetooth owns it. Music-page volume and mute adjust
+an active session in place (set_level, still at most -18 dB); any other manual
+control is an override that stops Bluetooth muted. Start, stop, failure and
+recovery never resume MPD. The only automatic unmute is the guarded one in
+_activate (at most -18 dB on a verified live candidate with fresh PCM progress on
+both sub2 endpoints).
 
 Automatic sessions (start_auto) reuse the same guarded start with a stream generation
 and a cached validator, no cutoff lifetime, and are stopped only by their own generation.
@@ -76,6 +78,8 @@ class Session:
         self.candidate = None
         self.format = None
         self.active = False
+        # The Music page's mute on an active session; the watchdog expects it.
+        self.muted = False
 
 
 class BluetoothControl:
@@ -431,6 +435,32 @@ class BluetoothControl:
                     raise
             return True
 
+    def set_level(self, volume=None, muted=None):
+        """Music-page volume or mute on an active session: the phone keeps playing.
+
+        Returns False when no session is active (the caller then overrides it). The
+        route is verified before and after; any drift fails closed, muted.
+        """
+        with self.server.LOCK:
+            session = self.session
+            if session is None or not session.active:
+                return False
+            if volume is not None and not safe_volume(volume):
+                raise ValueError('Bluetooth volume is limited to -18 dB')
+            try:
+                with self.server.DSP() as dsp:
+                    self._verify(session, muted=session.muted, dsp=dsp)
+                    if volume is not None:
+                        dsp.call('SetVolume', volume)
+                    if muted is not None:
+                        session.muted = muted
+                        dsp.call('SetMute', muted)
+                    self._verify(session, muted=session.muted, dsp=dsp, volume=True)
+            except Exception as error:
+                self.fail(str(error))
+                raise
+            return True
+
     def tick(self):
         """Watchdog for drift, stalls, ownership, deadlines and orphaned recovery."""
         with self.server.LOCK:
@@ -448,7 +478,7 @@ class BluetoothControl:
                 if session.active:
                     if not self._streaming(session):
                         raise RuntimeError('Bluetooth PCM stalled or bridge not ready')
-                    self._verify(session, muted=False)
+                    self._verify(session, muted=session.muted)
                 else:
                     if self.clock() >= session.deadline:
                         raise RuntimeError('Bluetooth start deadline; output remains muted')

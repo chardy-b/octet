@@ -228,6 +228,24 @@ class IntegrationSafetyTests(AirPlayTests):
         self.assertFalse(self.control.baseline.exists())
         self.assertNotIn(('SetMute', False), self.calls())
 
+    def test_music_page_volume_and_mute_keep_the_cast(self):
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        candidate = str(self.control.baseline.candidate)
+        self.dsp.call.reset_mock()
+        with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
+             patch.object(server, 'current_status', return_value={}):
+            server.action('volume', {'db': -24})
+            server.action('mute', {'muted': True})
+            self.control.event('stop', now=2)  # between apps: still adjustable
+            server.action('mute', {'muted': False})
+            with self.assertRaises(ValueError):
+                server.action('volume', {'db': 0})
+        self.assertTrue(self.control.idle)
+        self.assertEqual(self.path, candidate)
+        self.assertEqual([c for c in self.calls() if c[0] in ('SetVolume', 'SetMute', 'Reload')],
+                         [('SetVolume', -24.0), ('SetMute', True), ('SetMute', False)])
+
     def test_rapid_stop_start_keeps_playing(self):
         self.control.event('start', now=0)
         self.control.tick(now=1)

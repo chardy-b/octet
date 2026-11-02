@@ -36,7 +36,7 @@ then unmute (Bluetooth caps the volume at −18 dB; AirPlay sets it to −18 dB)
 | Stream ends | Transport leaves `active` → `stop_auto` → `fail()` → mute, kill bridge, `route.recover()` | Stop hook (1 s debounce) or 1 s of loopback silence → `end()` → mute, `baseline.recover()` |
 | New stream | Fresh `idle→active` edge → `start_auto` → `prepare()` muted → wait for PCM → guarded unmute | Start hook → mute → `baseline.begin()` → wait for PCM → unmute at −18 |
 | Other source starts | AirPlay refuses Bluetooth ("first owner wins") | Bluetooth refuses AirPlay |
-| Music-page control | `BLUETOOTH_CONTROL.stop()`, muted | `invalidate()`, muted |
+| Music-page control | Volume and Mute adjust it in place (`set_level`, ≤ −18 dB); others `BLUETOOTH_CONTROL.stop()`, muted | Volume and Mute adjust it in place (`set_level`); others `invalidate()`, muted |
 | Tidal Play | Refused until Tidal is the input, then needs an explicit unmute | same |
 
 Each reload that changes the capture device restarts CamillaDSP's audio devices.
