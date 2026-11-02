@@ -297,9 +297,6 @@ class Runner:
                 peak = float(20*np.log10(max(np.max(abs(rec)),1e-12)))
                 if peak >= cfg['clip_db']:
                     raise ValueError(f"{d['id']}: microphone clipping; reduce input gain.")
-                if previous is not None and peak-previous[0] > level-previous[1]+cfg['jump_db']:
-                    raise ValueError(f"{d['id']}: unexpected level jump. Check amplifier and microphone settings.")
-                previous = peak,level
                 noise = max(float(np.sqrt(np.mean(rec[:int(.15*fs)]**2))), 1e-12)
                 freq = np.geomspace(d['min_hz']*1.15,d['max_hz']/1.15,120)
                 onset = max(0,int(dsp._arrival(rec,x)) - int(.04*fs))
@@ -307,6 +304,11 @@ class Runner:
                 if cal is not None:
                     response *= 10**(-cal.at(freq)/20)
                 sensitivity = float(np.median(20*np.log10(np.maximum(abs(response),1e-12))))
+                # Compare the driver's response, not raw peaks: a knock or click in the
+                # room raises a peak but not the median response; a gain change raises both.
+                if previous is not None and sensitivity-previous > cfg['jump_db']:
+                    raise ValueError(f"{d['id']}: unexpected level jump. Check amplifier and microphone settings.")
+                previous = sensitivity
                 margin = sensitivity+level-20*np.log10(noise)
                 checks += 1
                 if automatic and margin >= target_margin:
