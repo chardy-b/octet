@@ -17,8 +17,8 @@ quiesce_services:
 - mpd
 clip_db: -3
 jump_db: 9
-min_snr_db: 15
-target_snr_db: 24
+min_snr_db: 18
+target_snr_db: 18
 playback_max_db: 0
 test_attenuation_db: 0
 room_positions: 5
@@ -27,7 +27,7 @@ target_bass_db: 4
 target_tilt: -0.4
 verification_db: 4
 max_clock_ppm: 300
-measurement_repeats: 3
+measurement_repeats: 1
 capture_baseline: true
 stereo_alignment: true
 stereo_max_delay_ms: 20

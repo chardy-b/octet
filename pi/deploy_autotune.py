@@ -54,16 +54,24 @@ from octetmeasure.autotune.web import check_safety
 
 cfg = config.example()
 cfg.update(hardware_confirmed=True, input_device='Audient iD14', output_device='snd_rpi_hifiberry_dac8x',
-           calibration=str(calibration), room_positions=1, duration=2, mic_channel=0)
+           calibration=str(calibration), room_positions=1, duration=2, mic_channel=0,
+           # Each level ramp stops as soon as a driver is 18 dB above the room noise.
+           min_snr_db=18, target_snr_db=18, measurement_repeats=1)
 cfg['camilla']['loopback_output'] = 'Loopback: PCM (hw:10,0)'
 for driver in cfg['drivers']:
-    driver.update(start_db=-54, max_db=-30, step_seconds=.5)
+    driver.update(start_db=-54, max_db=-15, step_seconds=.5)
 config.validate(cfg, hardware=True)
 profile = data/'speaker.yaml'
 if not profile.exists():
     profile.write_text(yaml.safe_dump(cfg, sort_keys=False))
     shutil.chown(profile, user='octet', group='audio')
     profile.chmod(0o640)
+# 6 dB below the -15 dBFS measurement ceiling: tests stay under normal listening level.
+test_level = data/'test-level.json'
+if not test_level.exists():
+    test_level.write_text(json.dumps(dict(test_attenuation_db=6)))
+    shutil.chown(test_level, user='octet', group='audio')
+    test_level.chmod(0o640)
 
 # Compile a real representative eight-output result with the installed CamillaDSP.
 roles = ('sub','a','b','tweeter')

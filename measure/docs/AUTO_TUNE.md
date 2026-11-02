@@ -71,6 +71,36 @@ the profile does not claim verified stereo alignment. A side with no usable
 panel retains protected per-driver EQ without inventing a crossover to a
 missing driver. A wholly unmeasurable side remains muted.
 
+### Start options
+
+`POST /api/auto/start` (proxied as `/api/auto/start` on the music server) accepts,
+besides `microphone_ready`, `name` and `selected_pairs`:
+
+- `sides`: `["L"]`, `["R"]` or both (the default). The other side's outputs stay
+  silent during tests and are unrouted and muted in the saved profile.
+- `measurement_repeats`: 1 (the default) to 5 captures per measurement stage.
+- `stereo_alignment`: `false` skips the left/right timing and polarity stage.
+
+`fixed_crossovers` in `speaker.yaml` (`low`, `high` in Hz, `order` 4 or 8) pins
+the crossovers for both sides, within the sub and tweeter safety bounds. The
+search then fits only delay, attenuation and polarity.
+
+The level-jump guard compares each step's median driver response, not the
+recording's peak: a knock in the room no longer stops a level check, while a
+changed amplifier or microphone gain still does.
+
+### Octet's exciter panels
+
+Exciter panels radiate a diffuse, reflection-rich arrival. On Octet the stereo
+stage's left/right timing swung between runs (−0.96 ms, then +9.2 ms) and its
+polarity reading stayed just below the confidence threshold. The free crossover
+search also found several candidates within about 0.5 in score, so the choice
+changed from run to run. The working Octet profile therefore uses
+`stereo_alignment: false` and pinned crossovers (290 Hz and 4.1 kHz, LR8). A
+tweeter-only timing check, which gives a sharp arrival, measured the right
+speaker 0.1 ms earlier, below the 0.15 ms tolerance, so no left/right delay is
+applied.
+
 New runs measure **before tuning** with only mandatory driver protection active,
 and **after tuning** with the chosen crossovers, driver EQ, room EQ and stereo
 correction. They also verify the real active CamillaDSP path. Older runs contain
