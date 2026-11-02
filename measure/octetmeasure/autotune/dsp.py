@@ -244,9 +244,13 @@ def search(cfg, f, responses, eq, side, cancel=None):
     roles = list(byrole)
     count = len(roles)-1
     strategies = ('both', 'split') if 'a' in byrole and 'b' in byrole else ('single',)
-    for strategy, order in itertools.product(strategies, (4, 8) if len(roles)>1 else (4,)):
+    # Fixed crossovers (e.g. the same on both sides) leave only delay, gain and polarity to fit.
+    pinned = cfg.get('fixed_crossovers') or {}
+    orders = (pinned['order'],) if 'order' in pinned else (4, 8) if len(roles)>1 else (4,)
+    for strategy, order in itertools.product(strategies, orders):
         geometry = {key: bounds for key, bounds in (('low', low_bounds), ('high', high_bounds),
-                    ('split', (500, 1500) if strategy == 'split' else None)) if bounds is not None}
+                    ('split', (500, 1500) if strategy == 'split' else None))
+                    if bounds is not None and key not in pinned}
         bounds = [*geometry.values(), *[(-4, 4)]*count, *[(-24, 24)]*count]
         initial = [*[np.mean(b) for b in geometry.values()], *[0.]*count, *[-3.]*count]
         offset = len(geometry)
@@ -259,6 +263,7 @@ def search(cfg, f, responses, eq, side, cancel=None):
                 gains = np.array([0., *x[offset+count:]])
                 gains -= gains.max()  # Relative matching uses attenuation only, including the sub.
                 frequencies = dict(low=min(d['min_hz'] for d in panels), high=max(d['max_hz'] for d in panels), split=1000.)
+                frequencies.update({key: float(value) for key, value in pinned.items() if key in ('low', 'high', 'split')})
                 frequencies.update(zip(geometry, map(float, x[:offset])))
                 return dict(strategy=strategy, order=order, **frequencies, active_pairs=roles,
                             delays=dict(zip(roles, delays.tolist())), gains=dict(zip(roles, gains.tolist())),

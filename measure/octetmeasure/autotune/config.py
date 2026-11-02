@@ -117,6 +117,14 @@ def validate(raw, hardware=False):
             raise ValueError(f'{key} must be a boolean.')
     if cfg['automatic'] and cfg['room_positions'] != 1:
         raise ValueError('Automatic mode uses one fixed microphone position.')
+    pinned = cfg.get('fixed_crossovers', {})
+    if (not isinstance(pinned, dict) or not set(pinned) <= {'low', 'high', 'order'}
+            or ('order' in pinned and pinned['order'] not in (4, 8))):
+        raise ValueError('fixed_crossovers may set low, high (Hz) and order (4 or 8).')
+    if 'low' in pinned:
+        number(pinned['low'], 'fixed_crossovers.low', 150, cfg.get('sub_crossover_max', 500))
+    if 'high' in pinned:
+        number(pinned['high'], 'fixed_crossovers.high', TWEETER_MIN_HZ, 5000)
     if not isinstance(drivers, list) or len(drivers) != 8:
         raise ValueError('Exactly eight drivers are required.')
     if any(not isinstance(d,dict) or type(d.get('output')) is not int or not isinstance(d.get('id'),str) for d in drivers):
