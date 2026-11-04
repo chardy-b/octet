@@ -2,7 +2,7 @@
 const $=id=>document.getElementById(id);
 const volumeControl=window.OctetVolume.create($('volume'),$('volume-value'));
 let state={}, volumeBusy=false, requestSerial=0, albumTracks=[];
-let sourceBusy=false, sourceOptionsKey='';
+let sourcePending=null, sourceRevision=0, sourceOptionsKey='';
 function liveInput(){return Boolean(state.source&&state.source!=='tidal');}
 function render(next){
   renderPlayer(next);
@@ -33,21 +33,19 @@ function renderSources(next){
   const select=$('source-choice'),sources=next.sources||[];
   const key=JSON.stringify(sources.map(source=>[source.id,source.label,source.available,source.group]));
   if(key!==sourceOptionsKey){
-    const pending=select.value;select.replaceChildren();let group=null,lastGroup=null;
+    select.replaceChildren();let group=null,lastGroup=null;
     for(const source of sources){
       if(source.group!==lastGroup){group=document.createElement('optgroup');group.label=source.group;select.append(group);lastGroup=source.group;}
       const option=document.createElement('option');option.value=source.id;option.textContent=source.label;option.disabled=!source.available;group.append(option);
     }
-    select.value=sources.some(source=>source.id===pending)?pending:next.source;sourceOptionsKey=key;
+    sourceOptionsKey=key;
   }
-  if(!sourceBusy&&select.dataset.dirty!=='true')select.value=next.source;
-  select.disabled=sourceBusy||!next.source_switching_available;
-  $('source-apply').disabled=select.disabled||select.value===next.source||!sources.some(source=>source.id===select.value&&source.available);
-  $('source-apply').textContent=sourceBusy?'Switching…':'Switch source';
+  select.value=sourcePending??next.source;
+  select.disabled=sourcePending!==null||!next.source_switching_available;
   $('source-current').textContent='Selected: '+(next.source_label||'Unavailable');
   const chosen=sources.find(source=>source.id===select.value);
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
-  if(!sourceBusy){
+  if(sourcePending===null){
     $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
     if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
     if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth · muted.':next.muted?'Bluetooth active · muted. Unmute when ready.':'Bluetooth playing from your phone.');
@@ -70,16 +68,26 @@ $('bluetooth-discoverable').onchange=async()=>{
   try{const next=await api('/api/control/bluetooth-discoverable',{enabled});bluetoothBusy=false;render(next);}
   catch(error){bluetoothBusy=false;await refresh();$('bluetooth-status').textContent=error.message;$('bluetooth-status').classList.add('error');}
 };
-$('source-choice').onchange=()=>{$('source-choice').dataset.dirty='true';renderSources(state);};
-$('source-form').onsubmit=async event=>{
-  event.preventDefault();if(sourceBusy||$('source-apply').disabled)return;
-  const id=$('source-choice').value;sourceBusy=true;renderSources(state);
+$('source-choice').onchange=async()=>{
+  const id=$('source-choice').value;
+  if(sourcePending!==null||!state.source_switching_available||id===state.source||
+     !state.sources?.some(source=>source.id===id&&source.available)){
+    renderSources(state);
+    return;
+  }
+  sourcePending=id;
+  sourceRevision++;
+  renderSources(state);
   $('source-status').textContent='Switching audio source…';$('source-status').classList.remove('error');
   try{
-    const next=await api('/api/control/source',{id});sourceBusy=false;$('source-choice').dataset.dirty='false';render(next);
-    $('source-status').textContent='Source selected · muted. '+(id==='tidal'?'Press Play to resume your queue.':'Unmute when ready.');
+    const next=await api('/api/control/source',{id});
+    sourcePending=null;
+    render(next);
+    if(next.source==='tidal'&&next.muted)$('source-status').textContent='Tidal selected · muted. Press Play to resume your queue.';
   }catch(error){
-    sourceBusy=false;$('source-choice').dataset.dirty='false';await refresh();renderSources(state);
+    const next=await readStatus().catch(()=>state);
+    sourcePending=null;
+    render(next);
     $('source-status').textContent=error.message;$('source-status').classList.add('error');
   }
 };
@@ -271,7 +279,21 @@ $('previous').onclick=()=>control('previous');$('next').onclick=()=>control('nex
 $('volume').oninput=()=>{volumeBusy=true;volumeControl.preview()};
 $('volume').onchange=async()=>{const value=volumeControl.value();await control('volume',{db:value});volumeBusy=false;refresh()};
 $('seek').onchange=()=>control('seek',{seconds:Number($('seek').value)});
-async function refresh(){if(sourceBusy)return;try{const next=await api('/api/status');if(next.source&&next.source!=='tidal')next.now_playing=(await api('/api/now-playing').catch(()=>({song:null}))).song;if(!sourceBusy)render(next)}catch(e){$('connection').textContent='● Reconnecting…';$('connection').classList.remove('online')}}
+async function readStatus(){
+  const next=await api('/api/status');
+  if(next.source&&next.source!=='tidal')next.now_playing=(await api('/api/now-playing').catch(()=>({song:null}))).song;
+  return next;
+}
+async function refresh(){
+  if(sourcePending!==null)return;
+  const revision=sourceRevision;
+  try{
+    const next=await readStatus();
+    if(revision===sourceRevision)render(next);
+  }catch(error){
+    if(revision===sourceRevision){$('connection').textContent='● Reconnecting…';$('connection').classList.remove('online');}
+  }
+}
 refresh();
 const remembered=stored(LIBRARY_VIEW_KEY);
 if(remembered?.view==='playlist'&&typeof remembered.id==='string')loadPlaylist(remembered.id);

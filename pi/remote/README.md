@@ -140,7 +140,7 @@ pipeline. HDMI ports and the internal ALSA loopback are not offered as line inpu
 The iD14's eight optical capture channels are excluded until a separate external
 digital clock setup is implemented; they are not additional analogue sockets.
 
-Choose a source and press **Switch source**. Switching pauses Tidal, retains its
+Choose a source in the dropdown to switch immediately. Switching pauses Tidal, retains its
 queue and position, and leaves the output muted. For a line input, press **Unmute**
 when ready. For Tidal, press **Play** to resume. Input 1 may have a live microphone
 connected, so start at an appropriate listening level to avoid feedback.

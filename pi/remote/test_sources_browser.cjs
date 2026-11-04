@@ -21,16 +21,25 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
   try{
     const page=await browser.newPage({viewport:{width:1280,height:1000}});
     const errors=[],writes=[];let state=initial(),reject=false,nowPlaying=null;
+    let releaseSwitch, releasePoll, pollStarted, holdNextPoll=false;
+    const switchGate=new Promise(resolve=>{releaseSwitch=resolve;});
+    const pollGate=new Promise(resolve=>{releasePoll=resolve;});
+    const oldPollStarted=new Promise(resolve=>{pollStarted=resolve;});
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('http://octet.test/**',async route=>{
       const url=new URL(route.request().url());
-      if(url.pathname==='/api/status')return route.fulfill({json:state});
+      if(url.pathname==='/api/status'){
+        const snapshot=state;
+        if(holdNextPoll){holdNextPoll=false;pollStarted();await pollGate;}
+        return route.fulfill({json:snapshot});
+      }
       if(url.pathname==='/api/now-playing')return route.fulfill({json:{song:nowPlaying}});
       if(url.pathname.startsWith('/api/now-playing/artwork/'))return route.fulfill({body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/Scv2WQAAAABJRU5ErkJggg==','base64'),contentType:'image/png'});
       if(url.pathname==='/api/input-levels')return route.fulfill({json:{inputs:[],age_ms:0,message:'No USB audio inputs connected.'}});
       if(url.pathname==='/api/favorites')return route.fulfill({json:{tracks:[{id:'1',title:'Library song',artist:'Artist',album:'Album',duration:90}]}});
       if(url.pathname==='/api/control/source'){
         const body=route.request().postDataJSON();writes.push(body);
+        if(writes.length===1)await switchGate;
         if(reject)return route.fulfill({status:503,json:{error:'Source change failed; previous source restored'}});
         state={...state,source:body.id,source_label:sources.find(row=>row.id===body.id).label,muted:true};
         return route.fulfill({json:state});
@@ -45,13 +54,23 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#source-choice').inputValue(),'tidal');
     assert.equal(await page.locator('#source-choice').isEnabled(),true);
     assert.equal(await page.locator('#dsp-profile-name').textContent(),'Living room tuning');
-    assert.equal(await page.locator('#source-apply').isDisabled(),true);
+    assert.equal(await page.locator('#source-apply').count(),0);
+    holdNextPoll=true;
+    const oldPoll=page.evaluate(()=>refresh());
+    await oldPollStarted;
+    const switchRequest=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/control/source');
     await page.selectOption('#source-choice','usb:iD14:mono-1');
-    // A status poll must not discard a source selection that has not been applied.
+    await switchRequest;
+    assert.equal(await page.locator('#source-choice').isDisabled(),true);
+    assert.match(await page.locator('#source-status').textContent(),/Switching audio source/);
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#source-choice').inputValue(),'usb:iD14:mono-1');
-    await page.click('#source-apply');
+    releaseSwitch();
     await page.waitForFunction(()=>document.getElementById('player-title').textContent==='LIVE INPUT');
+    releasePoll();
+    await oldPoll;
+    assert.equal(await page.locator('#source-choice').inputValue(),'usb:iD14:mono-1');
+    assert.equal(await page.locator('#source-choice').isEnabled(),true);
     assert.equal(await page.locator('.transport').isVisible(),false);
     assert.equal(await page.locator('#seek').isVisible(),false);
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),true);
@@ -64,10 +83,10 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.screenshot({path:path.resolve(__dirname,'../../out/music-source-mobile.png'),fullPage:true});
-    reject=true;await page.selectOption('#source-choice','tidal');await page.click('#source-apply');
+    reject=true;await page.selectOption('#source-choice','tidal');
     await page.waitForFunction(()=>document.getElementById('source-status').textContent.includes('Source change failed'));
     assert.equal(await page.locator('#source-choice').inputValue(),'usb:iD14:mono-1');
-    reject=false;await page.selectOption('#source-choice','tidal');await page.click('#source-apply');
+    reject=false;await page.selectOption('#source-choice','tidal');
     await page.waitForFunction(()=>document.getElementById('player-title').textContent==='NOW PLAYING');
     assert.equal(await page.locator('.transport').isVisible(),true);
     assert.equal(await page.getByRole('button',{name:'Library song',exact:true}).isDisabled(),false);
@@ -77,7 +96,6 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     state={...state,ready:false,source_switching_available:false,source_switching_reason:'The current speaker configuration is not approved for playback.'};
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#source-choice').isDisabled(),true);
-    assert.equal(await page.locator('#source-apply').isDisabled(),true);
     assert.equal(await page.locator('#source-status').textContent(),state.source_switching_reason);
     delete state.source_switching_reason;
     await page.evaluate(()=>refresh());
@@ -116,6 +134,6 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#song-album').textContent(),'');
     assert.equal(await page.locator('#cover').isVisible(),false);
     assert.deepEqual(errors,[]);
-    console.log('Browser source flow passed: saved tuning retained, selection survives polls, live-input controls, queue and level retention, error recovery, Tidal return, unavailable reasons, mobile layout.');
+    console.log('Browser source flow passed: immediate selection, stale poll ignored, failed switch recovery, queue and level retention, Tidal return, unavailable reasons and mobile layout.');
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
