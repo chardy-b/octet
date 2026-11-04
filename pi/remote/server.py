@@ -32,7 +32,7 @@ from bluetooth_identity import devices as bluetooth_devices
 import bluetooth_pairing
 from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
-from dac_watch import DacWatch
+from audio_watch import AudioWatch
 from source_profiles import SourceProfiles
 
 BIND = os.environ.get('OCTET_BIND', '0.0.0.0')
@@ -1034,7 +1034,7 @@ def dsp_status():
 
 
 def current_status():
-    global ACTIVE_CAPTURE_CHANNELS
+    global ACTIVE_CAPTURE_CHANNELS, CAPTURE_STALL_SOURCE
     result = dict(tidal_connected=SESSION is not None, profile='Exciter audition',
                   profile_description='Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent',
                   **level_range(),
@@ -1099,17 +1099,27 @@ def current_status():
     if bluetooth_session or (bluetooth_addresses() and not any(item['id'] == 'bluetooth' for item in result['sources'])):
         result['sources'].append(dict(id='bluetooth', label='Bluetooth', group='Music', available=True,
                                       description='Play from your paired phone. Connect the phone first; the Tidal queue is kept.'))
-    stalled = DAC_WATCH.stalled(result.get('dsp_state') == 'Running')
-    result['dac_stalled'] = stalled
-    if stalled and not DAC_WATCH.reported:
-        logging.warning('DAC output stalled while the DSP reports Running; a reboot clears a wedged I2S DMA channel')
-    DAC_WATCH.reported = stalled
+    source_id = result['source']
+    expecting_audio = {'tidal': result['playback'] == 'play', 'airplay': result['airplay'].get('active'),
+                       'bluetooth': result['bluetooth'].get('active')}.get(source_id, False)
+    result['capture_stalled'] = bool(expecting_audio and result.get('dsp_state') == 'Stalled')
+    with LOCK:
+        stalled_source = source_id if result['capture_stalled'] else None
+        if stalled_source != CAPTURE_STALL_SOURCE:
+            if stalled_source:
+                logging.warning('DSP capture stalled during %s playback', stalled_source)
+            else:
+                logging.info('DSP capture stall no longer reported for %s', CAPTURE_STALL_SOURCE)
+            CAPTURE_STALL_SOURCE = stalled_source
+    health = AUDIO_WATCH.report.copy()
+    result['dac_stalled'] = health['fault'] == 'dac_output_stalled'
+    result['audio_health'] = health
     return result
 
 
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
-DAC_WATCH = DacWatch()
-DAC_WATCH.reported = False
+CAPTURE_STALL_SOURCE = None
+AUDIO_WATCH = AudioWatch(sys.modules[__name__], auto_recover=os.environ.get('OCTET_AUDIO_RECOVERY') == '1')
 # Any paired phone may play. Sessions started from the web page last four hours;
 # automatic ones have no cutoff.
 BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__], lifetime=4 * 3600.0)
@@ -1316,8 +1326,13 @@ def _action(name, data):
                 if not data['muted']:
                     approved(dsp)
                     source = source_metadata(json.loads(dsp.call('GetConfigJson')))['id']
-                    if source not in {item['id'] for item in discover_sources()} or dsp.call('GetState') != 'Running':
+                    if source not in {item['id'] for item in discover_sources()}:
                         raise RuntimeError('The selected source is unavailable. Reconnect it or choose Tidal.')
+                    dsp_state = dsp.call('GetState')
+                    if dsp_state == 'Stalled':
+                        raise RuntimeError('The speaker DSP is waiting for input audio. Check the selected source before unmuting.')
+                    if dsp_state != 'Running':
+                        raise RuntimeError('The speaker DSP is not ready to unmute.')
                 dsp.call('SetMute', data['muted'])
                 logging.info('DSP mute=%s: Music control', data['muted'])
         elif name == 'volume':
@@ -1755,6 +1770,7 @@ def main():
     os.umask(0o077)
     initialize_dsp()
     logging.info('DSP startup mute confirmed')
+    threading.Thread(target=AUDIO_WATCH.run, name='octet-audio-watch', daemon=True).start()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
     if Path('/run/octet-bluetooth').exists():

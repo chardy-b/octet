@@ -5,29 +5,42 @@ let state={}, volumeBusy=false, requestSerial=0, albumTracks=[];
 let sourcePending=null, sourceRevision=0, sourceOptionsKey='';
 function liveInput(){return Boolean(state.source&&state.source!=='tidal');}
 function render(next){
+  if(state.source!==next.source||(state.capture_stalled&&!next.capture_stalled))$('player-error').textContent='';
   renderPlayer(next);
   renderSources(next);
   renderBluetooth(next);
+  renderNowPlaying(next);
   if(liveInput()){
-    $('player-title').textContent='LIVE INPUT';$('playback-label').textContent=next.ready?(next.muted?'Muted':'Listening'):'Unavailable';
-    const song=next.now_playing;
-    if(song&&song.source===next.source&&song.title){
-      $('song-title').textContent=song.title;
-      $('song-artist').textContent=song.artist||next.source_label;
-      $('song-album').textContent=song.album||'';
-      if(song.artwork){if($('cover').getAttribute('src')!==song.artwork)$('cover').src=song.artwork;$('cover').hidden=false;$('cover-placeholder').hidden=true;}
-      else{$('cover').hidden=true;$('cover-placeholder').hidden=false;}
-    }else{
-      $('song-title').textContent=next.source_label;$('song-artist').textContent=next.source==='airplay'?(next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'Waiting for an AirPlay cast.'):'Playing through your speaker DSP.';
-      $('song-album').textContent='';$('cover').hidden=true;$('cover-placeholder').hidden=false;
-    }
     if(next.player_error)notice();
-  }else $('player-title').textContent='NOW PLAYING';
+  }
   $('seek').hidden=liveInput();document.querySelector('.time').hidden=liveInput();document.querySelector('.transport').hidden=liveInput();
   for(const button of document.querySelectorAll('.starts-playback, #play-album, .playlist-play')){
     button.disabled=liveInput()||playlistPlayBusy||button.dataset.empty==='true';
     if(liveInput())button.title='Choose Tidal as the audio source to play this track.';
   }
+}
+function renderNowPlaying(next){
+  const live=liveInput();
+  const song=next.now_playing?.source===next.source?next.now_playing:null;
+  const liveActive=next.source==='airplay'?next.airplay?.active:
+    next.source==='bluetooth'?next.bluetooth?.active:next.ready&&!next.muted;
+  const playing=!next.capture_stalled&&!next.dac_stalled&&(live?
+    Boolean(liveActive)&&(!song||song.state==='playing'):next.playback==='play'&&!next.player_error);
+  $('player-title').textContent=playing?(live?'LIVE INPUT':'NOW PLAYING'):'PLAYER';
+  if(live)$('playback-label').textContent=!next.ready?'Unavailable':next.muted?'Muted':playing?'Listening':'Waiting';
+  if(next.capture_stalled||next.dac_stalled)$('playback-label').textContent='Audio stalled';
+  $('now-playing-details').hidden=!playing;
+  const current=playing?(live?song:next.current):null;
+  $('song-title').textContent=playing?(current?.title||(live?next.source_label:'Tidal')):'';
+  $('song-artist').textContent=playing?(current?.artist||''):'';
+  $('song-album').textContent=playing?(current?.album||''):'';
+  const artwork=live?current?.artwork:current?.cover;
+  const cover=$('cover');
+  if(artwork){
+    if(cover.getAttribute('src')!==artwork)cover.src=artwork;
+  }else cover.removeAttribute('src');
+  cover.hidden=!artwork;
+  $('cover-placeholder').hidden=Boolean(artwork);
 }
 function renderSources(next){
   const select=$('source-choice'),sources=next.sources||[];
@@ -50,8 +63,15 @@ function renderSources(next){
     if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
     if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth · muted.':next.muted?'Bluetooth active · muted. Unmute when ready.':'Bluetooth playing from your phone.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
-    if(next.dac_stalled)$('source-status').textContent='The speaker output is stalled (no sound will play). Reboot the Pi.';
-    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.dac_stalled));
+    if(next.capture_stalled)$('source-status').textContent='Playback has started, but the speaker DSP is receiving no audio.';
+    const health=next.audio_health;
+    const tidalFault=next.source==='tidal'&&health?.fault==='tidal_input_stalled';
+    if(tidalFault)$('source-status').textContent=health.recovery==='failed'?
+      'Tidal input recovery could not complete. Check the Octet logs.':'Tidal audio is not reaching the DSP. Check the Octet logs.';
+    if(next.source==='tidal'&&next.playback==='pause'&&health?.recovery==='ready_to_resume')
+      $('source-status').textContent='Tidal input released. Press Play to retry, then unmute when ready.';
+    if(next.dac_stalled)$('source-status').textContent='The DAC output stopped advancing. Check the Octet kernel log.';
+    $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.capture_stalled)||Boolean(next.dac_stalled)||tidalFault);
   }
 }
 let bluetoothBusy=false;
@@ -131,8 +151,12 @@ async function libraryBack(){
 const time=seconds=>{const n=Math.max(0,Math.floor(Number(seconds)||0));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0')};
 function notice(message='',error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error)}
 async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||'Could not complete that action');return result}
-function renderPlayer(next){state=next;renderLevelControls(next);$('dsp-profile-name').textContent=next.profile;$('dsp-profile-description').textContent=next.profile_description;$('connection').textContent=next.ready?'● Octet online':'● DSP unavailable';$('connection').classList.toggle('online',next.ready);$('playback-label').textContent={play:'Playing',pause:'Paused',stop:'Stopped'}[next.playback]||'Stopped';const current=next.current;$('song-title').textContent=current?.title||'Room to listen.';$('song-artist').textContent=current?current.artist:'Choose a track to begin.';$('song-album').textContent=current?.album||'';if(current?.cover){if($('cover').getAttribute('src')!==current.cover)$('cover').src=current.cover;$('cover').hidden=false;$('cover-placeholder').hidden=true}else{$('cover').hidden=true;$('cover-placeholder').hidden=false}$('toggle').textContent=next.playback==='play'?'Ⅱ':'▶';$('toggle').setAttribute('aria-label',next.playback==='play'?'Pause':'Play');$('mute').textContent=next.muted?'Unmute':'Mute';$('mute').setAttribute('aria-pressed',String(next.muted));volumeControl.render(next,{busy:volumeBusy});if(document.activeElement!==$('seek')){$('seek').max=Math.max(1,next.duration);$('seek').value=next.elapsed}$('seek').disabled=!next.duration;$('elapsed').textContent=time(next.elapsed);$('duration').textContent=time(next.duration);renderQueue(next.queue||[]);if(next.player_error)notice(next.player_error,true)}
-async function control(name,data={}){try{render(await api('/api/control/'+name,data));notice()}catch(e){notice(e.message,true)}}
+function renderPlayer(next){state=next;renderLevelControls(next);$('dsp-profile-name').textContent=next.profile;$('dsp-profile-description').textContent=next.profile_description;$('connection').textContent=next.ready?'● Octet online':'● DSP unavailable';$('connection').classList.toggle('online',next.ready);$('playback-label').textContent={play:'Playing',pause:'Paused',stop:'Stopped'}[next.playback]||'Stopped';$('toggle').textContent=next.playback==='play'?'Ⅱ':'▶';$('toggle').setAttribute('aria-label',next.playback==='play'?'Pause':'Play');$('mute').textContent=next.muted?'Unmute':'Mute';$('mute').setAttribute('aria-pressed',String(next.muted));volumeControl.render(next,{busy:volumeBusy});if(document.activeElement!==$('seek')){$('seek').max=Math.max(1,next.duration);$('seek').value=next.elapsed}$('seek').disabled=!next.duration;$('elapsed').textContent=time(next.elapsed);$('duration').textContent=time(next.duration);renderQueue(next.queue||[]);if(next.player_error)notice(next.player_error,true)}
+async function control(name,data={}){
+  const playback=['resume','pause','previous','next','position','seek','mute','stop','volume'].includes(name);
+  const report=playback?(message='')=>{$('player-error').textContent=message;}:notice;
+  try{render(await api('/api/control/'+name,data));report();}catch(error){report(error.message,true);}
+}
 function renderQueue(rows){
   const position=state.song_position??-1;
   const manual=state.manual_queue||rows.filter(row=>row.position>position&&row.origin==='queue');

@@ -18,7 +18,7 @@ REMOTE_FILES = (
     'bluetooth_preflight.py',
     'bluetooth_admin.py',
     'bluetooth_auto.py',
-    'dac_watch.py',
+    'audio_watch.py',
     'bluetooth_transport.py',
     'install_bluetooth.py',
     'install_airplay.py',

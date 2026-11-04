@@ -81,13 +81,13 @@ class StagedTreeTests(unittest.TestCase):
 
     def test_staged_modules_import_from_the_staged_directory_only(self):
         # -I and an empty env: nothing but stdlib and the staged directory can satisfy imports.
-        code = ('import sys; sys.path.insert(0, sys.argv[1]); import bluetooth_auto, bluetooth_transport; '
-                'print(bluetooth_auto.__file__, bluetooth_transport.__file__)')
+        code = ('import sys; sys.path.insert(0, sys.argv[1]); import audio_watch, bluetooth_auto, bluetooth_transport; '
+                'print(audio_watch.__file__, bluetooth_auto.__file__, bluetooth_transport.__file__)')
         result = subprocess.run([sys.executable, '-I', '-c', code, str(self.stage)],
                                 cwd=self.stage, capture_output=True, text=True, env={})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split(), [str(self.stage / n) for n in
-                                                 ('bluetooth_auto.py', 'bluetooth_transport.py')])
+                                                 ('audio_watch.py', 'bluetooth_auto.py', 'bluetooth_transport.py')])
 
 
 class FirstTimeInstallerTests(unittest.TestCase):

@@ -114,6 +114,25 @@ class SourceSwitching(unittest.TestCase):
         self.assertEqual(details['profile'], tuning['name'])
         self.assertEqual(details['tuning'], tuning)
 
+    def test_stalled_capture_is_reported_during_playback_and_blocks_unmute(self):
+        with self.system() as (_, _, _, dsp, *rest), \
+                patch.object(server, 'CAPTURE_STALL_SOURCE', None), \
+                patch.object(server, 'player_queue') as queue:
+            context = dict(manual={}, autoplay={}, source={})
+            dsp.state = 'Stalled'
+            queue.return_value = ({'state': 'pause'}, [], [], context)
+            self.assertFalse(server.current_status()['capture_stalled'])
+            queue.return_value = ({'state': 'play'}, [], [], context)
+            with self.assertLogs(level='WARNING') as records:
+                status = server.current_status()
+            self.assertTrue(status['capture_stalled'])
+            self.assertIn('DSP capture stalled during tidal playback', records.output[0])
+            with self.assertRaisesRegex(RuntimeError, 'waiting for input audio'):
+                server.action('mute', {'muted': False})
+            self.assertNotIn(('SetMute', False), dsp.calls)
+            dsp.state = 'Running'
+            self.assertFalse(server.current_status()['capture_stalled'])
+
     def test_saved_tuning_switches_to_usb_and_back_without_changing_speaker_settings(self):
         with self.system() as (origin, baseline, tuning, dsp, validation, mpd, profiles, target):
             original_bytes = origin.read_bytes()

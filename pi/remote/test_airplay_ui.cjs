@@ -15,12 +15,13 @@ const base = {source:'airplay',source_label:'AirPlay',ready:true,muted:true,sour
   sources:[{id:'airplay',label:'AirPlay',available:true,group:'Music'}]};
 function render(airplay){context.next={...base,airplay};vm.runInContext('render(next)',context);}
 render({active:false});
-assert.match(get('song-artist').textContent,/Waiting/);
+assert.equal(get('now-playing-details').hidden,true);
 assert.match(get('source-status').textContent,/waiting/);
 assert.equal(get('.transport').hidden,true);
 render({preparing:true});
 assert.match(get('source-status').textContent,/Preparing.*muted/);
 render({active:true});
+assert.equal(get('now-playing-details').hidden,false);
 assert.match(get('source-status').textContent,/cast active/);
 render({error:'AirPlay capture failed'});
 assert.equal(get('source-status').textContent,'AirPlay capture failed');

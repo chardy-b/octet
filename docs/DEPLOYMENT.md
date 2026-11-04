@@ -76,6 +76,32 @@ For a fresh receiver session, look for route load, PCM readiness time and mute c
 Auto Tune omits successful `GET /api/auto` polls from its access log. Failed HTTP
 responses and other requests still appear in `journalctl -u octet-autotune`.
 
+After an audio update, deliberately play a track at a low listening level and
+verify that Tidal's elapsed time and the input/output meters advance. An HTTP 200
+or an advancing song clock alone cannot establish playback.
+
+Octet logs a fault in `octet-remote` after three consecutive failed PCM progress
+checks, roughly six seconds. An external monitor can alert on `audio_health.fault`
+in `/api/status` or on a lost connection to Octet. `capture_stalled` is the
+immediate CamillaDSP indication and can clear before the watchdog confirms a
+fault. Idle Tidal playback does not trigger the watchdog.
+
+The watchdog starts in observe-only mode. After attended validation, set
+`Environment=OCTET_AUDIO_RECOVERY=1` in an `octet-remote.service` drop-in under
+`[Service]` to opt in to one Tidal rearm per fault. Apply it during a muted
+maintenance window. The watchdog confirms mute, pauses Tidal and verifies that
+MPD released its ALSA output. Press Play to reopen the input, then unmute
+deliberately. Check `audio_health.recovery` for `ready_to_resume` or `failed`.
+
+For `dac_output_stalled`, save the status and recent `journalctl -k -b` output
+before changing the route. Check for repeated DMA errors on the I2S transmit
+channel. If that channel is wedged, record the selected profile, level, queue
+and elapsed position, verify mute, pause any playback, and deliberately reboot
+Octet. Follow the [audio gates](agent-workflows/audio-deployment.md) after boot
+and check every physical output at low level before resuming normal use. Wait
+for the Octet web service to answer before resuming the Tidal queue, since it
+serves MPD's stream URLs. The watchdog never reboots the Pi.
+
 Fresh setup installs `pi/etc/60-octet-journal.conf` to retain logs across reboot.
 On an existing Pi, review `systemd-analyze cat-config systemd/journald.conf`
 before installing the drop-in. Its defaults cap persistent journal storage at
