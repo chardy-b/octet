@@ -10,6 +10,15 @@
   }
   const rounded=db=>Math.round(db*10)/10;
   const label=db=>rounded(db)+' dB';
+  function renderRange(button,note,state){
+    const bluetoothLocked=Boolean(state.level_locked_by_bluetooth);
+    button.disabled=bluetoothLocked;
+    button.textContent=state.level_unlocked?'Lock standard range':'Unlock higher levels';
+    button.setAttribute('aria-pressed',String(Boolean(state.level_unlocked)));
+    note.textContent=bluetoothLocked?'Bluetooth playback is limited to −18 dB.':state.level_unlocked
+      ?'Higher range unlocked: up to 0 dB. Unlocking does not change the volume.'
+      :'Standard range: −60 to −18 dB.';
+  }
   function create(slider,readout){
     let min=-60,max=-18;
     slider.min='0';slider.max=String(SCALE);slider.step='0.1';
@@ -45,7 +54,7 @@
     });
     return {render,preview,value};
   }
-  const api=Object.freeze({positionToDb,dbToPosition,create});
+  const api=Object.freeze({positionToDb,dbToPosition,create,renderRange});
   if(typeof window!=='undefined')window.OctetVolume=api;
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })();

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -18,6 +19,17 @@ from . import config
 from .backend import Hardware, exclusive
 from .camilla import atomic, control
 from .runner import Runner
+
+
+class StatusPollFilter(logging.Filter):
+    """Keep Uvicorn access logs except for successful Auto Tune status polls."""
+
+    def filter(self, record):
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _, method, path, _, status = args
+        return (method, path, status) != ('GET', '/api/auto', 200)
 
 
 def digest(path):
@@ -318,4 +330,5 @@ def create_app(root=None, demo=False):
 if __name__ == '__main__':
     import uvicorn
     os.umask(0o027)
+    logging.getLogger('uvicorn.access').addFilter(StatusPollFilter())
     uvicorn.run(create_app(), host='127.0.0.1', port=8766)

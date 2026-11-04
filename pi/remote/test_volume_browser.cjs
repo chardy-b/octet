@@ -97,6 +97,17 @@ async function checkPage(browser, kind) {
     await key('End', -18);
     await key('PageDown', -23);
     assert.equal(state.muted, true, kind + ': level controls do not alter mute');
+    const unlock = page.locator('#unlock-level');
+    const writesBeforeBluetooth = writes.length;
+    state = {...state, source: 'bluetooth', level_locked_by_bluetooth: true};
+    await page.evaluate(() => refresh());
+    assert.equal(await unlock.isDisabled(), true, kind + ': Bluetooth locks the range control');
+    assert.match(await page.locator('#level-range-note').textContent(), /Bluetooth playback is limited to −18 dB/);
+    assert.equal(await slider.getAttribute('aria-valuemax'), '-18');
+    assert.equal(writes.length, writesBeforeBluetooth);
+    state = {...state, source: 'airplay', level_locked_by_bluetooth: false};
+    await page.evaluate(() => refresh());
+    assert.equal(await unlock.isEnabled(), true, kind + ': AirPlay offers the range control');
     assert.deepEqual(errors, []);
   } finally {
     await page.close();

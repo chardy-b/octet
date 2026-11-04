@@ -256,6 +256,30 @@ class IntegrationSafetyTests(AirPlayTests):
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
         self.assertEqual(self.calls().count(('SetMute', False)), 1)
 
+    def test_unlock_and_relock_keep_the_airplay_route(self):
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        candidate = self.path
+        self.dsp.call.reset_mock()
+        with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
+             patch.object(server, 'LEVELS_UNLOCKED', False), \
+             patch.object(server, 'current_status', return_value={}):
+            server.action('unlock', {'enabled': True})
+            self.assertTrue(server.LEVELS_UNLOCKED)
+            self.assertTrue(self.control.active)
+            self.assertFalse(any(call[0] == 'SetVolume' for call in self.calls()))
+            self.control.event('stop', now=2)
+            original = self.dsp.call.side_effect
+            self.dsp.call.side_effect = lambda name, *args: -6 if name == 'GetVolume' else original(name, *args)
+            server.action('unlock', {'enabled': False})
+            self.assertFalse(server.LEVELS_UNLOCKED)
+        self.assertTrue(self.control.idle)
+        self.assertEqual(self.path, candidate)
+        self.assertEqual([call for call in self.calls()
+                          if call[0] in ('SetMute', 'SetVolume', 'SetConfigFilePath', 'Reload')],
+                         [('SetVolume', -18.0)])
+        server.mpd.assert_called_once_with('pause 1')
+
     def test_manual_override_rejects_duplicate_live_start(self):
         self.control.event('start', now=0)
         self.control.tick(now=1)

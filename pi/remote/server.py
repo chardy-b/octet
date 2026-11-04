@@ -27,6 +27,7 @@ from input_levels import InputLevels
 from airplay_control import AirPlayController, serve as serve_airplay
 from bluetooth_auto import start_auto_bluetooth
 from bluetooth_control import BluetoothControl, serve as serve_bluetooth
+from bluetooth_control import MAX_DB as BLUETOOTH_MAX_DB
 from bluetooth_identity import devices as bluetooth_devices
 import bluetooth_pairing
 from network_access import NetworkAccess
@@ -692,6 +693,7 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
                                     for key, value in updated['devices']['capture'].items())
                             and dsp.call('GetState') == 'Running'):
                         ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
+                        logging.info('DSP route reloaded for %s (source change=%s)', identifier, interrupt)
                         return  # After a source change, Unmute/Play is explicit.
             raise RuntimeError('The selected input did not start')
         except Exception:
@@ -707,6 +709,7 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
                     dsp.call('SetConfigFilePath', previous_path)
                 dsp.call('Reload')
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
+            logging.warning('DSP route change for %s failed. Previous route reloaded muted', identifier)
             raise RuntimeError('Change failed; the previous source was restored and output is muted')
     finally:
         candidate.unlink(missing_ok=True)
@@ -714,6 +717,13 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
 
 def volume_ceiling():
     return HIGH_DB if LEVELS_UNLOCKED else MAX_DB
+
+
+def level_range(bluetooth_locked=False):
+    maximum = min(volume_ceiling(), BLUETOOTH_MAX_DB) if bluetooth_locked else volume_ceiling()
+    return dict(min_db=MIN_DB, max_db=maximum,
+                level_unlocked=LEVELS_UNLOCKED and not bluetooth_locked,
+                level_locked_by_bluetooth=bluetooth_locked)
 
 
 def eq_block(config, output, required=True):
@@ -986,8 +996,8 @@ def dsp_status():
         config = json.loads(dsp.call('GetConfigJson'))
         path = dsp.call('GetConfigFilePath')
         result = dict(profile=config.get('title', 'CamillaDSP'), volume=dsp.call('GetVolume'),
-                      muted=dsp.call('GetMute'), level_unlocked=LEVELS_UNLOCKED,
-                      min_db=MIN_DB, max_db=volume_ceiling(), channels=[])
+                      muted=dsp.call('GetMute'), channels=[],
+                      **level_range(BLUETOOTH_CONTROL.owns_audio()))
         result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
     profile = listening_profile(path)
     tuned = profile['tuning'] if profile else None
@@ -1027,7 +1037,7 @@ def current_status():
     global ACTIVE_CAPTURE_CHANNELS
     result = dict(tidal_connected=SESSION is not None, profile='Exciter audition',
                   profile_description='Outputs 1–4 · 500 Hz–5 kHz · outputs 5–8 silent',
-                  min_db=MIN_DB, max_db=volume_ceiling(), level_unlocked=LEVELS_UNLOCKED,
+                  **level_range(),
                   queue=[], playback='stop', elapsed=0, duration=0,
                   sources=discover_sources(), source='unknown', source_label='Source unavailable',
                   source_switching_available=False,
@@ -1077,13 +1087,16 @@ def current_status():
     result['airplay'] = AIRPLAY_CONTROL.status()
     result['bluetooth'] = BLUETOOTH_CONTROL.status()
     result['bluetooth_pairing'] = dict(BLUETOOTH_PAIRING)
-    if result['bluetooth']['active'] or result['bluetooth']['preparing']:
-        # The Bluetooth route uses its own DSP copy, so describe it directly.
-        result['sources'] = [item for item in result['sources'] if item['id'] != 'unknown']
+    bluetooth_session = result['bluetooth']['active'] or result['bluetooth']['preparing']
+    if bluetooth_session:
+        # Bluetooth is discovered by its controller. Replace the generic fallback
+        # entry for the loaded route with the receiver's available Music option.
+        result['sources'] = [item for item in result['sources'] if item['id'] not in ('unknown', 'bluetooth')]
         result.update(source='bluetooth', source_label='Bluetooth', ready=True,
-                      source_switching_available=True, source_switching_reason='',
-                      max_db=min(volume_ceiling(), -18.0))  # BluetoothControl's cap
-    if bluetooth_addresses() and not any(item['id'] == 'bluetooth' for item in result['sources']):
+                      source_switching_available=True, source_switching_reason='')
+    if bluetooth_session or result['bluetooth']['recovery_pending']:
+        result.update(level_range(bluetooth_locked=True))
+    if bluetooth_session or (bluetooth_addresses() and not any(item['id'] == 'bluetooth' for item in result['sources'])):
         result['sources'].append(dict(id='bluetooth', label='Bluetooth', group='Music', available=True,
                                       description='Play from your paired phone. Connect the phone first; the Tidal queue is kept.'))
     stalled = DAC_WATCH.stalled(result.get('dsp_state') == 'Running')
@@ -1212,8 +1225,33 @@ def cast_level(name, data):
     return None
 
 
-def _action(name, data):
+def set_level_range(enabled):
+    """Change the range under LOCK, retaining the current input and mute state."""
     global LEVELS_UNLOCKED
+    if not isinstance(enabled, bool):
+        raise ValueError('Expected an unlock setting')
+    if BLUETOOTH_CONTROL.owns_audio():
+        raise RuntimeError(f'Bluetooth playback is limited to {BLUETOOTH_MAX_DB:g} dB.')
+    if TUNING.status().get('audio_owned'):
+        raise RuntimeError('Stop Auto mode before changing the listening range.')
+    airplay = AIRPLAY_CONTROL
+    if airplay.needs_mute or airplay.pending is not None:
+        raise RuntimeError('Wait for AirPlay to finish preparing or recovering.')
+    if airplay.active or airplay.idle or airplay.baseline.exists():
+        if not airplay.set_level(ceiling=None if enabled else MAX_DB):
+            raise RuntimeError('AirPlay route could not be verified. Try again when it is ready.')
+    else:
+        with DSP() as dsp:
+            approved(dsp)
+            if not enabled and dsp.call('GetVolume') > MAX_DB:
+                dsp.call('SetVolume', MAX_DB)
+    LEVELS_UNLOCKED = enabled
+    return current_status()
+
+
+def _action(name, data):
+    if name == 'unlock':
+        return set_level_range(data.get('enabled'))
     if name in ('volume', 'mute') and not AIRPLAY_CONTROL.needs_mute and TUNING.status().get('audio_owned') is False:
         # Turning a cast or phone up, down or muted never ends it.
         result = cast_level(name, data)
@@ -1255,15 +1293,6 @@ def _action(name, data):
                 dsp.call('SetMute', True)
             if data.get('id') != 'bluetooth':  # action() starts Bluetooth after releasing LOCK
                 select_source(data.get('id'))
-        elif name == 'unlock':
-            enabled = data.get('enabled')
-            if not isinstance(enabled, bool):
-                raise ValueError('Expected an unlock setting')
-            with DSP() as dsp:
-                approved(dsp)
-                if not enabled and dsp.call('GetVolume') > MAX_DB:
-                    dsp.call('SetVolume', MAX_DB)
-            LEVELS_UNLOCKED = enabled
         elif name == 'channel-eq':
             set_channel_eq(data.get('output'), data.get('enabled'))
         elif name == 'channel-mute':
@@ -1290,6 +1319,7 @@ def _action(name, data):
                     if source not in {item['id'] for item in discover_sources()} or dsp.call('GetState') != 'Running':
                         raise RuntimeError('The selected source is unavailable. Reconnect it or choose Tidal.')
                 dsp.call('SetMute', data['muted'])
+                logging.info('DSP mute=%s: Music control', data['muted'])
         elif name == 'volume':
             value = float(data['db'])
             if not math.isfinite(value) or not MIN_DB <= value <= volume_ceiling():
@@ -1721,8 +1751,10 @@ def initialize_dsp():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     os.umask(0o077)
     initialize_dsp()
+    logging.info('DSP startup mute confirmed')
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
     if Path('/run/octet-bluetooth').exists():

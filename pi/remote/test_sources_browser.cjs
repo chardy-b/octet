@@ -6,7 +6,6 @@ const { chromium } = require('playwright');
 const sources = [
   {id:'airplay',label:'AirPlay',group:'Music',available:true,description:'Cast to Octet on your LAN.'},
   {id:'tidal',label:'Tidal',group:'Music',available:true,description:'Tidal and the saved music queue.'},
-  {id:'airplay',label:'AirPlay',group:'Music',available:true,description:'AirPlay receiver.'},
   {id:'usb:iD14:pair-1',label:'Audient iD14 · Inputs 1 / 2 · stereo',group:'Audient iD14',available:true,description:'Stereo inputs.'},
   {id:'usb:iD14:mono-1',label:'Audient iD14 · Input 1 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
   {id:'usb:iD14:mono-2',label:'Audient iD14 · Input 2 · mono',group:'Audient iD14',available:true,description:'Mono input.'},
@@ -26,7 +25,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.route('http://octet.test/**',async route=>{
       const url=new URL(route.request().url());
       if(url.pathname==='/api/status')return route.fulfill({json:state});
-      if(url.pathname==='/api/now-playing')return route.fulfill({json:{song:{source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)}}});
+      if(url.pathname==='/api/now-playing')return route.fulfill({json:{song:nowPlaying}});
       if(url.pathname.startsWith('/api/now-playing/artwork/'))return route.fulfill({body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/Scv2WQAAAABJRU5ErkJggg==','base64'),contentType:'image/png'});
       if(url.pathname==='/api/input-levels')return route.fulfill({json:{inputs:[],age_ms:0,message:'No USB audio inputs connected.'}});
       if(url.pathname==='/api/favorites')return route.fulfill({json:{tracks:[{id:'1',title:'Library song',artist:'Artist',album:'Album',duration:90}]}});
@@ -85,6 +84,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#source-status').textContent(),'Connect to the speaker DSP to change sources.');
     assert.doesNotMatch(await page.locator('#source-status').textContent(),/Output DSP controls/);
     state={...state,source:'airplay',source_label:'AirPlay',current:null,playback:'stop'};
+    nowPlaying={source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)};
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#song-title').textContent(),'AirPlay song');
     assert.equal(await page.locator('#song-artist').textContent(),'AirPlay artist');
@@ -93,13 +93,14 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#cover').isVisible(),true);
     assert.deepEqual(writes,[{id:'usb:iD14:mono-1'},{id:'tidal'},{id:'tidal'}]);
     state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:false}};
+    nowPlaying=null;
     await page.evaluate(()=>refresh());
     assert.match(await page.locator('#song-artist').textContent(),/Waiting/);
     assert.equal(await page.locator('.transport').isVisible(),false);
     state={...state,airplay:{active:true},muted:false,volume:-18};
     await page.evaluate(()=>refresh());
     assert.match(await page.locator('#source-status').textContent(),/cast active/);
-    assert.equal(await page.locator('#queue-count').textContent(),'1');
+    assert.equal(await page.locator('#queue-count').textContent(),'0'); // AirPlay keeps the saved queue position.
     // Published live metadata replaces the fallback card only for the selected source.
     nowPlaying={source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)};
     await page.evaluate(()=>refresh());

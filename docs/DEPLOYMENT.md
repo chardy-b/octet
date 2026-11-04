@@ -63,6 +63,27 @@ Before any change, record what is running:
 ssh octet@octet 'cat /opt/octet-remote/REVISION'
 ```
 
+## Audio logs
+
+Follow the receiver and routing decisions on the Pi with:
+
+```bash
+journalctl -u octet-remote -u shairport-sync -u octet-bluealsa -u camilladsp -f -o short-iso-precise
+```
+
+An AirPlay idle/resume pair records whether the existing DSP route was reused.
+For a fresh receiver session, look for route load, PCM readiness time and mute changes.
+Auto Tune omits successful `GET /api/auto` polls from its access log. Failed HTTP
+responses and other requests still appear in `journalctl -u octet-autotune`.
+
+Fresh setup installs `pi/etc/60-octet-journal.conf` to retain logs across reboot.
+On an existing Pi, review `systemd-analyze cat-config systemd/journald.conf`
+before installing the drop-in. Its defaults cap persistent journal storage at
+128 MiB and expire archives after seven days. After installation, restart
+`systemd-journald`, run `sudo journalctl --flush`, and check the effective
+configuration and `journalctl --disk-usage`. Remove the drop-in and restart
+`systemd-journald` to restore the prior storage policy.
+
 ## Set up a new Pi from scratch
 
 Do these in order. Anything marked **(quiet)** produces no sound. Keep speakers muted or amps off until the acceptance step.

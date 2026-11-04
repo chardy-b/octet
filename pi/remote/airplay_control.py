@@ -90,6 +90,7 @@ class AirPlayController:
             self.active = False
             self.pending = None
             self.needs_mute = True
+            logging.info('AirPlay ending: manual override')
             self.recover()
         self.suppressed = manual
         if manual:
@@ -114,6 +115,7 @@ class AirPlayController:
         self.mute()
         if self.baseline.exists():
             self.baseline.recover()
+            logging.info('AirPlay recovery restored the speaker profile, muted')
         if self.restore_pending is not None:
             path = self.server.CHANNEL_PROFILE
             candidate = None
@@ -148,6 +150,7 @@ class AirPlayController:
         with self.server.LOCK:
             try:
                 self.expected = self.baseline.retarget(profile)
+                logging.info('AirPlay speaker profile reloaded on the cast route')
             except Exception as error:
                 self.fail(str(error) if isinstance(error, RuntimeError) else 'AirPlay profile change failed')
                 raise
@@ -158,23 +161,25 @@ class AirPlayController:
         self.needs_mute = True
         self.recover()
 
-    def pause(self):
+    def pause(self, reason):
         """The phone stopped (an app switch, a pause): keep the route loaded and unmuted."""
         if not self.baseline.exists():
             self.end()
             return
         self.active, self.idle = False, True
         self.stop_at = self.silent_since = None
+        logging.info('AirPlay idle: %s. Retaining the DSP route and mute state', reason)
 
     def release_idle(self):
         """Hand an idle cast's outputs to another source (caller holds server.LOCK)."""
         if self.idle and not self.active and self.pending is None:
+            logging.info('AirPlay ending: handing off the idle route')
             self.end()
 
-    def set_level(self, volume=None, muted=None):
-        """Music-page volume or mute on a loaded cast (playing or between apps): it stays.
+    def set_level(self, volume=None, muted=None, *, ceiling=None):
+        """Adjust volume, mute or the volume ceiling on a loaded cast.
 
-        Returns False when there is no verified cast route (the caller then ends it).
+        Returns False when there is no verified cast route.
         """
         with self.server.LOCK:
             if (not (self.active or self.idle) or self.pending is not None
@@ -185,8 +190,11 @@ class AirPlayController:
                     return False
                 if volume is not None:
                     dsp.call('SetVolume', volume)
+                elif ceiling is not None and dsp.call('GetVolume') > ceiling:
+                    dsp.call('SetVolume', ceiling)
                 if muted is not None:
                     dsp.call('SetMute', muted)
+                    logging.info('AirPlay mute=%s: Music control', muted)
             return True
 
     def resume(self):
@@ -198,6 +206,7 @@ class AirPlayController:
             return False
         self.active, self.idle = True, False
         self.error = None
+        logging.info('AirPlay resumed: start hook reused the loaded route')
         return True
 
     def event(self, event, now=None, cancelled=None, acknowledged=None):
@@ -211,7 +220,7 @@ class AirPlayController:
                 self.recover()
             if event == 'stop':
                 if self.active:
-                    self.pause()
+                    self.pause('stop hook')
                 elif self.pending is not None:
                     self.stop_at = now + 1.0
                 return
@@ -245,6 +254,7 @@ class AirPlayController:
                     raise RuntimeError('AirPlay preparation timed out; output remains muted')
             try:
                 self.mute()
+                logging.info('AirPlay mute=True: preparing a new cast')
                 check_deadline()
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
@@ -268,6 +278,7 @@ class AirPlayController:
                 self.expected = self.baseline.begin(path, loaded)
                 check_deadline()
                 self.pending = time.monotonic() if supplied_now is None else now
+                logging.info('AirPlay route loaded. Waiting for PCM')
             except Exception as error:
                 message = str(error) if isinstance(error, RuntimeError) else 'AirPlay preparation failed'
                 self.fail(message)
@@ -306,6 +317,7 @@ class AirPlayController:
                 if self.stop_at is not None and now >= self.stop_at:
                     self.stop_at = None
                     if not live:
+                        logging.info('AirPlay ending: stop hook during preparation')
                         self.end()
                         return
                 if self.pending is not None:
@@ -332,6 +344,7 @@ class AirPlayController:
                                 self.fail('AirPlay preparation timed out; output remains muted')
                                 return
                             dsp.call('SetMute', False)
+                            logging.info('AirPlay mute=False: PCM ready after %.2fs', now - self.pending)
                             self.active = True
                             self.pending = self.previous = None
                             if not self.baseline.exists():
@@ -343,11 +356,12 @@ class AirPlayController:
                     if live:
                         # Audio came back in the same session (no start hook): carry on.
                         self.active, self.idle = True, False
+                        logging.info('AirPlay resumed: PCM returned on the loaded route')
                 elif not live:
                     if self.silent_since is None:
                         self.silent_since = now
                     elif now - self.silent_since >= 1:
-                        self.pause()
+                        self.pause('PCM stopped advancing')
                 else:
                     self.silent_since = None
             except Exception:
@@ -378,11 +392,17 @@ def serve(controller):
     listener.settimeout(.25)
 
     def monitor():
+        next_failure_log = 0
         while True:
             try:
                 controller.tick()
             except Exception:
-                logging.exception('AirPlay monitor could not mute DSP')
+                now = time.monotonic()
+                if now >= next_failure_log:
+                    logging.exception('AirPlay monitor could not establish mute/recovery')
+                    next_failure_log = now + 30
+            else:
+                next_failure_log = 0
             time.sleep(.25)
 
     threading.Thread(target=monitor, daemon=True).start()

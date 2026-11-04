@@ -132,6 +132,8 @@ class BluetoothControl:
             try:
                 self.route.mute()
                 self.mute_verified = True
+                if session is not None:
+                    logging.info('Bluetooth mute=True: ending session (%s)', reason)
             except Exception as error:
                 self.errors['mute'] = error
             stops = []
@@ -161,6 +163,8 @@ class BluetoothControl:
                         raise RuntimeError('restore deferred until bridge termination '
                                            'is confirmed; mute and journal retained')
                     self.route.recover(cleanup=not self.errors)
+                    if not self.errors:
+                        logging.info('Bluetooth recovery restored the speaker profile, muted')
             except Exception as error:
                 self.errors['recovery'] = error
                 if 'stop' not in self.errors:
@@ -276,6 +280,7 @@ class BluetoothControl:
             try:
                 session.expected = self.route.retarget(profile, rate, sample_format)
                 session.candidate = read_bounded(self.route.candidate, MAX_CONFIG)
+                logging.info('Bluetooth speaker profile reloaded on the phone route')
             except Exception as error:
                 self.fail(f'Bluetooth profile change failed: {error}')
                 raise
@@ -310,6 +315,7 @@ class BluetoothControl:
             self.error = None
             try:
                 self.route.mute()
+                logging.info('Bluetooth mute=True: preparing %s session', 'automatic' if stream else 'manual')
                 self._pause_mpd()
                 session.supervisor = self.supervisor(
                     partial(self._exited, session), prepare=partial(self._prepare, session),
@@ -362,6 +368,7 @@ class BluetoothControl:
             session.candidate = read_bounded(self.route.candidate, MAX_CONFIG)
             session.expected = expected
             session.format = (rate, sample_format, 2)
+            logging.info('Bluetooth route loaded at %d Hz (%s), waiting for PCM', rate, sample_format)
 
     def _streaming(self, session):
         supervisor = session.supervisor
@@ -433,6 +440,8 @@ class BluetoothControl:
                     except Exception:
                         pass
                     raise
+            logging.info('Bluetooth mute=False: PCM ready after %.2fs',
+                         self.clock() - (session.deadline - self.timeout))
             return True
 
     def set_level(self, volume=None, muted=None):
@@ -459,6 +468,8 @@ class BluetoothControl:
             except Exception as error:
                 self.fail(str(error))
                 raise
+            if muted is not None:
+                logging.info('Bluetooth mute=%s: Music control', muted)
             return True
 
     def tick(self):
@@ -527,11 +538,17 @@ def handle_connection(connection, controller):
 
 
 def monitor(controller, interval=0.25):
+    next_failure_log = 0
     while True:
         try:
             controller.tick()
         except Exception:
-            logging.exception('Bluetooth monitor could not establish mute/recovery')
+            now = time.monotonic()
+            if now >= next_failure_log:
+                logging.exception('Bluetooth monitor could not establish mute/recovery')
+                next_failure_log = now + 30
+        else:
+            next_failure_log = 0
         time.sleep(interval)
 
 

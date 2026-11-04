@@ -70,14 +70,24 @@ class BluetoothUiTests(unittest.TestCase):
             server.start_bluetooth()
 
     def test_active_session_is_the_selected_source(self):
-        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', self.control()), \
-                patch.object(server, 'bluetooth_addresses', return_value=('AA:BB:CC:DD:EE:FF',)):
-            server.BLUETOOTH_CONTROL.status.return_value = dict(
-                active=True, preparing=False, recovery_pending=False, error=None)
-            status = server.current_status()
-        self.assertEqual((status['source'], status['ready'], status['source_switching_available']),
-                         ('bluetooth', True, True))
-        self.assertTrue(status['bluetooth']['active'])
+        with fixture() as (_, _, _, dsp, *rest), \
+                patch.object(server, 'BLUETOOTH_CONTROL', self.control()) as control, \
+                patch.object(server, 'LEVELS_UNLOCKED', True), \
+                patch.object(server, 'bluetooth_addresses', return_value=()):
+            dsp.document['devices']['capture']['device'] = 'hw:Loopback,1,2'
+            for active in (True, False):
+                with self.subTest(active=active):
+                    control.status.return_value = dict(
+                        active=active, preparing=not active, recovery_pending=False, error=None)
+                    status = server.current_status()
+                    self.assertEqual((status['source'], status['ready'], status['source_switching_available']),
+                                     ('bluetooth', True, True))
+                    options = [source for source in status['sources'] if source['id'] == 'bluetooth']
+                    self.assertEqual([(option['label'], option['group'], option['available']) for option in options],
+                                     [('Bluetooth', 'Music', True)])
+                    self.assertTrue(status['level_locked_by_bluetooth'])
+                    self.assertFalse(status['level_unlocked'])
+                    self.assertEqual(status['max_db'], -18.0)
 
 
 class DiscoverableToggleTests(unittest.TestCase):

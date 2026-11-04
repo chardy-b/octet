@@ -708,7 +708,7 @@ as differences.
 Stop/failure/restart mutes and restores using `SetConfigFilePath(profile)` then
 `Reload`; cleanup follows verification of the profile path, config and running
 DSP. Failed recovery retains the journal and mute/retry latch. Manual controls other
-than volume and mute (on a verified cast route) end AirPlay and complete recovery
+than volume, mute and listening range (on a verified cast route) end AirPlay and complete recovery
 under the shared lock before proceeding. Auto Tune
 handoff uses the same recovery gate. If Auto Tune already owns audio or has
 selected another path, mute and retain recovery evidence without overwriting its
@@ -833,7 +833,8 @@ An AirPlay cast that is idle between apps is ended (muted, back to the profile)
 and the phone takes over. A playing or preparing AirPlay cast, or Auto Tune,
 refuses the Bluetooth start; Bluetooth holding the audio refuses AirPlay. The
 Music page's volume slider (up to −18 dB) and Mute button adjust a playing phone
-in place; any other Music-page control stops Bluetooth muted. When the phone stops streaming, Octet mutes and does not resume
+in place. The higher range control is unavailable during Bluetooth playback.
+Other Music-page playback controls stop Bluetooth muted. When the phone stops streaming, Octet mutes and does not resume
 Tidal. A phone already playing when octet-remote (or BlueZ/BlueALSA) starts is
 picked up once, after the same identity checks. Any saved profile works; the
 phone's route is built by `dsp_inputs.with_input(profile, 'bluetooth', ...)`.

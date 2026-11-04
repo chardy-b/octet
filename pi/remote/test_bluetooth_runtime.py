@@ -839,6 +839,15 @@ class ServerIntegrationTests(unittest.TestCase):
         self.order.mpd.assert_not_called()
         self.dsp.call.assert_not_called()
 
+    def test_unlock_is_refused_without_touching_bluetooth_playback(self):
+        with patch.object(self.server, 'LEVELS_UNLOCKED', False):
+            with self.assertRaisesRegex(RuntimeError, 'Bluetooth playback is limited'):
+                self.server.action('unlock', {'enabled': True})
+            self.assertFalse(self.server.LEVELS_UNLOCKED)
+        self.bluetooth.stop.assert_not_called()
+        self.dsp.call.assert_not_called()
+        self.order.mpd.assert_not_called()
+
     def test_idle_bluetooth_is_not_touched_by_manual_actions(self):
         self.bluetooth.owns_audio.return_value = False
         with patch.object(self.server, 'AIRPLAY_CONTROL', self.airplay):

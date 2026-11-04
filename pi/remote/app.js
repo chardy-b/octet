@@ -278,5 +278,5 @@ if(remembered?.view==='playlist'&&typeof remembered.id==='string')loadPlaylist(r
 else if(remembered?.view==='playlists')loadPlaylists();
 else loadTracks();
 setInterval(refresh,2500);
-function renderLevelControls(next){$('unlock-level').textContent=next.level_unlocked?'Lock standard range':'Unlock higher levels';$('unlock-level').setAttribute('aria-pressed',String(next.level_unlocked));$('level-range-note').textContent=next.level_unlocked?'Higher range unlocked: up to 0 dB. Unlocking does not change the volume.':'Standard range: −60 to −18 dB.'}
+function renderLevelControls(next){window.OctetVolume.renderRange($('unlock-level'),$('level-range-note'),next);}
 $('unlock-level').onclick=async()=>{try{render(await api('/api/control/unlock',{enabled:!state.level_unlocked}));notice(state.level_unlocked?'Higher levels unlocked. The listening level has not changed.':'Standard listening range restored.')}catch(error){notice(error.message,true)}};
