@@ -42,6 +42,12 @@ function renderNowPlaying(next){
   cover.hidden=!artwork;
   $('cover-placeholder').hidden=Boolean(artwork);
 }
+function canSwitchSource(next){
+  // A cast runs from a temporary DSP file. The server restores the saved profile on a manual switch.
+  return next.source_switching_available||(next.source==='airplay'&&
+    (next.dsp_state==='Running'||next.dsp_state==='Stalled')&&
+    (next.airplay?.active||next.airplay?.idle)&&!next.airplay?.error);
+}
 function renderSources(next){
   const select=$('source-choice'),sources=next.sources||[];
   const key=JSON.stringify(sources.map(source=>[source.id,source.label,source.available,source.group]));
@@ -54,13 +60,13 @@ function renderSources(next){
     sourceOptionsKey=key;
   }
   select.value=sourcePending??next.source;
-  select.disabled=sourcePending!==null||!next.source_switching_available;
+  select.disabled=sourcePending!==null||!canSwitchSource(next);
   $('source-current').textContent='Selected: '+(next.source_label||'Unavailable');
   const chosen=sources.find(source=>source.id===select.value);
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
   if(sourcePending===null){
     $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
-    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
+    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active. Choosing another source ends it on Octet.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
     if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth · muted.':next.muted?'Bluetooth active · muted. Unmute when ready.':'Bluetooth playing from your phone.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
     if(next.capture_stalled)$('source-status').textContent='Playback has started, but the speaker DSP is receiving no audio.';
@@ -89,7 +95,7 @@ $('bluetooth-discoverable').onchange=async()=>{
 };
 $('source-choice').onchange=async()=>{
   const id=$('source-choice').value;
-  if(sourcePending!==null||!state.source_switching_available||id===state.source||
+  if(sourcePending!==null||!canSwitchSource(state)||id===state.source||
      !state.sources?.some(source=>source.id===id&&source.available)){
     renderSources(state);
     return;

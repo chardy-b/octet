@@ -101,6 +101,25 @@ class AirPlayTests(unittest.TestCase):
         self.assertIn(('SetMute', True), self.calls())
         self.assertEqual(self.path, str(self.profile))
 
+    def test_source_control_ends_the_active_cast_before_selecting_the_new_input(self):
+        self.control.event('start', now=0)
+        self.control.tick(now=1)
+        with patch.object(server, 'AIRPLAY_CONTROL', self.control), patch.object(server, 'current_status'):
+            def verify_handoff(source):
+                self.assertEqual(source, 'tidal')
+                self.assertEqual(self.path, str(self.profile))
+                self.assertFalse(self.control.active)
+                self.assertFalse(self.control.baseline.exists())
+                self.assertEqual(self.calls()[-1], ('SetMute', True))
+
+            server.select_source.side_effect = verify_handoff
+            server.action('source', {'id': 'tidal'})
+            self.control.event('start', now=2)
+            self.assertTrue(self.control.suppressed)
+            self.assertFalse(self.control.active)
+            server.select_source.assert_called_once_with('tidal')
+            server.mpd.assert_called_once_with('pause 1')
+
     def test_changed_idle_route_is_rebuilt_muted(self):
         self.control.event('start', now=0)
         self.control.tick(now=1)

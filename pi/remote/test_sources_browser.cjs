@@ -42,7 +42,8 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
         const body=route.request().postDataJSON();writes.push(body);
         if(writes.length===1)await switchGate;
         if(reject)return route.fulfill({status:503,json:{error:'Source change failed; previous source restored'}});
-        state={...state,source:body.id,source_label:sources.find(row=>row.id===body.id).label,muted:true};
+        state={...state,source:body.id,source_label:sources.find(row=>row.id===body.id).label,muted:true,
+          airplay:{active:false},ready:true,source_switching_available:true};
         return route.fulfill({json:state});
       }
       const asset=url.pathname==='/'?'index.html':url.pathname.slice(1);
@@ -129,7 +130,8 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#source-status').textContent(),'Connect to the speaker DSP to change sources.');
     assert.doesNotMatch(await page.locator('#source-status').textContent(),/Output DSP controls/);
-    state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:true},current:null,playback:'stop'};
+    state={...state,source:'airplay',source_label:'AirPlay',airplay:{active:true},dsp_state:'Running',
+      current:null,playback:'stop'};
     nowPlaying={source:'airplay',state:'playing',title:'AirPlay song',artist:'AirPlay artist',album:'AirPlay album',artwork:'/api/now-playing/artwork/'+'a'.repeat(64)};
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#song-title').textContent(),'AirPlay song');
@@ -162,6 +164,11 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.match(await page.locator('#source-status').textContent(),/cast active/);
     assert.equal(await page.locator('#song-album').textContent(),'');
     assert.equal(await page.locator('#cover').isVisible(),false);
+    assert.equal(await page.locator('#source-choice').isEnabled(),true);
+    await page.selectOption('#source-choice','tidal');
+    await page.waitForFunction(()=>document.getElementById('source-current').textContent==='Selected: Tidal');
+    assert.equal(await page.locator('#mute').textContent(),'Unmute');
+    assert.deepEqual(writes.slice(3),[{id:'tidal'}]);
     assert.deepEqual(errors,[]);
     console.log('Browser source flow passed: immediate selection, stale poll ignored, failed switch recovery, queue and level retention, Tidal return, unavailable reasons and mobile layout.');
   }finally{await browser.close();}
