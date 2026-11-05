@@ -68,15 +68,15 @@ class ParsingTests(unittest.TestCase):
                 self.assertEqual(parse_pcm(hw(rate, fmt), status()).format, (rate, fmt, 2))
         self.assertIsNone(parse_pcm('closed\n', 'closed\n'))
 
-    def test_prepared_state_is_reported_not_treated_as_running(self):
-        # Live WIL-249: bluealsa-aplay's sub2 playback is PREPARED briefly before RUNNING.
-        pcm = parse_pcm(hw(44100), status(owner=9878, state='PREPARED'))
-        self.assertEqual((pcm.format, pcm.owner, pcm.state), ((44100, 'S16_LE', 2), 9878, 'PREPARED'))
+    def test_startup_recovery_states_are_reported_not_treated_as_running(self):
+        for state in ('XRUN', 'PREPARED'):
+            pcm = parse_pcm(hw(44100), status(owner=9878, state=state))
+            self.assertEqual((pcm.format, pcm.owner, pcm.state), ((44100, 'S16_LE', 2), 9878, state))
         self.assertEqual(parse_pcm(hw(), status()).state, 'RUNNING')
 
     def test_reject_invalid_unknown_or_incomplete_observations(self):
         cases = [(hw(96000), status()), (hw(fmt='FLOAT_LE'), status()),
-                 (hw(channels=1), status()), (hw(), status(state='XRUN')),
+                 (hw(channels=1), status()),
                  (hw(), status(state='SETUP')), (hw(), status(state='DRAINING')),
                  (hw(), status(state='PAUSED')), (hw(), status(state='prepared')),
                  (hw(), status(owner=0)),
@@ -270,21 +270,35 @@ class SupervisorTests(unittest.TestCase):
         self.close.assert_called_once()
         self.child.terminate.assert_called_once()
 
-    def test_prepared_after_any_running_playback_rejected(self):
-        for after_prepare in (False, True):
-            with self.subTest(after_prepare=after_prepare):
-                self.setUp()
-                prepared = Mock()
-                self.supervisor = self.make(prepare=prepared if after_prepare else None)
-                def observe():
-                    if self.ticks == 0:
-                        return self.pcm(), self.pcm(owner=456)
-                    return self.pcm(state='PREPARED'), self.pcm(owner=456)
-                self.observe = observe
-                with self.assertRaisesRegex(RuntimeError, 'not RUNNING'):
-                    self.run_bridge()
-                self.assertFalse(any(self.ready_seen))
-                self.child.terminate.assert_called_once()
+    def test_startup_underrun_rechecks_progress_after_bluealsa_refills(self):
+        prepared = Mock()
+        self.supervisor = self.make(prepare=prepared)
+        self.event.is_set = lambda: self.ticks >= 6
+        def observe():
+            state, pointer = [('RUNNING', 100), ('RUNNING', 100), ('XRUN', 110),
+                              ('PREPARED', 0), ('RUNNING', 10), ('RUNNING', 20)][self.ticks]
+            return self.pcm(state=state, pointer=pointer), self.pcm(owner=456)
+        self.observe = observe
+        self.run_bridge()
+        prepared.assert_called_once_with(44100, 'S16_LE')
+        self.assertEqual(self.ready_seen, [False, False, False, False, False, True])
+
+    def test_underrun_after_progress_is_verified_stops_the_bridge(self):
+        self.observe = lambda: (self.pcm(state='XRUN' if self.ticks >= 2 else 'RUNNING'),
+                                self.pcm(owner=456))
+        with self.assertRaisesRegex(RuntimeError, 'not RUNNING'):
+            self.run_bridge()
+        self.assertEqual(self.ready_seen, [False, True])
+        self.child.terminate.assert_called_once()
+
+    def test_startup_stops_after_three_distinct_underruns(self):
+        self.supervisor = self.make(startup_timeout=2, prepare=Mock())
+        self.event.is_set = lambda: False
+        self.observe = lambda: (self.pcm(state='XRUN' if self.ticks % 2 else 'RUNNING'),
+                                self.pcm(owner=456))
+        with self.assertRaisesRegex(RuntimeError, 'underruns persisted'):
+            self.run_bridge()
+        self.assertFalse(any(self.ready_seen))
 
     def test_prepared_capture_rejected(self):
         self.observe = lambda: (self.pcm(), self.pcm(owner=456, state='PREPARED'))

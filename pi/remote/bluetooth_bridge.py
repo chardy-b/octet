@@ -78,8 +78,7 @@ def _integer(value):
 def parse_pcm(hw_params, status):
     """Return None only for a fully closed endpoint during bounded startup.
 
-    PREPARED is reported, not accepted: only the supervisor may tolerate it,
-    and only for playback before it has ever been observed RUNNING.
+    PREPARED and XRUN are reported so the supervisor can handle muted startup.
     """
     if hw_params.strip() == status.strip() == 'closed':
         return None
@@ -88,7 +87,7 @@ def parse_pcm(hw_params, status):
     if (not rate or (rate[2] and rate[1] != rate[2])
             or hw['format'] not in ('S16_LE', 'S32_LE') or hw['channels'] != '2'):
         raise ValueError('Unsupported native PCM format')
-    if state['state'] not in ('RUNNING', 'PREPARED'):
+    if state['state'] not in ('RUNNING', 'PREPARED', 'XRUN'):
         raise ValueError('PCM is not RUNNING')
     owner = _integer(state['owner_pid'])
     if owner <= 0:
@@ -316,8 +315,9 @@ class BridgeSupervisor:
                     shell=False, close_fds=True)
             prepared = None
             previous = None
-            playback_owner = None
-            running_seen = False
+            playback_owner = capture_owner = None
+            recoveries = 0
+            recovering = False
             progress = None
             while not stop_event.is_set():
                 verify()
@@ -330,8 +330,12 @@ class BridgeSupervisor:
                 if not self.ready and now >= startup_deadline:
                     raise RuntimeError('Bridge startup deadline')
                 playback, capture = pair
-                if capture is not None and capture.state != 'RUNNING':
-                    raise RuntimeError('Capture PCM is not RUNNING')
+                if capture is not None:
+                    if capture.state != 'RUNNING':
+                        raise RuntimeError('Capture PCM is not RUNNING')
+                    if capture_owner is not None and capture.owner != capture_owner:
+                        raise RuntimeError('Capture owner changed')
+                    capture_owner = capture.owner
                 if playback is not None:
                     if playback_owner is None:
                         playback_owner = playback.owner
@@ -345,14 +349,24 @@ class BridgeSupervisor:
                             or playback.sample_format not in ('S16_LE', 'S32_LE')
                             or playback.channels != 2):
                         raise RuntimeError('Unsupported native PCM format')
+                    if prepared is not None and playback.format != prepared:
+                        raise RuntimeError('PCM negotiation changed after preparation')
                     if playback.state != 'RUNNING':
-                        if running_seen:
-                            raise RuntimeError('Playback PCM is not RUNNING')
-                        # Transient startup PREPARED: never prepares, never progress;
-                        # the startup deadline above still bounds it.
+                        if self.ready or playback.state not in ('PREPARED', 'XRUN'):
+                            raise RuntimeError(f'Playback PCM is not RUNNING ({playback.state})')
+                        if prepared is not None:
+                            if capture is None or capture.format != prepared:
+                                raise RuntimeError('Bluetooth capture lost during playback recovery')
+                            if not recovering:
+                                if recoveries >= 3:
+                                    raise RuntimeError('Bluetooth playback underruns persisted during startup')
+                                recoveries += 1
+                                recovering = True
+                            # ALSA resets the playback counters when BlueALSA prepares again.
+                            previous = self._progress = None
                         stop_event.wait(self.interval)
                         continue
-                    running_seen = True
+                    recovering = False
                     if prepared is None:
                         prepared = playback.format
                         if self.prepare is not None:
@@ -364,8 +378,6 @@ class BridgeSupervisor:
                             if self.clock() >= startup_deadline:
                                 raise RuntimeError('Bridge startup deadline during preparation')
                             continue
-                    elif playback.format != prepared:
-                        raise RuntimeError('PCM negotiation changed after preparation')
                 elif prepared is not None:
                     raise RuntimeError('PCM endpoint closed')
                 if any(pcm is None for pcm in pair):
