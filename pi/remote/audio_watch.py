@@ -1,4 +1,4 @@
-"""Independent PCM health checks and one muted Tidal input recovery attempt."""
+"""Independent PCM health checks and bounded Tidal input retries."""
 
 import json
 import logging
@@ -10,6 +10,7 @@ from audio_sources import source_metadata
 
 INTERVAL = 2.0
 FAILED_CHECKS = 3
+MAX_RETRIES = 3
 LOOPBACK = Path('/proc/asound/Loopback')
 DAC = Path('/proc/asound/sndrpihifiberry/pcm0p/sub0/status')
 DAC_DEVICE = 'hw:sndrpihifiberry,0'
@@ -44,9 +45,8 @@ class AudioWatch:
         self.auto_recover = auto_recover
         self.previous = self.source = None
         self.suspect = None
-        self.checks = 0
-        self.attempted = False
-        self.report = dict(fault=None, recovery=None, source=None)
+        self.checks = self.healthy_checks = self.attempts = 0
+        self.report = dict(fault=None, recovery=None, source=None, attempts=0)
 
     def _tidal_has_control(self):
         airplay = self.server.AIRPLAY_CONTROL
@@ -70,14 +70,17 @@ class AudioWatch:
             expected = source != 'unknown' and dsp_state == 'Running'
         if not expected or config.get('devices', {}).get('playback', {}).get('device') != DAC_DEVICE:
             self.previous = self.suspect = None
-            self.checks = 0
+            self.checks = self.healthy_checks = 0
+            if source == 'tidal' and not expected and self.report['recovery'] == 'retrying':
+                self.report = dict(self.report, recovery='failed')
             return
 
         old = self.previous if self.source == source else None
         new = self.read_pcm()
         self.previous, self.source = new, source
         if old is None:
-            self.suspect, self.checks = None, 0
+            self.suspect = None
+            self.checks = self.healthy_checks = 0
             return
         dac_ok = advances(old[2], new[2])
         capture_known = all(sample is not None for sample in (*old[:2], *new[:2]))
@@ -91,12 +94,14 @@ class AudioWatch:
 
         if fault != self.suspect:
             self.suspect, self.checks = fault, 0
+        healthy = dac_ok and dsp_state == 'Running' and (source != 'tidal' or capture_ok)
+        self.healthy_checks = self.healthy_checks + 1 if healthy else 0
         if fault is None:
-            if dac_ok and dsp_state == 'Running' and (source != 'tidal' or capture_ok):
+            if self.healthy_checks >= FAILED_CHECKS:
                 if source == 'tidal':
-                    self.attempted = False
+                    self.attempts = 0
                 if self.report['source'] in (None, source) or self.report['fault'] == 'dac_output_stalled':
-                    self.report = dict(fault=None, recovery=None, source=None)
+                    self.report = dict(fault=None, recovery=None, source=None, attempts=0)
             return
         self.checks += 1
         if self.checks < FAILED_CHECKS:
@@ -104,16 +109,24 @@ class AudioWatch:
         if self.report['fault'] != fault:
             logging.warning('Audio watchdog: %s during %s playback (DSP %s, PCM %s → %s)',
                             fault, source, dsp_state, old, new)
-            self.report = dict(fault=fault, recovery='operator_needed', source=source)
-        if fault == 'tidal_input_stalled' and self.auto_recover and not self.attempted:
-            self.attempted = True
-            try:
-                self.recover_tidal(new)
-            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
-                logging.warning('Audio watchdog recovery refused or failed: %s', error)
-                self.report = dict(fault=fault, recovery='failed', source=source)
-            else:
-                self.report = dict(fault=None, recovery='ready_to_resume', source=source)
+            self.report = dict(fault=fault, recovery='operator_needed', source=source, attempts=0)
+        if fault != 'tidal_input_stalled' or not self.auto_recover:
+            return
+        if self.attempts >= MAX_RETRIES:
+            if self.report['recovery'] != 'failed':
+                logging.warning('Tidal input is still stalled after %s retries', self.attempts)
+                self.report = dict(self.report, recovery='failed', attempts=self.attempts)
+            return
+        self.attempts += 1
+        self.report = dict(self.report, recovery='retrying', attempts=self.attempts)
+        try:
+            self.recover_tidal(new)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+            logging.warning('Tidal input retry %s/%s could not complete: %s', self.attempts, MAX_RETRIES, error)
+        else:
+            logging.info('Tidal input retry %s/%s resumed MPD. Checking PCM progress.',
+                         self.attempts, MAX_RETRIES)
+        self.previous = None
 
     def recover_tidal(self, last_pcm):
         server = self.server
@@ -127,8 +140,6 @@ class AudioWatch:
                     raise RuntimeError('Auto Tune ownership is not clear')
                 with server.DSP() as dsp:
                     server.approved(dsp)
-                    preset = dsp.call('GetConfigFilePath')
-                    volume = dsp.call('GetVolume')
                     loaded = json.loads(dsp.call('GetConfigJson'))
                     if (source_metadata(loaded)['id'] != 'tidal' or dsp.call('GetState') != 'Stalled'
                             or loaded['devices']['playback']['device'] != DAC_DEVICE):
@@ -147,23 +158,21 @@ class AudioWatch:
                     if not self._tidal_has_control():
                         raise RuntimeError('Another receiver is preparing')
                     self.lease.check_lock()
-                    dsp.call('SetMute', True)
-                    if dsp.call('GetMute') is not True:
-                        raise RuntimeError('Speaker mute could not be verified')
+                try:
                     server.mpd('pause 1')
-                    paused = dict(server.mpd('status')[0])
-                    if paused.get('state') != 'pause' or any(paused.get(k) != current.get(k)
-                                                             for k in ('playlist', 'songid')):
-                        raise RuntimeError('Could not preserve the Tidal queue and position')
                     self.sleep(.4)
                     if self.read_pcm()[0] != CLOSED:
-                        raise RuntimeError('MPD did not release the Loopback playback device')
-                    if dsp.call('GetMute') is not True:
-                        raise RuntimeError('Speaker mute changed during recovery')
-                    if (dsp.call('GetConfigFilePath') != preset or dsp.call('GetVolume') != volume
-                            or json.loads(dsp.call('GetConfigJson')) != loaded):
-                        raise RuntimeError('The DSP configuration changed during recovery')
-                logging.info('Audio watchdog paused Tidal and released its stalled input. Ready for Play.')
+                        raise RuntimeError('MPD Loopback release could not be verified')
+                finally:
+                    # Even an interrupted pause command may have reached MPD.
+                    paused = dict(server.mpd('status')[0])
+                    if (paused.get('state') != 'pause'
+                            or any(paused.get(key) != current[key] for key in ('playlist', 'songid'))):
+                        raise RuntimeError('MPD is no longer paused on the same track and queue')
+                    self.lease.check_lock()
+                    resumed = dict(server.mpd('pause 0', 'status')[1])
+                    if resumed.get('state') != 'play':
+                        raise RuntimeError('MPD did not resume playback')
             finally:
                 self.lease.release()
 
@@ -174,7 +183,7 @@ class AudioWatch:
                 self.tick()
             except (OSError, RuntimeError, ValueError, KeyError, TypeError):
                 self.previous = self.suspect = None
-                self.checks = 0
+                self.checks = self.healthy_checks = 0
                 if not warned:
                     logging.exception('Audio watchdog could not read the audio state')
                 warned = True

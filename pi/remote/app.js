@@ -66,10 +66,9 @@ function renderSources(next){
     if(next.capture_stalled)$('source-status').textContent='Playback has started, but the speaker DSP is receiving no audio.';
     const health=next.audio_health;
     const tidalFault=next.source==='tidal'&&health?.fault==='tidal_input_stalled';
-    if(tidalFault)$('source-status').textContent=health.recovery==='failed'?
+    if(tidalFault)$('source-status').textContent=health.recovery==='retrying'?
+      `Retrying Tidal input (attempt ${health.attempts}).`:health.recovery==='failed'?
       'Tidal input recovery could not complete. Check the Octet logs.':'Tidal audio is not reaching the DSP. Check the Octet logs.';
-    if(next.source==='tidal'&&next.playback==='pause'&&health?.recovery==='ready_to_resume')
-      $('source-status').textContent='Tidal input released. Press Play to retry, then unmute when ready.';
     if(next.dac_stalled)$('source-status').textContent='The DAC output stopped advancing. Check the Octet kernel log.';
     $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.capture_stalled)||Boolean(next.dac_stalled)||tidalFault);
   }

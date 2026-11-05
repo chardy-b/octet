@@ -20,9 +20,7 @@ class AudioWatchTests(unittest.TestCase):
                                         playback=dict(device=DAC_DEVICE)))
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
-        self.values = dict(GetConfigJson=json.dumps(self.config), GetState='Stalled',
-                           GetConfigFilePath='/preset.yml', GetVolume=-36, GetMute=True,
-                           SetMute=None)
+        self.values = dict(GetConfigJson=json.dumps(self.config), GetState='Stalled')
         self.dsp.call.side_effect = lambda name, *args: self.values[name]
         self.player = dict(state='play', playlist='12', songid='3', elapsed='21.4')
         self.samples = Mock()
@@ -37,10 +35,13 @@ class AudioWatchTests(unittest.TestCase):
         self.watch = AudioWatch(self.server, auto_recover=True, read_pcm=self.samples, sleep=Mock())
         self.watch.lease = Mock()
 
-    def mpd(self, command):
-        if command == 'pause 1':
-            self.player['state'] = 'pause'
-        return [list(self.player.items())]
+    def mpd(self, *commands):
+        replies = []
+        for command in commands:
+            if command in ('pause 1', 'pause 0'):
+                self.player['state'] = 'pause' if command == 'pause 1' else 'play'
+            replies.append(list(self.player.items()) if command == 'status' else [])
+        return replies
 
     def ticks(self, samples):
         self.samples.side_effect = samples
@@ -86,23 +87,35 @@ class AudioWatchTests(unittest.TestCase):
         self.assertEqual(self.watch.report['recovery'], 'operator_needed')
         self.watch.lease.acquire.assert_not_called()
 
-    def test_rearms_once_muted_and_keeps_the_same_track_queue_and_preset(self):
+    def test_resumes_same_track_and_queue_without_changing_dsp(self):
         with self.assertLogs(level='INFO'):
             self.ticks(self.stalled_input() + [(CLOSED, running(1), running(5))])
-        self.assertEqual(self.watch.report['recovery'], 'ready_to_resume')
-        self.assertEqual(self.player, dict(state='pause', playlist='12', songid='3', elapsed='21.4'))
-        self.assertEqual([entry for entry in self.dsp.call.call_args_list if entry.args[0].startswith('Set')],
-                         [call('SetMute', True)])
+        self.assertEqual(self.watch.report['recovery'], 'retrying')
+        self.assertEqual(self.watch.report['attempts'], 1)
+        self.assertEqual(self.player, dict(state='play', playlist='12', songid='3', elapsed='21.4'))
+        self.assertFalse(any(entry.args[0].startswith('Set') for entry in self.dsp.call.call_args_list))
         self.watch.lease.release.assert_called_once_with()
-        self.watch.tick()
-        self.player['state'] = 'play'
-        with self.assertLogs(level='WARNING'):
-            self.ticks(self.stalled_input(5))
-        self.assertEqual(self.server.mpd.call_args_list.count(call('pause 1')), 1)
         self.values['GetState'] = 'Running'
         self.ticks([(running(n), running(n, '124'), running(n, '125')) for n in range(10, 14)])
         self.assertIsNone(self.watch.report['fault'])
-        self.assertFalse(self.watch.attempted)
+        self.assertEqual(self.watch.attempts, 0)
+
+    def test_limits_retries_to_three_and_ignores_brief_recovery(self):
+        with self.assertLogs(level='INFO'):
+            for start in (0, 10, 20):
+                self.ticks(self.stalled_input(start) + [(CLOSED, running(1), running(start + 5))])
+                self.values['GetState'] = 'Running'
+                self.samples.side_effect = [(running(n), running(n, '124'), running(n, '125'))
+                                            for n in (start + 6, start + 7)]
+                self.watch.tick()
+                self.watch.tick()
+                self.values['GetState'] = 'Stalled'
+            self.ticks(self.stalled_input(30))
+            self.ticks(self.stalled_input(40))
+        self.assertEqual(self.watch.report['recovery'], 'failed')
+        self.assertEqual(self.watch.report['attempts'], 3)
+        self.assertEqual(self.server.mpd.call_args_list.count(call('pause 1')), 3)
+        self.assertEqual(self.server.mpd.call_args_list.count(call('pause 0', 'status')), 3)
 
     def test_refuses_recovery_when_receiver_owns_audio(self):
         self.server.BLUETOOTH_CONTROL.owns_audio.return_value = True
@@ -111,18 +124,24 @@ class AudioWatchTests(unittest.TestCase):
         self.watch.lease.acquire.assert_not_called()
         self.assertNotIn(call('pause 1'), self.server.mpd.call_args_list)
 
-    def test_pause_requires_verified_mute(self):
-        self.values['GetMute'] = False
-        with self.assertLogs(level='WARNING'):
-            self.ticks(self.stalled_input())
-        self.assertEqual(self.watch.report['recovery'], 'failed')
-        self.assertNotIn(call('pause 1'), self.server.mpd.call_args_list)
+    def test_does_not_resume_if_the_track_changed_while_paused(self):
+        def replace_track(seconds):
+            if seconds == .4:
+                self.player['songid'] = '4'
 
-    def test_unreadable_device_after_pause_is_not_a_verified_release(self):
+        self.watch.sleep.side_effect = replace_track
         with self.assertLogs(level='WARNING'):
-            self.ticks(self.stalled_input() + [(None, running(1), running(5))])
+            self.ticks(self.stalled_input() + [(CLOSED, running(1), running(5))])
+        self.watch.tick()
         self.assertEqual(self.watch.report['recovery'], 'failed')
-        self.assertNotIn(call('SetMute', False), self.dsp.call.call_args_list)
+        self.assertNotIn(call('pause 0', 'status'), self.server.mpd.call_args_list)
+
+    def test_unreadable_device_after_pause_still_resumes_the_same_track(self):
+        with self.assertLogs(level='WARNING') as logs:
+            self.ticks(self.stalled_input() + [(None, running(1), running(5))])
+        self.assertIn('Loopback release could not be verified', logs.output[-1])
+        self.assertEqual(self.player['state'], 'play')
+        self.assertEqual(self.watch.report['attempts'], 1)
 
 
 if __name__ == '__main__':

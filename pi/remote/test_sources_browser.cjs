@@ -109,9 +109,10 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#now-playing-details').isHidden(),true);
     assert.match(await page.locator('#source-status').textContent(),/DAC output stopped advancing/);
-    state={...state,dac_stalled:false,playback:'pause',audio_health:{recovery:'ready_to_resume'}};
+    state={...state,dac_stalled:false,playback:'play',audio_health:{
+      fault:'tidal_input_stalled',recovery:'retrying',attempts:2}};
     await page.evaluate(()=>refresh());
-    assert.match(await page.locator('#source-status').textContent(),/Press Play to retry/);
+    assert.match(await page.locator('#source-status').textContent(),/Retrying Tidal input \(attempt 2\)/);
     assert.equal(await page.locator('#mute').textContent(),'Unmute');
     delete state.audio_health;
     state={...state,playback:'stop',capture_stalled:false};

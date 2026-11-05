@@ -88,10 +88,12 @@ fault. Idle Tidal playback does not trigger the watchdog.
 
 The watchdog starts in observe-only mode. After attended validation, set
 `Environment=OCTET_AUDIO_RECOVERY=1` in an `octet-remote.service` drop-in under
-`[Service]` to opt in to one Tidal rearm per fault. Apply it during a muted
-maintenance window. The watchdog confirms mute, pauses Tidal and verifies that
-MPD released its ALSA output. Press Play to reopen the input, then unmute
-deliberately. Check `audio_health.recovery` for `ready_to_resume` or `failed`.
+`[Service]` to opt in to up to three Tidal input retries per stall. Apply the
+drop-in during a muted maintenance window. Each retry pauses and resumes the
+same track through MPD while preserving the queue and the current DSP mute and
+volume. It checks that the ALSA output was released and waits for PCM progress
+before retrying. Sustained healthy playback resets the retry count. Check
+`audio_health.recovery` and `audio_health.attempts` for progress.
 
 For `dac_output_stalled`, save the status and recent `journalctl -k -b` output
 before changing the route. Check for repeated DMA errors on the I2S transmit
