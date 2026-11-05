@@ -30,7 +30,8 @@ class BluetoothUiTests(unittest.TestCase):
         control = self.control()
         with fixture() as (origin, baseline, tuning, dsp, *rest), \
                 patch.object(server, 'BLUETOOTH_CONTROL', control), \
-                patch.object(server, 'bluetooth_addresses', return_value=('AA:BB:CC:DD:EE:FF',)):
+                patch.object(server, 'bluetooth_devices', return_value=[
+                    dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
             server.action('source', {'id': 'bluetooth'})
         control.start.assert_called_once_with('AA:BB:CC:DD:EE:FF')
         self.assertIn(('SetMute', True), dsp.calls)
@@ -40,7 +41,9 @@ class BluetoothUiTests(unittest.TestCase):
         control = self.control()
         held = []
         control.start.side_effect = lambda address: held.append(self.lock_free())
-        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control),                 patch.object(server, 'bluetooth_addresses', return_value=('AA:BB:CC:DD:EE:FF',)):
+        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control), \
+                patch.object(server, 'bluetooth_devices', return_value=[
+                    dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
             server.action('source', {'id': 'bluetooth'})
         self.assertEqual(held, [True])
 
@@ -58,14 +61,21 @@ class BluetoothUiTests(unittest.TestCase):
         thread.join()
         return got[0]
 
-    def test_start_tries_each_allowed_phone_and_reports_the_last_refusal(self):
+    def test_start_skips_disconnected_phones_and_reports_the_connected_failure(self):
         control = self.control()
-        control.start.side_effect = [RuntimeError('first not connected'), RuntimeError('second not connected')]
+        control.start.side_effect = RuntimeError('Playback PCM is not RUNNING')
+        devices = [dict(address='A', paired=True, connected=True),
+                   dict(address='B', paired=True, connected=False),
+                   dict(address='C', paired=False, connected=True)]
         with patch.object(server, 'BLUETOOTH_CONTROL', control), \
-                patch.object(server, 'bluetooth_addresses', return_value=('A', 'B')):
-            with self.assertRaisesRegex(RuntimeError, 'second not connected'):
+                patch.object(server, 'bluetooth_devices', return_value=devices):
+            with self.assertRaisesRegex(RuntimeError, 'Playback PCM is not RUNNING'):
                 server.start_bluetooth()
-        with patch.object(server, 'bluetooth_addresses', return_value=()), \
+            control.start.assert_called_once_with('A')
+        with patch.object(server, 'bluetooth_devices', return_value=devices[1:]), \
+                self.assertRaisesRegex(RuntimeError, 'Connect a paired phone'):
+            server.start_bluetooth()
+        with patch.object(server, 'bluetooth_devices', return_value=[]), \
                 self.assertRaisesRegex(RuntimeError, 'Pair a phone'):
             server.start_bluetooth()
 

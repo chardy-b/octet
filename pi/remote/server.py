@@ -1172,9 +1172,12 @@ def set_bluetooth_discoverable(enabled):
 
 
 def start_bluetooth():
-    addresses = bluetooth_addresses()
-    if not addresses:
+    paired = [device for device in bluetooth_devices() if device['paired']]
+    if not paired:
         raise RuntimeError('Pair a phone with Octet first')
+    addresses = [device['address'] for device in paired if device['connected']]
+    if not addresses:
+        raise RuntimeError('Connect a paired phone to Octet first')
     error = None
     for address in addresses:
         try:
