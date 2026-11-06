@@ -289,9 +289,92 @@ def track_id(value):
 
 
 def playlist_id(value):
+    if isinstance(value, str) and value.startswith('mix:'):
+        return 'mix:' + mix_id(value[4:])
     if not isinstance(value, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', value):
         raise ValueError('Invalid playlist')
     return str(uuid.UUID(value))
+
+
+def mix_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
+        raise ValueError('Invalid Tidal mix')
+    return value
+
+
+def mix_summary(mix):
+    try:
+        cover = mix.image(320)
+        if not cover.startswith('https://resources.tidal.com/'):
+            cover = ''
+    except (AttributeError, ValueError):
+        cover = ''
+    return dict(id='mix:' + mix_id(mix.id), title=mix.title, kind='mix', tracks=None,
+                creator='TIDAL', cover=cover)
+
+
+def my_mixes():
+    import tidalapi
+    with TIDAL_LOCK:
+        page = tidal().mixes()
+        mixes = {}
+        for category in page.categories or []:
+            for item in getattr(category, 'items', []) or []:
+                if isinstance(item, (tidalapi.Mix, tidalapi.MixV2)):
+                    if getattr(item.mix_type, 'value', item.mix_type) == 'VIDEO_DAILY_MIX':
+                        continue
+                    summary = mix_summary(item)
+                    mixes[summary['id']] = summary
+        return dict(mixes=list(mixes.values()))
+
+
+def mix_tracks(mix):
+    import tidalapi
+    items = mix.items()
+    if len(items) > MAX_PLAYLIST_TRACKS:
+        raise ValueError('This mix exceeds the 10,000-track queue limit')
+    rows, unavailable = [], 0
+    for track in items:
+        if not isinstance(track, tidalapi.Track) or getattr(track, 'available', True) is False:
+            unavailable += 1
+        else:
+            rows.append(remember(track))
+    return rows, unavailable
+
+
+def mix_contents(identifier, refresh=False):
+    with TIDAL_LOCK:
+        cached = PLAYLIST_CACHE.get(identifier)
+        if not refresh and cached and time.monotonic() - cached[0] < PLAYLIST_CACHE_SECONDS:
+            return cached[1]
+        mix = tidal().mix(mix_id(identifier[4:]))
+        rows, unavailable = mix_tracks(mix)
+        summary = dict(mix_summary(mix), tracks=len(rows))
+        result = dict(playlist=summary, tracks=rows, unavailable=unavailable)
+        PLAYLIST_CACHE[identifier] = (time.monotonic(), result)
+        return result
+
+
+def play_radio(data):
+    identifier = track_id(data.get('id'))
+    with TIDAL_LOCK:
+        seed = tidal().track(int(identifier))
+        if getattr(seed, 'available', True) is False:
+            raise RuntimeError('This song is unavailable on Tidal')
+        mix = seed.get_radio_mix()
+        recommendations, _ = mix_tracks(mix)
+        seen = {identifier}
+        rows = [remember(seed)]
+        for row in recommendations:
+            if row['id'] not in seen:
+                rows.append(row)
+                seen.add(row['id'])
+        if len(rows) == 1:
+            raise RuntimeError('Tidal has no available radio recommendations for this song')
+        if len(rows) > MAX_PLAYLIST_TRACKS:
+            raise ValueError('This radio exceeds the 10,000-track queue limit')
+    return play_context(rows, 0, dict(kind='radio', id=identifier, mix_id=mix_id(mix.id),
+                                     title='Radio · ' + rows[0]['title']))
 
 
 def playlist_summary(playlist):
@@ -317,6 +400,8 @@ def playlist_page(offset=0):
 
 def playlist_contents(identifier, refresh=False):
     identifier = playlist_id(identifier)
+    if identifier.startswith('mix:'):
+        return mix_contents(identifier, refresh)
     with TIDAL_LOCK:
         cached = PLAYLIST_CACHE.get(identifier)
         if not refresh and cached and time.monotonic() - cached[0] < PLAYLIST_CACHE_SECONDS:
@@ -360,7 +445,7 @@ def play_playlist(data):
         raise ValueError('Invalid playlist position')
     if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
         raise RuntimeError('The playlist changed. Reopen it before selecting a track.')
-    return play_context(rows, position, dict(kind='playlist', id=identifier,
+    return play_context(rows, position, dict(kind=contents['playlist'].get('kind', 'playlist'), id=identifier,
                                             title=contents['playlist'].get('title', 'Playlist')))
 
 
@@ -1294,6 +1379,8 @@ def _action(name, data):
         raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before using music or manual DSP controls.')
     if name == 'play-playlist':
         return play_playlist(data)
+    if name == 'play-radio':
+        return play_radio(data)
     if name == 'play-album':
         return play_album(data)
     with LOCK:
@@ -1651,6 +1738,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == '/api/playlists':
                 offset = int(parse_qs(parsed.query).get('offset', ['0'])[0])
                 return self.send(playlist_page(offset))
+            if parsed.path == '/api/mixes':
+                return self.send(my_mixes())
             if parsed.path == '/api/playlist':
                 query = parse_qs(parsed.query)
                 return self.send(playlist_contents(query.get('id', [''])[0], refresh=query.get('refresh') == ['1']))

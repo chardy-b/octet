@@ -22,7 +22,13 @@ const status={ready:true,source:'tidal',source_label:'Tidal',sources:[],source_s
       if(p==='/api/favorites')return route.fulfill({json:{tracks:[song(4),song(5)]}});
       if(p==='/api/album')return route.fulfill({json:{tracks:[song(10),song(11),song(12)],album:{id:'99',title:'An album'}}});
       if(p==='/api/playlists')return route.fulfill({json:{playlists:[{id:'saved',title:'Evening playlist',creator:'Listener',tracks:3}],has_more:false}});
-      if(p==='/api/playlist')return route.fulfill({json:{playlist:{id:'saved',title:'Evening playlist'},tracks:[song(1),song(2),song(3)]}});
+      if(p==='/api/mixes')return route.fulfill({json:{mixes:[
+        {id:'mix:daily_1',title:'My Mix 1',creator:'TIDAL',kind:'mix',tracks:null},
+        {id:'mix:daily_2',title:'My Mix 2',creator:'TIDAL',kind:'mix',tracks:null}]}});
+      if(p==='/api/playlist'){
+        const id=new URL(request.url()).searchParams.get('id'),mix=id.startsWith('mix:');
+        return route.fulfill({json:{playlist:{id,title:mix?'My Mix 1':'Evening playlist',kind:mix?'mix':'playlist'},tracks:[song(1),song(2),song(3)]}});
+      }
       if(p.startsWith('/api/'))return route.fulfill({json:{available:false,inputs:[],outputs:[]}});
       const file=p==='/'?'index.html':p.slice(1);
       if(!['index.html','app.js','volume.js','style.css','input-levels.js'].includes(file))return route.fulfill({status:404,body:''});
@@ -47,6 +53,9 @@ const status={ready:true,source:'tidal',source_label:'Tidal',sources:[],source_s
       await page.screenshot({path:path.join(__dirname,'../../out/queue-'+width+'.png'),fullPage:true});
       await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/control/enqueue')),page.getByRole('button',{name:'Add to queue: Song 4',exact:true}).click()]);
       assert.deepEqual(writes.at(-1),{path:'/api/control/enqueue',body:{id:'4',placement:'end'}});
+      await page.locator('#tracks summary').first().click();
+      await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/control/play-radio')),page.getByRole('button',{name:'Start song radio: Song 4',exact:true}).click()]);
+      assert.deepEqual(writes.at(-1),{path:'/api/control/play-radio',body:{id:'4'}});
       await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/control/remove-queued')),page.getByRole('button',{name:'Remove Song 8 from queue',exact:true}).nth(1).click()]);
       await page.waitForFunction(()=>document.querySelector('#queue-count').textContent==='4');
       assert.deepEqual(writes.at(-1),{path:'/api/control/remove-queued',body:{song_id:'102'}});
@@ -66,6 +75,18 @@ const status={ready:true,source:'tidal',source_label:'Tidal',sources:[],source_s
       await page.locator('#tracks .track-title').nth(1).click();
       await page.waitForFunction(()=>!document.querySelector('#play-playlist').disabled);
       assert.deepEqual(writes.at(-1),{path:'/api/control/play-playlist',body:{id:'saved',position:1,track_id:'2'}});
+      await page.locator('#mixes').click();
+      await page.getByRole('button',{name:'Open playlist My Mix 1',exact:true}).waitFor();
+      assert.deepEqual(await page.locator('#tracks .track-title').allTextContents(),['My Mix 1','My Mix 2']);
+      assert.equal(await page.getByRole('button',{name:'Play all of My Mix 1',exact:true}).isEnabled(),true);
+      await page.getByRole('button',{name:'Open playlist My Mix 1',exact:true}).click();
+      await page.waitForFunction(()=>document.getElementById('playlist-meta').textContent.includes('mix order'));
+      assert.match(await page.locator('#playlist-meta').textContent(),/mix order/);
+      await page.locator('#tracks .track-title').nth(1).click();
+      await page.waitForFunction(()=>!document.querySelector('#play-playlist').disabled);
+      assert.deepEqual(writes.at(-1),{path:'/api/control/play-playlist',body:{id:'mix:daily_1',position:1,track_id:'2'}});
+      await page.locator('#library-back').click();
+      assert.equal(await page.locator('#mixes').getAttribute('aria-pressed'),'true');
     }
     assert.deepEqual(errors,[]);
     console.log('Queue browser checks passed on desktop/mobile: next/end requests, queue sections, duplicate removal, clear preserving autoplay, album and playlist context selection, no layout overflow.');

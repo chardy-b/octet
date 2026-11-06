@@ -35,6 +35,16 @@ const titles=app=>app.elements.get('tracks').children.map(row=>row.children[1].c
   assert.deepEqual(titles(list),['Playlist b','Playlist a']);
   assert.equal(list.requests.filter(r=>r.url.includes('/api/playlists')).length,0);
 
+  const mixes=freshCache();
+  mixes.mixes=[{id:'mix:daily_1',title:'My Mix 1',creator:'TIDAL',kind:'mix',tracks:null}];
+  mixes.mixesUpdatedAt=Date.now();
+  mixes.contents['mix:daily_1']={data:{...tracks('mix:daily_1'),playlist:mixes.mixes[0]},updatedAt:Date.now()};
+  const mixPage=boot(mixes,{view:'playlist',id:'mix:daily_1'});
+  await mixPage.elements.get('library-back').onclick();
+  assert.deepEqual(titles(mixPage),['My Mix 1']);
+  assert.equal(mixPage.elements.get('mixes').attributes['aria-pressed'],'true');
+  assert.equal(mixPage.requests.filter(r=>r.url==='/api/mixes').length,0);
+
   const paged=boot(null,{view:'playlists'});
   paged.requests.find(r=>r.url==='/api/playlists?offset=0').resolve({playlists:[playlist('a'),playlist('b')],has_more:true,next_offset:2});
   await flush();
