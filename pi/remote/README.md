@@ -172,6 +172,24 @@ remains muted. Each candidate is checked by CamillaDSP before activation. A fail
 activation restores the previous source and stays muted. A disconnected source is
 shown as unavailable.
 
+Ordinary input/profile changes also hold Auto Tune's shared `audio.lock`. Their
+`source-recovery.json` journal and hashed snapshots are durable before replacing
+the running files. A failed change restores the exact previous path, configuration
+and running DSP while muted. If that restore fails, recovery evidence and the
+lease remain held; the watchdog and later controls retry it. Auto Tune refuses a
+pending input journal even after a remote-service restart. Stop tones stays
+available during recovery. Fresh installs provision the stable lock inode; never
+delete or replace it to bypass an ownership error.
+
+Tidal metadata preparation runs outside the audio control lock, with bounded
+connect/read timeouts. Audio stream resolution uses a separate SDK session so
+browsing cannot block the next track. A newer transport command, cast or explicit
+mute cancels an older pending play request. With `OCTET_AUDIO_RECOVERY=1`, a failed
+watchdog resume retains its own paused-track intent and retries up to three times
+without changing DSP mute or level. A user pause, stop, queue or input change
+cancels that intent; level changes preserve it. DAC output stalls are reported
+separately and never trigger an unverified hardware reset.
+
 Choosing another saved profile on the DSP page does not interrupt playback: the
 remote builds the new profile with the input in use and CamillaDSP reloads it in
 place (same input, so the stream keeps running). Nothing is muted, paused or
@@ -838,6 +856,14 @@ Other Music-page playback controls stop Bluetooth muted. When the phone stops st
 Tidal. A phone already playing when octet-remote (or BlueZ/BlueALSA) starts is
 picked up once, after the same identity checks. Any saved profile works; the
 phone's route is built by `dsp_inputs.with_input(profile, 'bluetooth', ...)`.
+
+A failed automatic Bluetooth route can rebuild up to three times on the same
+validated stream generation. Each attempt waits for the old bridge to be reaped
+and its rollback verified, then repeats identity, lease, exact route and fresh
+PCM checks at the protected level. A Music-page mute survives the rebuild;
+muting after a failed session cancels its pending retry. A different input or lost
+generation cancels retries. Discovery retries a transient startup snapshot failure
+every two seconds without re-admitting streams deliberately released or stopped.
 
 **WirePlumber.** The fragment disables only WirePlumber's BlueZ monitor so
 PipeWire never claims the phone's audio. Restarting WirePlumber while MPD and

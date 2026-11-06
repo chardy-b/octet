@@ -15,7 +15,7 @@ from .. import peq
 
 
 @contextmanager
-def exclusive(path):
+def exclusive(path, *, recovery_journal=Path('/var/lib/octet-dsp/source-recovery.json')):
     """An OS lock, released even if the process crashes."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a+b') as handle:
@@ -33,6 +33,8 @@ def exclusive(path):
         except OSError as e:
             raise RuntimeError('Another Octet process owns the audio devices.') from e
         try:
+            if Path(path).name == 'audio.lock' and (recovery_journal.exists() or recovery_journal.is_symlink()):
+                raise RuntimeError('An input change is still recovering. Restore Octet playback before tuning.')
             yield
         finally:
             if os.name == 'nt':

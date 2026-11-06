@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import server
 from test_source_switching import SourceSwitching
@@ -33,14 +33,16 @@ class BluetoothUiTests(unittest.TestCase):
                 patch.object(server, 'bluetooth_devices', return_value=[
                     dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
             server.action('source', {'id': 'bluetooth'})
-        control.start.assert_called_once_with('AA:BB:CC:DD:EE:FF')
-        self.assertIn(('SetMute', True), dsp.calls)
+        control.start.assert_called_once_with('AA:BB:CC:DD:EE:FF', intent=ANY)
+        # The guarded controller owns muting; the dispatcher must not touch the
+        # DSP before the controller has acquired its shared audio lease.
+        self.assertNotIn(('SetMute', True), dsp.calls)
         self.assertNotIn(('SetMute', False), dsp.calls)
 
     def test_bluetooth_start_runs_without_holding_the_server_lock(self):
         control = self.control()
         held = []
-        control.start.side_effect = lambda address: held.append(self.lock_free())
+        control.start.side_effect = lambda address, **kwargs: held.append(self.lock_free())
         with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control), \
                 patch.object(server, 'bluetooth_devices', return_value=[
                     dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
@@ -60,6 +62,19 @@ class BluetoothUiTests(unittest.TestCase):
         thread.start()
         thread.join()
         return got[0]
+
+    def test_mute_cancels_a_manual_bluetooth_selection_waiting_for_identity(self):
+        control = self.control()
+        valid_after_mute = []
+        def start(address, *, intent):
+            server.action('mute', {'muted': True})
+            valid_after_mute.append(intent())
+        control.start.side_effect = start
+        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control), \
+                patch.object(server, 'bluetooth_devices', return_value=[
+                    dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
+            server.action('source', {'id': 'bluetooth'})
+        self.assertEqual(valid_after_mute, [False])
 
     def test_start_skips_disconnected_phones_and_reports_the_connected_failure(self):
         control = self.control()

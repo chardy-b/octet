@@ -143,6 +143,50 @@ class AudioWatchTests(unittest.TestCase):
         self.assertEqual(self.player['state'], 'play')
         self.assertEqual(self.watch.report['attempts'], 1)
 
+    def test_failed_resume_retries_up_to_three_times_without_another_play_click(self):
+        calls = 0
+        def fail_resume(*commands):
+            nonlocal calls
+            if commands[0] == 'pause 0':
+                calls += 1
+                if calls < 3:
+                    raise TimeoutError('MPD temporarily unavailable')
+            return self.mpd(*commands)
+        self.server.mpd.side_effect = fail_resume
+        with self.assertLogs(level='WARNING'):
+            self.ticks(self.stalled_input() + [(CLOSED, running(1), running(5))])
+            self.watch.tick()
+        self.watch.tick()
+        self.assertEqual((calls, self.watch.attempts, self.player['state']), (3, 3, 'play'))
+        self.assertIsNone(self.watch.resume_pending)
+        self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
+
+    def test_user_pause_cancels_pending_resume_even_on_the_same_song(self):
+        self.server.mpd.side_effect = lambda *commands: (_ for _ in ()).throw(TimeoutError()) if commands[0] == 'pause 0' else self.mpd(*commands)
+        with self.assertLogs(level='WARNING'):
+            self.ticks(self.stalled_input() + [(CLOSED, running(1), running(5))])
+        self.server.AUDIO_INTENT = 1
+        self.watch.tick()
+        self.assertIsNone(self.watch.resume_pending)
+        self.assertEqual(self.player['state'], 'pause')
+        self.assertEqual(self.server.mpd.call_args_list.count(call('pause 0', 'status')), 1)
+
+    def test_level_change_does_not_cancel_our_pending_resume(self):
+        attempts = 0
+        def resume(*commands):
+            nonlocal attempts
+            if commands[0] == 'pause 0':
+                attempts += 1
+                if attempts == 1:
+                    raise TimeoutError()
+            return self.mpd(*commands)
+        self.server.mpd.side_effect = resume
+        with self.assertLogs(level='WARNING'):
+            self.ticks(self.stalled_input() + [(CLOSED, running(1), running(5))])
+        self.server.CONTROL_GENERATION = 1  # Mute/level changes aren't transport intent.
+        self.watch.tick()
+        self.assertEqual((attempts, self.player['state']), (2, 'play'))
+
 
 if __name__ == '__main__':
     unittest.main()

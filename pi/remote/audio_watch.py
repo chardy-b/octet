@@ -47,6 +47,57 @@ class AudioWatch:
         self.suspect = None
         self.checks = self.healthy_checks = self.attempts = 0
         self.report = dict(fault=None, recovery=None, source=None, attempts=0)
+        self.resume_pending = None
+
+    def _resume_matches(self, status):
+        pending = self.resume_pending
+        return (pending is not None and self._tidal_has_control()
+                and pending['generation'] == getattr(self.server, 'AUDIO_INTENT', 0)
+                and all(status.get(key) == pending[key] for key in ('playlist', 'songid')))
+
+    def _resume(self):
+        """Retry only our own pause; a user command or queue change cancels it."""
+        status = dict(self.server.mpd('status')[0])
+        if not self._resume_matches(status) or status.get('state') != 'pause':
+            self.resume_pending = None
+            raise RuntimeError('MPD is no longer paused on the same track and queue')
+        self.lease.check_lock()
+        resumed = dict(self.server.mpd('pause 0', 'status')[1])
+        if resumed.get('state') != 'play':
+            raise RuntimeError('MPD did not resume playback')
+        self.resume_pending = None
+
+    def _retry_resume(self):
+        with self.server.LOCK:
+            status = dict(self.server.mpd('status')[0])
+            if not self._resume_matches(status) or status.get('state') not in ('pause', 'play'):
+                self.resume_pending = None
+                self.report = dict(self.report, recovery='failed')
+                return
+            if status['state'] == 'play':
+                self.resume_pending = None  # The timed-out resume actually reached MPD.
+                return
+            if self.attempts >= MAX_RETRIES:
+                self.resume_pending = None
+                self.report = dict(self.report, recovery='failed')
+                return
+            self.attempts += 1
+            self.report = dict(self.report, recovery='retrying', attempts=self.attempts)
+            try:
+                self.lease.acquire()
+                if self.server.TUNING.status().get('audio_owned') is not False:
+                    raise RuntimeError('Auto Tune ownership is not clear')
+                with self.server.DSP() as dsp:
+                    self.server.approved(dsp)
+                    config = json.loads(dsp.call('GetConfigJson'))
+                    if source_metadata(config)['id'] != 'tidal':
+                        self.resume_pending = None
+                        raise RuntimeError('Tidal route changed during recovery')
+                self._resume()
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+                logging.warning('Tidal resume retry %s/%s failed: %s', self.attempts, MAX_RETRIES, error)
+            finally:
+                self.lease.release()
 
     def _tidal_has_control(self):
         airplay = self.server.AIRPLAY_CONTROL
@@ -56,6 +107,12 @@ class AudioWatch:
                 and not self.server.BLUETOOTH_CONTROL.owns_audio())
 
     def tick(self):
+        recover = getattr(self.server, 'recover_source', None)
+        if recover is not None:
+            recover()
+        if self.resume_pending is not None:
+            self._retry_resume()
+            return
         with self.server.DSP() as dsp:
             config = json.loads(dsp.call('GetConfigJson'))
             source = source_metadata(config)['id']
@@ -159,20 +216,15 @@ class AudioWatch:
                         raise RuntimeError('Another receiver is preparing')
                     self.lease.check_lock()
                 try:
+                    self.resume_pending = dict(playlist=current['playlist'], songid=current['songid'],
+                                               generation=getattr(server, 'AUDIO_INTENT', 0))
                     server.mpd('pause 1')
                     self.sleep(.4)
                     if self.read_pcm()[0] != CLOSED:
                         raise RuntimeError('MPD Loopback release could not be verified')
                 finally:
                     # Even an interrupted pause command may have reached MPD.
-                    paused = dict(server.mpd('status')[0])
-                    if (paused.get('state') != 'pause'
-                            or any(paused.get(key) != current[key] for key in ('playlist', 'songid'))):
-                        raise RuntimeError('MPD is no longer paused on the same track and queue')
-                    self.lease.check_lock()
-                    resumed = dict(server.mpd('pause 0', 'status')[1])
-                    if resumed.get('state') != 'play':
-                        raise RuntimeError('MPD did not resume playback')
+                    self._resume()
             finally:
                 self.lease.release()
 

@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -44,6 +45,47 @@ class FakeController:
         self.calls.append(('stop', gen))
         self.stopped.set()
 
+    def status(self):
+        return dict(active=bool(self.unmuted) and self.error is None,
+                    preparing=False, recovery_pending=False, error=self.error)
+
+
+class AutomaticRetryTests(unittest.TestCase):
+    def test_failed_route_retries_three_times_and_manual_input_cancels_it(self):
+        controller = FakeController()
+        controller.server = SimpleNamespace(AUDIO_INTENT=0)
+        runtime = AutoBluetooth(controller)
+        self.addCleanup(runtime.close)
+        gen = generation()
+        runtime.on_generation(gen)
+        # Drive the worker deterministically, with no real thread or audio.
+        runtime._handle('start', gen, runtime._control_intent())
+        controller.error = RuntimeError('Playback PCM is not RUNNING (XRUN)')
+        for _ in range(5):
+            runtime._retry_at = 0
+            runtime._retry()
+        self.assertEqual(len([call for call in controller.calls if call[0] == 'start']), 4)
+        self.assertEqual(runtime._attempts, 3)
+        runtime._attempts = 0
+        controller.server.AUDIO_INTENT += 1
+        runtime._retry()
+        self.assertEqual(runtime._attempts, 0)
+
+    def test_lost_generation_and_pending_rollback_never_retry(self):
+        controller = FakeController()
+        runtime = AutoBluetooth(controller)
+        self.addCleanup(runtime.close)
+        gen = generation()
+        runtime.on_generation(gen)
+        runtime._handle('start', gen, runtime._control_intent())
+        controller.status = lambda: dict(error='XRUN', recovery_pending=True)
+        runtime._retry()
+        self.assertEqual(runtime._attempts, 0)
+        controller.status = lambda: dict(error='XRUN', recovery_pending=False)
+        runtime.on_invalidate(gen, 'disconnected')
+        runtime._retry()
+        self.assertEqual(runtime._attempts, 0)
+
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -55,6 +97,19 @@ class RuntimeTests(unittest.TestCase):
     def drain(self):
         self.assertTrue(self.runtime.join(WAIT))
 
+    def test_stop_after_an_observed_edge_cancels_the_queued_start(self):
+        controller = FakeController()
+        controller.server = SimpleNamespace(AUDIO_INTENT=0)
+        runtime = AutoBluetooth(controller)
+        gen = generation()
+        runtime.on_generation(gen)
+        controller.server.AUDIO_INTENT += 1
+        record = runtime._queue.get_nowait()
+        runtime._handle(*record)
+        runtime._queue.task_done()
+        self.assertEqual(controller.calls, [])
+        self.assertEqual(controller.unmuted, [])
+
     def test_active_generation_queues_one_start_with_cached_validator(self):
         gen = generation()
         self.runtime.on_generation(gen)
@@ -63,6 +118,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.controller.calls, [('start', gen)])
         self.assertEqual(self.controller.unmuted, [gen])
         self.assertNotIn(threading.current_thread(), self.controller.threads)
+
+    def test_stop_during_initial_auto_start_cancels_delayed_activation(self):
+        self.controller.server = SimpleNamespace(AUDIO_INTENT=0)
+        self.controller.release.clear()
+        gen = generation()
+        self.runtime.on_generation(gen)
+        self.assertTrue(self.controller.started.wait(WAIT))
+        self.controller.server.AUDIO_INTENT += 1
+        self.controller.release.set()
+        self.drain()
+        self.assertEqual(self.controller.unmuted, [])
+        self.runtime._retry()
+        self.assertEqual(self.runtime._attempts, 0)
 
     def test_invalidation_during_blocked_start_is_synchronous_and_prevents_unmute(self):
         gen = generation()

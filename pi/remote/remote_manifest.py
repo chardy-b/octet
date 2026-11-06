@@ -45,6 +45,7 @@ REMOTE_FILES = (
     'visualizer.css',
     'README.md',
     'source_profiles.py',
+    'source_route.py',
     'volume.js',
     'visualizer_kiosk.py',
     'launch-visualizer.sh',

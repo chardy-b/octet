@@ -110,7 +110,7 @@ class AirPlayTests(unittest.TestCase):
                 self.assertEqual(self.path, str(self.profile))
                 self.assertFalse(self.control.active)
                 self.assertFalse(self.control.baseline.exists())
-                self.assertEqual(self.calls()[-1], ('SetMute', True))
+                self.assertEqual([call for call in self.calls() if call[0] == 'SetMute'][-1], ('SetMute', True))
 
             server.select_source.side_effect = verify_handoff
             server.action('source', {'id': 'tidal'})

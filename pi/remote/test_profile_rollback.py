@@ -27,6 +27,8 @@ class ProfileRollbackTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, 'CHANNEL_PROFILE', self.path))
         self.stack.enter_context(patch.object(server, 'DSP', return_value=self.dsp))
         self.stack.enter_context(patch.object(server, 'AIRPLAY_CONTROL', self.control))
+        self.stack.enter_context(patch.object(server, 'SOURCE_ROUTE', None))
+        self.stack.callback(lambda: server.SOURCE_ROUTE.release() if server.SOURCE_ROUTE is not None else None)
 
     def test_restore_order_and_atomic_visibility(self):
         events = []
@@ -155,6 +157,8 @@ class ProfileRollbackTests(unittest.TestCase):
                 if reload_fails:
                     raise RuntimeError('reload failed')
                 state['config'] = tidal
+            if name == 'GetMute':
+                return True
             return {'GetConfigFilePath': lambda: state['path'], 'GetConfigJson': lambda: json.dumps(state['config']),
                     'GetState': lambda: 'Running', 'ReadConfigJson': lambda: args[0], 'ReadConfig': lambda: args[0]}.get(name, lambda: None)()
         self.dsp.call.side_effect = call

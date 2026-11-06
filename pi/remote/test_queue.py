@@ -24,7 +24,7 @@ class Queue(unittest.TestCase):
         self.stack.enter_context(patch.object(server, 'CATALOG', {str(i): dict(id=str(i), title=f'Track {i}') for i in range(1, 20)}))
         self.stack.enter_context(patch.object(server, 'mpd', side_effect=self.player))
         self.stack.enter_context(patch.object(server, 'DSP', return_value=self.dsp))
-        self.stack.enter_context(patch.object(server.TUNING, 'status', return_value={}))
+        self.stack.enter_context(patch.object(server.TUNING, 'status', return_value={'audio_owned': False}))
         self.stack.enter_context(patch.object(server, 'discover_sources', return_value=[dict(id='tidal')]))
 
     def start(self, ids=(1, 2, 3), position=0):

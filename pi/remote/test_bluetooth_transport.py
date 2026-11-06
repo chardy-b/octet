@@ -83,6 +83,18 @@ class Base(unittest.TestCase):
 
 
 class AdmissionTests(Base):
+    def test_transient_snapshot_failure_recovers_without_an_owner_change(self):
+        with patch.object(self.bus, 'managed_objects', side_effect=TransportUnavailable('timeout')):
+            self.obs.start()
+        self.go_active()
+        self.assertEqual(self.gens, [])
+        self.obs.resync()
+        self.assertEqual(len(self.gens), 1)
+        self.obs.release(self.gens[0])
+        for _ in range(5):
+            self.obs.resync()
+        self.assertEqual(len(self.gens), 1)
+
     def test_fresh_active_edge_emits_pinned_generation(self):
         self.obs.start()
         self.go_active()

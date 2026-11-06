@@ -143,6 +143,7 @@ class RuntimeTests(unittest.TestCase):
     def test_manual_start_routes_sub2_unmutes_once_at_safe_level_and_stop_restores(self):
         status = self.control.start(MAC.lower())
         self.assertEqual(status, dict(active=True, preparing=False, recovery_pending=False, error=None))
+
         candidate = str(self.control.route.candidate)
         self.assertEqual(self.state['path'], candidate)
         self.assertEqual(self.state['config']['devices']['capture']['device'], 'hw:Loopback,1,2')
@@ -170,6 +171,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.control.status(), dict(active=False, preparing=False,
                                                      recovery_pending=False, error=None))
         self.assertEqual(self.state['mpd'], 'pause')
+
+    def test_superseded_manual_selection_cannot_take_over_after_identity_lookup(self):
+        current = [True]
+        def identity(*args):
+            current[0] = False  # A newer input was chosen while the bus read was pending.
+            return MAC
+        self.identity.side_effect = identity
+        with self.assertRaisesRegex(RuntimeError, 'cancelled by a newer control'):
+            self.control.start(MAC, intent=lambda: current[0])
+        self.assertNotIn(('SetMute', True), self.calls)
+        self.assertEqual(self.mpd_calls, [])
+        self.spawn.assert_not_called()
 
     def test_quieter_existing_level_is_kept(self):
         self.state['volume'] = -30.0
@@ -586,6 +599,41 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(self.control.status()['active'])
         self.assertIn('pause 1', self.mpd_calls)
         self.assertEqual(self.state['mpd'], 'pause')
+
+    def test_same_generation_retry_preserves_an_explicit_music_mute(self):
+        gen = self.generation()
+        self.auto(gen)
+        self.control.set_level(muted=True)
+        self.control.fail('Playback PCM is not RUNNING (XRUN)')
+        self.control._thread.join(5)
+        self.calls.clear()
+        self.auto(gen)
+        self.assertTrue(self.control.session.active)
+        self.assertTrue(self.control.session.muted)
+        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', False), self.calls)
+
+    def test_preparing_route_allows_stalled_dsp_while_muted_but_cannot_unmute(self):
+        self.frozen = True
+        errors = []
+        def start():
+            try:
+                self.auto()
+            except RuntimeError as error:
+                errors.append(error)
+        thread = threading.Thread(target=start)
+        thread.start()
+        self.wait_for(lambda: self.control.session is not None and self.control.session.expected is not None)
+        self.state['running'] = 'Stalled'
+        self.control.tick()
+        self.assertIsNotNone(self.control.session)
+        self.assertNotIn(('SetMute', False), self.calls)
+        self.state['running'] = 'Running'
+        self.frozen = False
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(self.control.session.active)
 
     def test_auto_refuses_unless_mpd_explicitly_stopped(self):
         for label, status in (('missing state', [['volume', '50']]), ('empty status', []),

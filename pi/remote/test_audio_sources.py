@@ -214,7 +214,11 @@ class AudioSources(unittest.TestCase):
                     if name == 'GetConfigJson':
                         return json.dumps(loaded)
                     if name in ('ReadConfigJson', 'ReadConfig'):
-                        return args[0]
+                        parsed = yaml.safe_load(args[0])
+                        parsed['devices']['capture']['labels'] = None
+                        return yaml.safe_dump(parsed)
+                    if name == 'GetMute':
+                        return True
                     if name == 'GetState':
                         return 'Running'
                     if name == 'Reload' and outcome == 'success':
@@ -222,7 +226,10 @@ class AudioSources(unittest.TestCase):
                         loaded['devices']['capture']['labels'] = None  # CamillaDSP adds defaults.
 
                 dsp.call.side_effect = call
+                (Path(directory) / 'audio.lock').touch()
                 with patch.object(server, 'CHANNEL_PROFILE', profile), \
+                     patch.object(server.TUNING, 'root', Path(directory)), \
+                     patch.object(server.TUNING, 'status', return_value={'audio_owned': False}), \
                      patch.dict(server.PROFILES, {str(profile): ('Output DSP controls', 'Eight outputs')}), \
                      patch.object(server, 'DSP', return_value=dsp), \
                      patch.object(server, 'discover_sources', return_value=[audio_sources.TIDAL, usb()]), \

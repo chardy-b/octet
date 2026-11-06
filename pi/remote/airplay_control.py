@@ -253,6 +253,7 @@ class AirPlayController:
                 if cancelled is not None and cancelled.is_set():
                     raise RuntimeError('AirPlay preparation timed out; output remains muted')
             try:
+                getattr(self.server, 'recover_source', lambda: None)()
                 self.mute()
                 logging.info('AirPlay mute=True: preparing a new cast')
                 check_deadline()

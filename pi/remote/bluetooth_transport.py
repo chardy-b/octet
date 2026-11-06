@@ -78,8 +78,9 @@ class TransportObserver:
         A stream already active (a phone playing when octet-remote starts or BlueZ or
         BlueALSA restarts) is admitted once, through the same read-back as a fresh
         edge. Unavailable BlueZ or BlueALSA leaves the observer closed until a
-        NameOwnerChanged resync succeeds.
+        NameOwnerChanged or the periodic resync succeeds.
         """
+        self._invalidate('observer resynchronising')
         self._pins, self._states = None, {}
         try:
             owners = self._owners()
@@ -95,6 +96,12 @@ class TransportObserver:
         for path in sorted(states):
             if states[path] == 'active':
                 self._transition(path, 'active')
+
+    def resync(self):
+        """Retry a failed snapshot only; never re-admit a released active stream."""
+        if self._pins is None:
+            self.start()
+        return True
 
     def valid(self, generation):
         """True only for the current generation whose pins and properties still hold."""

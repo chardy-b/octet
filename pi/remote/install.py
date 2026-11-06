@@ -11,6 +11,7 @@ import subprocess
 import pwd
 import yaml
 from server import CHANNEL_PROFILE, channel_config
+from source_route import provision_audio_lock
 
 # FIRST-TIME installer. It stops MPD and CamillaDSP, resets the CamillaDSP state file, rewrites
 # mpd.conf and octet-remote.service, and copies the visualizer media. Do NOT use it to update a
@@ -33,6 +34,8 @@ def main():
         if not path.is_file():
             raise SystemExit(f'Missing installation file: {path}')
     subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(source / preset)], check=True)
+    provision_audio_lock(Path('/var/lib/octet-autotune/audio.lock'),
+                         pwd.getpwnam('octet').pw_uid, grp.getgrnam('audio').gr_gid)
     backup = Path('/var/backups/octet-remote') / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup.mkdir(mode=0o700, parents=True)
     subprocess.run(['systemctl', 'stop', 'mpd.socket', 'mpd', 'camilladsp'], check=True)

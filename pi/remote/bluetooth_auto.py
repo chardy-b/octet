@@ -9,7 +9,9 @@ threads never perform D-Bus reads or mutate observer state.
 
 An invalidation clears the cache synchronously, so a start already in flight refuses
 its final unmute, and the controller's watchdog fails the lost generation. A start that
-fails is not retried; only a new active generation is. Any failure of the worker, the
+fails can be rebuilt up to three times while its generation and user intent remain
+current. Rebuilds repeat muted preparation and every guarded activation check,
+preserving an explicit Music-page mute. Any failure of the worker, the
 adapter or the GLib loop invalidates the cache and stops the automatic session, and is
 contained: manual control, Tidal and AirPlay are never affected. Idle connections never
 reach this module; a stream already active at (re)synchronisation arrives once, as a
@@ -35,9 +37,24 @@ class AutoBluetooth:
         self._active = None  # worker-only: last generation start_auto was attempted for
         self._queue = queue.Queue()
         self._thread = None
+        self._attempts = 0
+        self._intent = None
+        self._retry_at = 0
+
+    def _control_intent(self):
+        return (getattr(getattr(self.controller, 'server', None), 'AUDIO_INTENT', None),
+                getattr(self.controller, 'retry_generation', 0))
+
+    def _validator(self, intent):
+        def current(gen):
+            session = getattr(self.controller, 'session', None)
+            active = session is not None and session.active and session.stream == gen
+            return self.is_current(gen) and (active or self._control_intent() == intent)
+        return current
 
     # Observer callbacks (D-Bus thread): nonblocking, no I/O.
     def on_generation(self, generation):
+        intent = self._control_intent()
         with self._lock:
             if self._closed:
                 return
@@ -46,7 +63,8 @@ class AutoBluetooth:
             return
         if previous is not None:
             self._queue.put((STOP, previous, 'Bluetooth stream replaced'))
-        self._queue.put((START, generation, None))
+        # Pin user intent at observation, not later when the worker reaches START.
+        self._queue.put((START, generation, intent))
 
     def on_invalidate(self, generation, reason):
         with self._lock:
@@ -117,7 +135,14 @@ class AutoBluetooth:
     def _run(self):
         try:
             while True:
-                record = self._queue.get()
+                try:
+                    record = self._queue.get(timeout=.5)
+                except queue.Empty:
+                    try:
+                        self._retry()
+                    except Exception:
+                        logging.exception('Automatic Bluetooth recovery failed')
+                    continue
                 try:
                     if record is None:
                         return
@@ -140,11 +165,14 @@ class AutoBluetooth:
 
     def _handle(self, action, generation, reason):
         if action == START:
-            if generation == self._failed or not self.is_current(generation):
+            if (generation == self._failed or not self.is_current(generation)
+                    or reason != self._control_intent()):
                 return
             self._active = generation
+            self._attempts = 0
+            self._intent = reason
             try:
-                self.controller.start_auto(generation, self.is_current)
+                self.controller.start_auto(generation, self._validator(self._intent))
             except Exception:
                 self._failed = generation  # latched: no retry on this edge
                 raise
@@ -153,26 +181,63 @@ class AutoBluetooth:
             if self._active == generation:
                 self._active = None
 
+    def _retry(self):
+        """Rebuild a failed automatic route at most three times, through normal guards.
+
+        The observer generation and user intent must both survive. Manual stops,
+        another input, lost identity and a pending rollback never restart a phone.
+        Each rebuild starts muted and uses the original PCM/protection unmute gate.
+        """
+        generation = self._active
+        if (generation is None or not self.is_current(generation)
+                or self._intent != self._control_intent() or self._attempts >= 3
+                or time.monotonic() < self._retry_at):
+            return
+        state = self.controller.status()
+        if (not state.get('error') or state.get('active') or state.get('preparing')
+                or state.get('recovery_pending')):
+            return
+        self._attempts += 1
+        self._retry_at = time.monotonic() + 2.0
+        try:
+            self.controller.start_auto(generation, self._validator(self._intent))
+        except Exception as error:
+            logging.warning('Bluetooth playback retry %s/3 failed: %s', self._attempts, error)
+        else:
+            logging.info('Bluetooth playback retry %s/3 restored the guarded route', self._attempts)
+
 
 def _glib_loop():
     from gi.repository import GLib
     return GLib.MainLoop()
 
 
+def _schedule_resync(observer):
+    from gi.repository import GLib
+    timer = GLib.timeout_add_seconds(2, observer.resync)
+    return lambda: GLib.source_remove(timer)
+
+
 def run_observer(runtime, adapter_factory=SystemBusAdapter, observer_factory=TransportObserver,
-                 loop_factory=_glib_loop):
+                 loop_factory=_glib_loop, schedule_resync=None):
     """D-Bus/GLib thread body. Subscribe, then snapshot, then run; contain all failures."""
+    cancel = None
     try:
         loop = loop_factory()
         adapter = adapter_factory()
         observer = observer_factory(adapter, runtime.on_generation, runtime.on_invalidate)
         adapter.connect(observer)
         observer.start()
+        if schedule_resync is not None or loop_factory is _glib_loop:
+            cancel = (schedule_resync or _schedule_resync)(observer)
         loop.run()
         runtime.fail('Bluetooth observer loop ended')
     except BaseException as error:
         logging.warning('Automatic Bluetooth observer unavailable: %s', error)
         runtime.fail(f'Bluetooth observer failed: {error}')
+    finally:
+        if cancel is not None:
+            cancel()
 
 
 def start_auto_bluetooth(controller):

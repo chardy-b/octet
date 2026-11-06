@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
@@ -34,6 +35,8 @@ from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
 from audio_watch import AudioWatch
 from source_profiles import SourceProfiles
+from source_route import SourceRoute
+from airplay_baseline import persist
 
 BIND = os.environ.get('OCTET_BIND', '0.0.0.0')
 PORT = int(os.environ.get('OCTET_PORT', '8767'))
@@ -53,7 +56,13 @@ CHANNEL_PROFILE = Path('/var/lib/octet-dsp/channel-dsp.yml')
 PROFILES[str(CHANNEL_PROFILE)] =('Output DSP controls', 'EX30 → 1/2 · EX32 → 3/4 · subs → 5/6 · tweeters → 7/8')
 LOCK = threading.RLock()
 TIDAL_LOCK = threading.RLock()
+STREAM_LOCK = threading.RLock()
+CREDENTIAL_LOCK = threading.Lock()
 SESSION = None
+STREAM_SESSION = None
+CONTROL_GENERATION = 0
+AUDIO_INTENT = 0
+SOURCE_ROUTE = None
 CATALOG = {}
 PLAYLIST_CACHE = {}
 PLAYLIST_CACHE_SECONDS = 60
@@ -204,16 +213,28 @@ def decode_credentials(data):
     return {key: value.get('data') if isinstance(value, dict) else value for key, value in data.items()}
 
 
-def tidal():
-    global SESSION
-    with TIDAL_LOCK:
-        if SESSION is not None:
-            return SESSION
+def bounded_tidal_http(session):
+    """Bound SDK calls too, including login/refresh (not just the audio CDN)."""
+    request = session.request_session.request
+    def bounded(*args, **kwargs):
+        kwargs['timeout'] = (3.0, 8.0)
+        return request(*args, **kwargs)
+    session.request_session.request = bounded
+
+
+def tidal(*, streaming=False):
+    global SESSION, STREAM_SESSION
+    # Browsing a large library must never queue ahead of the next audio resolver.
+    with STREAM_LOCK if streaming else TIDAL_LOCK:
+        cached = STREAM_SESSION if streaming else SESSION
+        if cached is not None:
+            return cached
         import tidalapi
         own = STATE / 'tidal-session.json'
         source = own if own.exists() else Path('/var/cache/upmpdcli/tidal/oauth2.credentials.json')
         credentials = decode_credentials(json.loads(source.read_text()))
         session = tidalapi.Session(tidalapi.Config(quality=tidalapi.Quality.high_lossless, item_limit=50))
+        bounded_tidal_http(session)
         valid = session.load_oauth_session(credentials['token_type'], credentials['access_token'],
                                           credentials.get('refresh_token'), is_pkce=credentials.get('is_pkce', False))
         if not valid:
@@ -221,12 +242,16 @@ def tidal():
         STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
         saved = dict(token_type=session.token_type, access_token=session.access_token,
                      refresh_token=session.refresh_token, is_pkce=session.is_pkce)
-        temp = own.with_suffix('.tmp')
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as handle:
-            json.dump(saved, handle)
-        temp.replace(own)
-        SESSION = session
+        with CREDENTIAL_LOCK:
+            temp = own.with_suffix('.tmp')
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                json.dump(saved, handle)
+            temp.replace(own)
+        if streaming:
+            STREAM_SESSION = session
+        else:
+            SESSION = session
         return session
 
 
@@ -355,7 +380,7 @@ def mix_contents(identifier, refresh=False):
         return result
 
 
-def play_radio(data):
+def prepare_radio(data):
     identifier = track_id(data.get('id'))
     with TIDAL_LOCK:
         seed = tidal().track(int(identifier))
@@ -373,8 +398,12 @@ def play_radio(data):
             raise RuntimeError('Tidal has no available radio recommendations for this song')
         if len(rows) > MAX_PLAYLIST_TRACKS:
             raise ValueError('This radio exceeds the 10,000-track queue limit')
-    return play_context(rows, 0, dict(kind='radio', id=identifier, mix_id=mix_id(mix.id),
-                                     title='Radio · ' + rows[0]['title']))
+    return rows, 0, dict(kind='radio', id=identifier, mix_id=mix_id(mix.id),
+                        title='Radio · ' + rows[0]['title'])
+
+
+def play_radio(data):
+    return play_context(*prepare_radio(data))
 
 
 def playlist_summary(playlist):
@@ -432,7 +461,7 @@ def playlist_contents(identifier, refresh=False):
     return result
 
 
-def play_playlist(data):
+def prepare_playlist(data):
     identifier = playlist_id(data.get('id'))
     position = data.get('position', 0)
     if isinstance(position, bool) or not isinstance(position, int) or position < 0:
@@ -445,8 +474,12 @@ def play_playlist(data):
         raise ValueError('Invalid playlist position')
     if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
         raise RuntimeError('The playlist changed. Reopen it before selecting a track.')
-    return play_context(rows, position, dict(kind=contents['playlist'].get('kind', 'playlist'), id=identifier,
-                                            title=contents['playlist'].get('title', 'Playlist')))
+    return rows, position, dict(kind=contents['playlist'].get('kind', 'playlist'), id=identifier,
+                               title=contents['playlist'].get('title', 'Playlist'))
+
+
+def play_playlist(data):
+    return play_context(*prepare_playlist(data))
 
 
 def album_contents(identifier):
@@ -467,7 +500,7 @@ def album_contents(identifier):
         return dict(tracks=rows, album=dict(id=identifier, title=album.name))
 
 
-def play_album(data):
+def prepare_album(data):
     contents = album_contents(data.get('id'))
     rows = contents['tracks']
     if not rows:
@@ -477,7 +510,11 @@ def play_album(data):
         raise ValueError('Invalid album position')
     if data.get('track_id') is not None and track_id(data['track_id']) != rows[position]['id']:
         raise RuntimeError('The album changed. Reopen it before selecting a track.')
-    return play_context(rows, position, dict(kind='album', **contents['album']))
+    return rows, position, dict(kind='album', **contents['album'])
+
+
+def play_album(data):
+    return play_context(*prepare_album(data))
 
 
 def queue_context():
@@ -525,8 +562,7 @@ def play_context(rows, position, source):
         approved(dsp)
         require_tidal(dsp)
         STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with TIDAL_LOCK:
-            (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
+        (STATE / 'catalog.json').write_text(json.dumps(dict(CATALOG)))
         _, old, pending, _ = player_queue()
         old_ids = [row['song_id'] for row in old]
         staged_urls = urls[:position + 1] + [row['file'] for row in pending] + urls[position + 1:]
@@ -599,8 +635,8 @@ def queue_url(identifier):
 
 
 def stream_url(identifier):
-    with TIDAL_LOCK:
-        track = tidal().track(int(track_id(identifier)))
+    with STREAM_LOCK:
+        track = tidal(streaming=True).track(int(track_id(identifier)))
         stream = track.get_stream()
         manifest = stream.get_stream_manifest()
         if manifest.is_encrypted:
@@ -672,17 +708,68 @@ def restore_channel_profile(previous):
     AIRPLAY_CONTROL.recover()
 
 
+def validate_source(identifier):
+    """Resolve the destination before ending anyone else's receiver session."""
+    if not isinstance(identifier, str):
+        raise ValueError('Choose an audio source')
+    if identifier == 'bluetooth':
+        paired = [device for device in bluetooth_devices() if device['paired']]
+        if not paired:
+            raise RuntimeError('Pair a phone with Octet first')
+        if not any(device['connected'] for device in paired):
+            raise RuntimeError('Connect a paired phone to Octet first')
+        return dict(id='bluetooth', available=True)
+    source = next((item for item in discover_sources() if item['id'] == identifier), None)
+    if source is None or source.get('available') is False:
+        raise ValueError('That input is no longer connected. Refresh the available sources.')
+    return source
+
+
+def recover_source():
+    with LOCK:
+        route = source_route()
+        if route.exists():
+            route.recover()
+            logging.info('Pending input recovery verified; output remains muted')
+
+
+def source_route():
+    global SOURCE_ROUTE
+    if SOURCE_ROUTE is None or SOURCE_ROUTE.root != CHANNEL_PROFILE.parent:
+        if SOURCE_ROUTE is not None:
+            SOURCE_ROUTE.release_if_idle()
+            if SOURCE_ROUTE._lock_fd is not None:
+                raise RuntimeError('Previous input recovery still owns audio')
+        SOURCE_ROUTE = SourceRoute(sys.modules[__name__])
+    return SOURCE_ROUTE
+
+
+@contextmanager
+def source_transaction():
+    with LOCK:
+        recover_source()
+        route = source_route()
+        route.acquire()
+        try:
+            route.ownership()
+            yield route
+        finally:
+            route.release_if_idle()
+
+
 def select_source(identifier):
     """Run the selected profile from identifier's input (see dsp_inputs.with_input).
 
     Tidal runs the profile file itself when it already uses Tidal; every other
     input runs from running_file(). Ends muted with MPD paused; Unmute/Play is explicit.
     """
-    if not isinstance(identifier, str):
-        raise ValueError('Choose an audio source')
-    source = next((item for item in discover_sources() if item['id'] == identifier), None)
-    if source is None:
-        raise ValueError('That input is no longer connected. Refresh the available sources.')
+    validate_source(identifier)
+    with source_transaction() as route:
+        _select_source(identifier, route)
+
+
+def _select_source(identifier, route):
+    source = validate_source(identifier)
     with DSP() as dsp:
         previous_path = dsp.call('GetConfigFilePath')
         config = json.loads(dsp.call('GetConfigJson'))
@@ -693,7 +780,7 @@ def select_source(identifier):
     profile = details['origin_path']
     if source_metadata(config)['id'] == identifier and running and previous_path in (profile, str(running_file())):
         return
-    _load_profile_input(profile, source, previous_path, config, interrupt=True)
+    _load_profile_input(profile, source, previous_path, config, interrupt=True, route=route)
 
 
 def switch_profile(identifier):
@@ -711,25 +798,35 @@ def switch_profile(identifier):
         raise ValueError('Select a saved profile.')
     profile = record['config_path']
     with LOCK:
-        with DSP() as dsp:
-            if dsp.call('GetVolume') > MAX_DB:
-                dsp.call('SetVolume', MAX_DB)
         if BLUETOOTH_CONTROL.owns_audio():
+            with DSP() as dsp:
+                if dsp.call('GetVolume') > MAX_DB:
+                    dsp.call('SetVolume', MAX_DB)
             return BLUETOOTH_CONTROL.switch_profile(profile)
         if AIRPLAY_CONTROL.baseline.exists():
+            with DSP() as dsp:
+                if dsp.call('GetVolume') > MAX_DB:
+                    dsp.call('SetVolume', MAX_DB)
             return AIRPLAY_CONTROL.switch_profile(profile)
-        with DSP() as dsp:
-            previous_path = dsp.call('GetConfigFilePath')
-            config = json.loads(dsp.call('GetConfigJson'))
-        identifier = source_metadata(config)['id']
-        source = 'tidal' if identifier == 'tidal' else next(
-            (item for item in discover_sources() if item['id'] == identifier), None)
-        if source is None:
-            raise RuntimeError('The current input is not available; choose a source first.')
-        _load_profile_input(profile, source, previous_path, config, interrupt=False)
+        with source_transaction() as route:
+            _switch_profile(profile, route)
 
 
-def _load_profile_input(profile, source, previous_path, config, *, interrupt):
+def _switch_profile(profile, route):
+    with DSP() as dsp:
+        if dsp.call('GetVolume') > MAX_DB:
+            dsp.call('SetVolume', MAX_DB)
+        previous_path = dsp.call('GetConfigFilePath')
+        config = json.loads(dsp.call('GetConfigJson'))
+    identifier = source_metadata(config)['id']
+    source = 'tidal' if identifier == 'tidal' else next(
+        (item for item in discover_sources() if item['id'] == identifier), None)
+    if source is None:
+        raise RuntimeError('The current input is not available; choose a source first.')
+    _load_profile_input(profile, source, previous_path, config, interrupt=False, route=route)
+
+
+def _load_profile_input(profile, source, previous_path, config, *, interrupt, route):
     """Load profile fed from source. interrupt: mute and pause MPD first (source change);
     otherwise reload in place while playing (profile change, same input)."""
     global ACTIVE_CAPTURE_CHANNELS
@@ -741,8 +838,6 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
         target, updated = Path(profile), base
     else:
         target, updated = running_file(), with_input(base, source)
-    previous = running_file().read_bytes() if running_file().exists() else None
-    previous_record = running_record().read_bytes() if running_record().exists() else None
     candidate = running_file().with_suffix('.candidate.yml')
     try:
         if target == running_file():
@@ -756,14 +851,16 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
             INPUT_LEVELS.release()
             with DSP() as dsp:
                 dsp.call('SetMute', True)
+        route.begin_change(previous_path, config, target)
         try:
             if interrupt:
                 # Retain the queue and its position, but never play Tidal in the background.
                 mpd('pause 1')
             if target == running_file():
-                candidate.replace(running_file())
-                running_record().write_text(json.dumps(dict(profile=profile, input=identifier)))
-                running_record().chmod(0o640)
+                persist(running_file(), candidate.read_bytes(), 0o640)
+                persist(running_record(), json.dumps(dict(profile=profile, input=identifier)).encode(), 0o640)
+            route.ownership()
+            expected = route.as_loaded(target.read_bytes())
             with DSP() as dsp:
                 if str(target) != previous_path:
                     dsp.call('SetConfigFilePath', str(target))
@@ -773,29 +870,24 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt):
                 with DSP() as dsp:
                     loaded = json.loads(dsp.call('GetConfigJson'))
                     if (dsp.call('GetConfigFilePath') == str(target)
-                            and source_metadata(loaded)['id'] == identifier
-                            and all(loaded['devices']['capture'].get(key) == value
-                                    for key, value in updated['devices']['capture'].items())
+                            and loaded == expected
                             and dsp.call('GetState') == 'Running'):
                         ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
+                        route.finish()
                         logging.info('DSP route reloaded for %s (source change=%s)', identifier, interrupt)
                         return  # After a source change, Unmute/Play is explicit.
             raise RuntimeError('The selected input did not start')
-        except Exception:
+        except Exception as error:
             AIRPLAY_CONTROL.invalidate(manual=False)
-            for path, saved in ((running_file(), previous), (running_record(), previous_record)):
-                if saved is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_bytes(saved)
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
-                if dsp.call('GetConfigFilePath') != previous_path:
-                    dsp.call('SetConfigFilePath', previous_path)
-                dsp.call('Reload')
-            ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
-            logging.warning('DSP route change for %s failed. Previous route reloaded muted', identifier)
-            raise RuntimeError('Change failed; the previous source was restored and output is muted')
+            try:
+                with DSP() as dsp:
+                    dsp.call('SetMute', True)
+                route.recover()
+            except Exception as recovery_error:
+                logging.error('Input change and rollback failed; durable recovery retained: %s', recovery_error)
+                raise RuntimeError('Change failed; previous input restore is pending and output remains muted') from recovery_error
+            logging.warning('DSP route change for %s failed. Previous route verified muted', identifier)
+            raise RuntimeError('Change failed; the previous source was restored and output is muted') from error
     finally:
         candidate.unlink(missing_ok=True)
 
@@ -1256,7 +1348,7 @@ def set_bluetooth_discoverable(enabled):
     return current_status()
 
 
-def start_bluetooth():
+def start_bluetooth(intent=None):
     paired = [device for device in bluetooth_devices() if device['paired']]
     if not paired:
         raise RuntimeError('Pair a phone with Octet first')
@@ -1266,7 +1358,10 @@ def start_bluetooth():
     error = None
     for address in addresses:
         try:
-            BLUETOOTH_CONTROL.start(address)
+            if intent is None:
+                BLUETOOTH_CONTROL.start(address)
+            else:
+                BLUETOOTH_CONTROL.start(address, intent=intent)
             return
         except RuntimeError as failure:
             error = failure
@@ -1291,21 +1386,60 @@ def auto_status():
 
 
 def action(name, data):
+    global CONTROL_GENERATION, AUDIO_INTENT
     if name == 'bluetooth-discoverable':
         # Pairing visibility never touches audio, so it does not stop Bluetooth playback.
         return set_bluetooth_discoverable(data.get('enabled'))
     if name == 'auto-select':
         # Changing profile keeps the current input playing: no mute, pause or stop.
-        switch_profile(data.get('id') if isinstance(data, dict) else None)
+        with LOCK:
+            CONTROL_GENERATION += 1
+            if not BLUETOOTH_CONTROL.owns_audio():
+                AUDIO_INTENT += 1
+            switch_profile(data.get('id') if isinstance(data, dict) else None)
         return auto_status()
-    # The ownership check and the mutation share the same lock as starting Auto mode.
+    prepare = {'play-playlist': prepare_playlist, 'play-radio': prepare_radio,
+               'play-album': prepare_album}.get(name)
+    lookup_track = name in ('play', 'enqueue') and track_id(data.get('id')) not in CATALOG
     with LOCK:
-        result = _action(name, data)
+        if name == 'source':
+            validate_source(data.get('id'))
+        if (prepare or lookup_track) and TUNING.status().get('audio_owned') is not False:
+            raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before playing music.')
+        if name not in ('volume', 'unlock'):
+            CONTROL_GENERATION += 1
+        generation = CONTROL_GENERATION
+        receiver = receiver_intent()
+        if not prepare and not lookup_track:
+            # Immediate controls never yield to another command before mutation.
+            if name not in ('volume', 'mute', 'unlock'):
+                AUDIO_INTENT += 1
+            result = _action(name, data)
+    if prepare or lookup_track:
+        # Remote metadata never owns audio or blocks Stop/Mute.
+        prepared = prepare(data) if prepare else None
+        if lookup_track:
+            identifier = track_id(data.get('id'))
+            with TIDAL_LOCK:
+                remember(tidal().track(int(identifier)))
+        # A new transport command/cast supersedes an older lookup; level changes don't.
+        with LOCK:
+            if generation != CONTROL_GENERATION or receiver != receiver_intent():
+                raise RuntimeError('Playback request cancelled by a newer control. Please retry if needed.')
+            AUDIO_INTENT += 1
+            result = _action(name, data, prepared)
     if name == 'source' and isinstance(data, dict) and data.get('id') == 'bluetooth':
         # The Bluetooth bridge needs LOCK to prepare, so the wait for it happens outside.
-        start_bluetooth()
+        start_bluetooth(intent=lambda: generation == CONTROL_GENERATION)
         return current_status()
     return result
+
+
+def receiver_intent():
+    """An automatic cast arriving during a lookup also supersedes that request."""
+    airplay = AIRPLAY_CONTROL
+    return (airplay.active, airplay.idle, airplay.pending, id(airplay.expected),
+            airplay.suppressed, id(BLUETOOTH_CONTROL.session))
 
 
 def cast_level(name, data):
@@ -1347,7 +1481,13 @@ def set_level_range(enabled):
     return current_status()
 
 
-def _action(name, data):
+def _action(name, data, prepared=None):
+    if (name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True)) and TUNING.status().get('audio_owned'):
+        # Stopping direct test tones must remain reachable even with a retained journal.
+        return TUNING.request('stop', {})
+    recover_source()
+    if name == 'mute' and data.get('muted') is True and BLUETOOTH_CONTROL.session is None:
+        BLUETOOTH_CONTROL.cancel_retry()
     if name == 'unlock':
         return set_level_range(data.get('enabled'))
     if name in ('volume', 'mute') and not AIRPLAY_CONTROL.needs_mute and TUNING.status().get('audio_owned') is False:
@@ -1377,20 +1517,14 @@ def _action(name, data):
         if name == 'stop' or (name == 'mute' and data.get('muted') is True):
             return TUNING.request('stop', {})
         raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before using music or manual DSP controls.')
-    if name == 'play-playlist':
-        return play_playlist(data)
-    if name == 'play-radio':
-        return play_radio(data)
-    if name == 'play-album':
-        return play_album(data)
+    if prepared is not None:
+        return play_context(*prepared)
     with LOCK:
         if AIRPLAY_CONTROL.pending is not None and name in (
                 'channel-eq', 'channel-mute', 'channel-polarity', 'channel-always-active', 'all-eq'):
             AIRPLAY_CONTROL.invalidate()
         if name == 'source':
             AIRPLAY_CONTROL.invalidate()
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
             if data.get('id') != 'bluetooth':  # action() starts Bluetooth after releasing LOCK
                 select_source(data.get('id'))
         elif name == 'channel-eq':
@@ -1434,14 +1568,10 @@ def _action(name, data):
                 dsp.call('SetVolume', value)
         elif name in ('play', 'enqueue'):
             identifier = track_id(data['id'])
-            if identifier not in CATALOG:
-                with TIDAL_LOCK:
-                    remember(tidal().track(int(identifier)))
             if name == 'play':
                 return play_context([CATALOG[identifier]], 0, dict(kind='track', id=identifier, title=''))
             STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with TIDAL_LOCK:
-                (STATE / 'catalog.json').write_text(json.dumps(CATALOG))
+            (STATE / 'catalog.json').write_text(json.dumps(dict(CATALOG)))
             with DSP() as dsp:
                 approved(dsp)
                 enqueue_track(identifier, data.get('placement', 'end'))
@@ -1830,6 +1960,7 @@ def initialize_dsp():
         AIRPLAY_CONTROL.needs_mute = True
         try:
             confirm_mute()
+            recover_source()
             AIRPLAY_CONTROL.recover()
         except Exception:
             AIRPLAY_CONTROL.needs_mute = True
