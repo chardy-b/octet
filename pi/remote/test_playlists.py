@@ -81,6 +81,9 @@ class Player:
                 self.current = parts[1]
                 self.state = 'play'
                 results.append([])
+            elif name == 'pause':
+                self.state = 'pause' if parts[1] == '1' else 'play'
+                results.append([])
             elif name == 'next':
                 position = next(i for i, row in enumerate(self.queue) if row[0] == self.current) + 1
                 if position < len(self.queue):
@@ -143,7 +146,7 @@ class Playlists(unittest.TestCase):
         self.assertEqual([urlparse(url).path.rsplit('/', 1)[-1] for _, url in player.queue], ['1', '2', '3'])
         self.assertEqual(player.current, player.queue[1][0])
         self.assertEqual(player.modes, dict(random='0', single='0', repeat='0', consume='0'))
-        self.assertEqual(dsp.call.call_args.args, ('SetMute', False))
+        self.assertEqual(dsp.call.call_args.args, ('GetMute',))
         self.assertNotIn('SetVolume', [call.args[0] for call in dsp.call.call_args_list])
 
     def test_play_all_starts_at_first_track(self):

@@ -29,6 +29,7 @@ class AirPlayTests(unittest.TestCase):
         tuning = TuningProxy(tuning_root)
         self.path = str(self.profile)
         self.loaded = config()
+        self.muted = True
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         def call(name, *args):
@@ -36,10 +37,12 @@ class AirPlayTests(unittest.TestCase):
                 self.path = args[0]
             elif name == 'Reload':
                 self.loaded = yaml.safe_load(Path(self.path).read_text())
+            elif name == 'SetMute':
+                self.muted = args[0]
             return args[0] if name == 'ReadConfig' else {
                 'GetConfigFilePath': self.path,
                 'GetConfigJson': json.dumps(self.loaded), 'GetState': 'Running', 'GetVolume': -18.0,
-                'GetMute': True,
+                'GetMute': self.muted,
             }.get(name)
         self.dsp.call.side_effect = call
         def back_to_tidal(identifier):
@@ -68,7 +71,7 @@ class AirPlayTests(unittest.TestCase):
         self.control.event('start', now=0)
         self.assertNotIn(('SetMute', False), self.calls())
         self.control.tick(now=1)
-        self.assertEqual(self.calls()[-2:], [('SetVolume', -18.0), ('SetMute', False)])
+        self.assertEqual(self.calls()[-3:], [('SetVolume', -18.0), ('SetMute', False), ('GetMute',)])
         self.control.event('start', now=2)
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
         server.mpd.assert_called_once_with('pause 1')
@@ -99,6 +102,16 @@ class AirPlayTests(unittest.TestCase):
         server.mpd.assert_called_once_with('pause 1')
         self.control.invalidate()  # a manual override still ends it muted on the profile
         self.assertIn(('SetMute', True), self.calls())
+        self.assertEqual(self.path, str(self.profile))
+
+    def test_ignored_unmute_cannot_mark_a_cast_active(self):
+        self.control.event('start', now=0)
+        original = self.dsp.call.side_effect
+        self.dsp.call.side_effect = lambda name, *args: None if name == 'SetMute' and args == (False,) else original(name, *args)
+        self.control.tick(now=1)
+        self.assertFalse(self.control.active)
+        self.assertTrue(self.muted)
+        self.assertIn('could not confirm unmute', self.control.error)
         self.assertEqual(self.path, str(self.profile))
 
     def test_source_control_ends_the_active_cast_before_selecting_the_new_input(self):
@@ -512,6 +525,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.loaded = self.copy(self.config)
         self.calls = []
         self.reload_failure = False
+        self.muted = True
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         def call(name, *args):
@@ -525,7 +539,9 @@ class BaselineAirPlayTests(unittest.TestCase):
             if name == 'GetVolume':
                 return -18
             if name == 'GetMute':
-                return True
+                return self.muted
+            if name == 'SetMute':
+                self.muted = args[0]
             if name == 'ReadConfig':
                 return args[0]
             if name == 'SetConfigFilePath':
@@ -693,7 +709,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.unchanged()
         self.assertNotIn(('SetMute', False), self.calls)
         self.control.tick(now=1)
-        self.assertEqual(self.calls[-2:], [('SetVolume', -18.0), ('SetMute', False)])
+        self.assertEqual(self.calls[-3:], [('SetVolume', -18.0), ('SetMute', False), ('GetMute',)])
         server.mpd.assert_called_once_with('pause 1')
         self.control.event('stop', now=2)
         with patch('airplay_control.pcm_running', return_value=False):

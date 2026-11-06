@@ -194,6 +194,8 @@ class AirPlayController:
                     dsp.call('SetVolume', ceiling)
                 if muted is not None:
                     dsp.call('SetMute', muted)
+                    if dsp.call('GetMute') is not muted:
+                        raise RuntimeError('AirPlay mute setting could not be confirmed. Please retry.')
                     logging.info('AirPlay mute=%s: Music control', muted)
             return True
 
@@ -345,6 +347,9 @@ class AirPlayController:
                                 self.fail('AirPlay preparation timed out; output remains muted')
                                 return
                             dsp.call('SetMute', False)
+                            if dsp.call('GetMute') is not False:
+                                self.fail('AirPlay could not confirm unmute; please reconnect and retry')
+                                return
                             logging.info('AirPlay mute=False: PCM ready after %.2fs', now - self.pending)
                             self.active = True
                             self.pending = self.previous = None

@@ -589,11 +589,37 @@ def play_context(rows, position, source):
             save_queue_context(dict(source=source,
                                     manual={sid: url for sid, url in zip(ids, staged_urls) if sid in manual},
                                     autoplay={sid: url for sid, url in zip(ids, staged_urls) if sid not in manual}))
-            dsp.call('SetMute', False)
-        except Exception:
-            dsp.call('SetMute', True)
-            raise RuntimeError('Could not start the music. Playback was muted; please retry.')
+            confirm_tidal_unmute(dsp)
+        except Exception as error:
+            abort_tidal_start(dsp, error)
     return current_status()
+
+
+def confirm_tidal_unmute(dsp):
+    dsp.call('SetMute', False)
+    if dsp.call('GetMute') is not False:
+        raise RuntimeError('DSP did not confirm unmute')
+    logging.info('DSP mute=False: Tidal playback start verified')
+
+
+def abort_tidal_start(dsp, error):
+    """A failed start must not leave the track clock advancing behind a mute."""
+    try:
+        dsp.call('SetMute', True)
+    except Exception:
+        logging.exception('Could not confirm mute after failed Tidal start')
+    paused = False
+    try:
+        state = dict(mpd('pause 1', 'status')[1]).get('state')
+        paused = state in ('pause', 'stop')
+        if not paused:
+            logging.error('MPD did not confirm pause after failed Tidal start')
+    except Exception:
+        logging.exception('Could not pause MPD after failed Tidal start')
+    logging.warning('Tidal start failed; paused=%s: %s', paused, error)
+    message = ('Playback was paused; please retry.' if paused else
+               'Could not confirm that playback paused. Stop playback and retry.')
+    raise RuntimeError('Could not confirm audio output. ' + message) from error
 
 
 def enqueue_track(identifier, placement):
@@ -1558,6 +1584,8 @@ def _action(name, data, prepared=None):
                     if dsp_state != 'Running':
                         raise RuntimeError('The speaker DSP is not ready to unmute.')
                 dsp.call('SetMute', data['muted'])
+                if not data['muted'] and dsp.call('GetMute') is not False:
+                    raise RuntimeError('DSP did not confirm unmute. Please retry.')
                 logging.info('DSP mute=%s: Music control', data['muted'])
         elif name == 'volume':
             value = float(data['db'])
@@ -1595,8 +1623,11 @@ def _action(name, data, prepared=None):
                         if position < 0:
                             raise ValueError('Invalid queue position')
                         command = 'play ' + str(position)
-                mpd(command)
-                dsp.call('SetMute', False)
+                try:
+                    mpd(command)
+                    confirm_tidal_unmute(dsp)
+                except Exception as error:
+                    abort_tidal_start(dsp, error)
         elif name == 'pause':
             mpd('pause 1')
         elif name == 'clear':
