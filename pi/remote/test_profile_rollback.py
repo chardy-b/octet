@@ -29,6 +29,10 @@ class ProfileRollbackTests(unittest.TestCase):
         self.stack.enter_context(patch.object(server, 'AIRPLAY_CONTROL', self.control))
         self.stack.enter_context(patch.object(server, 'SOURCE_ROUTE', None))
         self.stack.callback(lambda: server.SOURCE_ROUTE.release() if server.SOURCE_ROUTE is not None else None)
+        tuning_root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        (tuning_root / 'audio.lock').touch()
+        self.stack.enter_context(patch.object(server.TUNING, 'root', tuning_root))
+        self.stack.enter_context(patch.object(server.TUNING, 'status', return_value={'audio_owned': False}))
 
     def test_restore_order_and_atomic_visibility(self):
         events = []
