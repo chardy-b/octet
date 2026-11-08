@@ -29,3 +29,4 @@ See [`measure/README.md`](measure/README.md) for what it does, how to set it up 
 - [Speaker system and hardware](docs/SYSTEM_HARDWARE.md): drivers, panels, amps, Pi, DAC, microphone, proposed wiring and remaining choices.
 - [Original phase 2 proposal](docs/archive/PHASE_2_ORIGINAL_PLAN.md): the supplied plan preserved verbatim; some decisions were superseded.
 - [Auto Tune operating guide](measure/docs/AUTO_TUNE.md): setup, commands, verification and recovery.
+- [State machine map](docs/STATE-MACHINES.md) for playback, measurement, display, and recovery workflows.

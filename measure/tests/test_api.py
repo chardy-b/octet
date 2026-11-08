@@ -1,4 +1,5 @@
 import time
+import threading
 import zipfile
 import io
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from octetmeasure import calibration, store
 from octetmeasure.audio import DemoIO
+from octetmeasure.ui import jobs
 from octetmeasure.ui.server import create_app
 
 CAL = "*1000Hz\t-39.8\n\t\n20.00\t-0.8\n100.00\t1.5\n1000.00\t0.1\n10000.00\t-0.5\n20000.00\t-0.5\n"
@@ -144,6 +146,38 @@ def test_starting_a_recording_ends_the_live_meter(client):
     assert client.get("/api/job").json()["kind"] == "monitor"
     st = record(client, "after monitor")
     assert st["last_result"]["saved"]
+
+
+def test_timed_out_meter_handoff_holds_audio_until_the_meter_releases_it(client, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    events = []
+
+    def slow_meter(dev, fs, channels, on_block, cancel):
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(client.app.state.io, "stream", slow_meter)
+    monkeypatch.setattr(client.app.state.bus, "publish", events.append)
+    monkeypatch.setattr(jobs, "STOP_TIMEOUT_SECONDS", 0)
+    assert client.get("/api/job").json()["phase"] == "idle"
+    assert client.post("/api/job/monitor/start", json=dict(player="demo")).status_code == 200
+    try:
+        assert entered.wait(2)
+        assert client.get("/api/job").json()["phase"] == "running"
+        response = client.post("/api/job/record/start", json=dict(name="too early", player="demo", duration=4))
+        assert response.status_code == 409
+        assert "releasing the microphone" in response.text
+        status = client.get("/api/job").json()
+        assert (status["phase"], status["running"], status["kind"]) == ("stopping", True, "monitor")
+        assert client.post("/api/auto/start").status_code == 409
+        assert client.post("/api/job/cancel").json() == dict(cancelled=True)
+    finally:
+        release.set()
+    assert wait_idle(client)["phase"] == "idle"
+    assert client.get("/api/measurements").json() == []
+    assert [e["phase"] for e in events if e["type"] in ("status", "idle")] == ["running", "stopping", "idle"]
+    assert record(client, "after release")["last_result"]["saved"]
 
 
 def test_clock_and_settings(client):

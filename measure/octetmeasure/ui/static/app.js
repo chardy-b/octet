@@ -16,7 +16,8 @@ function updatePill() {
   box.replaceChildren();
   if (app.job.running) {
     const label = { auto: "Auto Tune", record: "Recording", monitor: "Listening", noise: "Checking noise", clock: "Checking clock" }[app.job.kind] || "Working";
-    box.append(h("a", { href: app.job.kind === 'auto' ? '#/autotune' : '#/record', class: "pill live", title: app.job.message || "", text: label + "…" }));
+    const text = app.job.phase === "stopping" ? "Stopping…" : label + "…";
+    box.append(h("a", { href: app.job.kind === 'auto' ? '#/autotune' : '#/record', class: "pill live", title: app.job.message || "", text }));
   }
 }
 
@@ -53,8 +54,8 @@ async function boot() {
   if(auto.running) app.job = {...auto,kind:'auto'};
   bus.on('autotune', e => { app.job = {...e,kind:'auto'}; updatePill(); });
   bus.on("status", (e) => { app.job = e; updatePill(); });
-  bus.on("state", (e) => { app.job = { ...app.job, running: true, kind: e.job, state: e.state, message: e.message }; updatePill(); });
-  bus.on("idle", () => { app.job = { ...app.job, running: false }; updatePill(); });
+  bus.on("state", (e) => { app.job = { ...app.job, running: true, kind: e.job, phase: e.phase, state: e.state, message: e.message }; updatePill(); });
+  bus.on("idle", () => { app.job = { ...app.job, running: false, phase: "idle" }; updatePill(); });
   bus.on("error", (e) => toast(e.message, "bad"));
   updatePill();
   window.addEventListener("hashchange", route);

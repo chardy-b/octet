@@ -65,7 +65,7 @@ def create_app(demo: bool = False, io=None) -> FastAPI:
             jobs.cancel()
             return auto.mute()
         with jobs.lock:
-            if jobs.thread is not None and jobs.thread.is_alive():
+            if jobs.status()["running"]:
                 raise Busy('Stop the current recording or meter before starting Auto Tune.')
             auto.start(action)
         return auto.status()

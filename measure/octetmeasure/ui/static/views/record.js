@@ -29,7 +29,7 @@ export async function mount(root) {
   const timeline = LevelTimeline({ host: timelineHost, zones, windowS: 30 });
   const adviceHost = h("div"), noiseHost = h("div", { class: "small muted", style: { marginTop: "8px" } });
   const resultHost = h("div");
-  const progressBar = h("i"), statusLine = h("div", { class: "small muted" }), startBtn = h("button", { class: "btn primary big", type: "button" });
+  const progressBar = h("i"), statusLine = h("div", { class: "small muted", role: "status" }), startBtn = h("button", { class: "btn primary big", type: "button" });
   const stopBtn = h("button", { class: "btn danger big", type: "button", text: "Stop", hidden: true, onclick: () => api("/api/job/cancel", { method: "POST" }) });
   const clockHost = h("div", { class: "small", style: { marginTop: "10px" } });
   const playerHost = h("div", { style: { marginTop: "12px" } });
@@ -136,11 +136,6 @@ export async function mount(root) {
     clear(noiseHost).append("Room noise ≈ ", h("b", { class: "num", text: `${fmt(q, 0)} dBFS` }), " ", h("span", { class: "chip " + r[0], text: r[1] }));
   }
 
-  // The live meter does not block anything: starting a test or a recording simply replaces it.
-  function setRunning(running) {
-    startBtn.hidden = running; stopBtn.hidden = !running;
-    [noiseBtn, testBtn].forEach((b) => (b.disabled = running));
-  }
   monitorBtn.onclick = () => (app.job.running && app.job.kind === "monitor"
     ? api("/api/job/cancel", { method: "POST" })
     : api("/api/job/monitor/start", { method: "POST", body: cfg() }).then(() => { timeline.reset(null); meter.reset(); setIdle(); clear(adviceHost); }).catch((e) => toast(e.message, "bad")));
@@ -149,11 +144,13 @@ export async function mount(root) {
 
   function syncJob() {
     const j = app.job, listening = j.running && j.kind === "monitor", busy = j.running && !listening;
-    setRunning(busy);
-    monitorBtn.disabled = busy;
-    monitorBtn.textContent = listening ? "Stop listening" : "Listen";
+    const stopping = j.phase === "stopping";
+    startBtn.hidden = busy; stopBtn.hidden = !busy;
+    startBtn.disabled = stopBtn.disabled = stopping;
+    monitorBtn.disabled = noiseBtn.disabled = testBtn.disabled = busy || stopping;
+    monitorBtn.textContent = listening ? (stopping ? "Stopping…" : "Stop listening") : "Listen";
     startBtn.textContent = "Start recording";
-    statusLine.textContent = busy ? (j.message || "Working…") : "";
+    statusLine.textContent = stopping ? "Releasing the audio devices…" : busy ? (j.message || "Working…") : "";
   }
 
   // ------------------------------------------------------------ form: the sweep
@@ -297,7 +294,9 @@ export async function mount(root) {
     toast(`Saved ${r.name}`, "good");
   }
   offs.push(bus.on("error", () => { syncJob(); progressBar.style.width = "0%"; }));
-  offs.push(bus.on("player", (e) => { statusLine.textContent = `Player: ${e.label}`; }));
+  offs.push(bus.on("player", (e) => {
+    if (app.job.phase !== "stopping") statusLine.textContent = `Player: ${e.label}`;
+  }));
 
   return () => { offs.forEach((f) => f()); timeline.destroy(); if (app.job.running && app.job.kind === "monitor") api("/api/job/cancel", { method: "POST" }).catch(() => {}); };
 }
