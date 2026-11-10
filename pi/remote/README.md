@@ -187,8 +187,12 @@ browsing cannot block the next track. A newer transport command, cast or explici
 mute cancels an older pending play request. With `OCTET_AUDIO_RECOVERY=1`, a failed
 watchdog resume retains its own paused-track intent and retries up to three times
 without changing DSP mute or level. A user pause, stop, queue or input change
-cancels that intent; level changes preserve it. DAC output stalls are reported
-separately and never trigger an unverified hardware reset.
+cancels that intent. Level changes preserve it. With the guarded DAC recovery
+units installed, **Recover DAC** and the automatic watchdog can reboot Octet
+after a confirmed Tidal DAC stall with fresh kernel DMA errors. The queue and
+track position return paused with output muted. The
+[DAC recovery setup](../../docs/DEPLOYMENT.md#guarded-dac-recovery) covers the
+boot checks, reboot limit, and manual-only setting.
 
 Choosing another saved profile on the DSP page does not interrupt playback: the
 remote builds the new profile with the input in use and CamillaDSP reloads it in

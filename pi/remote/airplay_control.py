@@ -228,6 +228,8 @@ class AirPlayController:
                 return
             if event != 'start':
                 raise ValueError('Invalid AirPlay event')
+            if getattr(self.server, 'dac_holds_receivers', lambda: False)() is True:
+                raise RuntimeError('Choose playback on the Music page after DAC recovery')
             bluetooth = getattr(self.server, 'BLUETOOTH_CONTROL', None)
             if bluetooth is not None and bluetooth.owns_audio():
                 # First owner wins: refuse before muting so Bluetooth is undisturbed.

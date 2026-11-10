@@ -17,6 +17,10 @@ AirPlay or Tidal album cover, title, artist and album without changing the music
 - `octet-now-playing.socket`: socket bound to `wlan0` with `BindToDevice`.
 - `octet-now-playing.service`: unprivileged publisher activated by the socket.
 
+The enabled socket waits for the Wi-Fi interface to appear and can listen
+before DHCP assigns an address. Ordering it after `network-online.target`
+creates a boot dependency cycle that can cause systemd to skip it.
+
 Requests must arrive on Wi-Fi from Octet's directly connected Wi-Fi subnet, target
 its current Wi-Fi IP, and use its Wi-Fi IP or `octet.local` Host header. Interface
 addresses are discovered per request, including after DHCP changes. Loopback,

@@ -3,6 +3,7 @@ const $=id=>document.getElementById(id);
 const volumeControl=window.OctetVolume.create($('volume'),$('volume-value'));
 let state={}, volumeBusy=false, requestSerial=0, albumTracks=[];
 let sourcePending=null, sourceRevision=0, sourceOptionsKey='';
+let dacRequestPending=false;
 function liveInput(){return Boolean(state.source&&state.source!=='tidal');}
 function render(next){
   if(state.source!==next.source||(state.capture_stalled&&!next.capture_stalled))$('player-error').textContent='';
@@ -78,6 +79,15 @@ function renderSources(next){
     if(next.dac_stalled)$('source-status').textContent='The DAC output stopped advancing. Check the Octet kernel log.';
     $('source-status').classList.toggle('error',!next.ready||Boolean(next.airplay?.error)||Boolean(next.capture_stalled)||Boolean(next.dac_stalled)||tidalFault);
   }
+  const recovery=next.dac_recovery;
+  $('recover-dac').hidden=!recovery?.available;
+  $('recover-dac').disabled=dacRequestPending;
+  if(dacRequestPending)$('source-status').textContent='Checking the DAC stall and preparing recovery…';
+  else if(recovery?.error&&(next.dac_stalled||recovery.phase))$('source-status').textContent=recovery.error;
+  else if(recovery?.phase==='rebooting')$('source-status').textContent='Octet is rebooting to recover the DAC…';
+  else if(recovery?.phase==='restoring')$('source-status').textContent='Restoring the saved track with output muted…';
+  else if(recovery?.phase==='restored'&&next.playback==='pause'&&next.muted&&!next.dac_stalled)
+    $('source-status').textContent=recovery.kind==='boot'?'Your track is restored and paused. Output is muted.':'DAC recovered. Your track is paused and output is muted.';
 }
 let bluetoothBusy=false;
 function renderBluetooth(next){
@@ -330,6 +340,12 @@ $('play-album').onclick=()=>{if(albumTracks.length&&libraryEntry?.route.view==='
 $('search-form').onsubmit=e=>{e.preventDefault();const query=$('search').value.trim();if(query)loadTracks(query)};
 $('favorites').onclick=()=>loadTracks();
 $('toggle').onclick=()=>control(state.playback==='play'?'pause':'resume');
+$('recover-dac').onclick=async()=>{
+  dacRequestPending=true;renderSources(state);
+  try{render({...state,dac_recovery:await api('/api/control/recover-dac',{})});}
+  catch(error){render({...state,dac_recovery:{...state.dac_recovery,error:error.message}});}
+  finally{dacRequestPending=false;renderSources(state);}
+};
 $('previous').onclick=()=>control('previous');$('next').onclick=()=>control('next');$('stop').onclick=()=>control('stop');$('clear').onclick=()=>control('clear-queue');$('mute').onclick=()=>control('mute',{muted:!state.muted});
 $('volume').oninput=()=>{volumeBusy=true;volumeControl.preview()};
 $('volume').onchange=async()=>{const value=volumeControl.value();await control('volume',{db:value});volumeBusy=false;refresh()};

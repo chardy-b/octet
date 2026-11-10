@@ -1,0 +1,13 @@
+[Unit]
+Description=Octet confirmed DAC stall recovery socket
+
+[Socket]
+ListenStream=/run/octet-dac-recovery.sock
+SocketUser=upmpdcli
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -20,7 +20,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     : {headless:true,channel:'msedge'});
   try{
     const page=await browser.newPage({viewport:{width:1280,height:1000}});
-    const errors=[],writes=[];let state=initial(),reject=false,nowPlaying=null;
+    const errors=[],writes=[];let state=initial(),reject=false,nowPlaying=null,recoveries=0;
     let releaseSwitch, releasePoll, pollStarted, holdNextPoll=false;
     const switchGate=new Promise(resolve=>{releaseSwitch=resolve;});
     const pollGate=new Promise(resolve=>{releasePoll=resolve;});
@@ -38,6 +38,11 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
       if(url.pathname==='/api/input-levels')return route.fulfill({json:{inputs:[],age_ms:0,message:'No USB audio inputs connected.'}});
       if(url.pathname==='/api/favorites')return route.fulfill({json:{tracks:[{id:'1',title:'Library song',artist:'Artist',album:'Album',duration:90}]}});
       if(url.pathname==='/api/control/mute')return route.fulfill({status:409,json:{error:'The speaker DSP is waiting for input audio.'}});
+      if(url.pathname==='/api/control/recover-dac'){
+        recoveries++;
+        state={...state,dac_recovery:{phase:'rebooting',available:false}};
+        return route.fulfill({json:{phase:'rebooting'}});
+      }
       if(url.pathname==='/api/control/source'){
         const body=route.request().postDataJSON();writes.push(body);
         if(writes.length===1)await switchGate;
@@ -59,6 +64,7 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#now-playing-details').isHidden(),true);
     assert.equal(await page.locator('#toggle').isVisible(),true);
     assert.equal(await page.locator('#source-apply').count(),0);
+    assert.equal(await page.locator('#recover-dac').isHidden(),true);
     holdNextPoll=true;
     const oldPoll=page.evaluate(()=>refresh());
     await oldPollStarted;
@@ -106,11 +112,15 @@ const initial = () => ({source:'tidal',source_label:'Tidal',sources,source_switc
     assert.equal(await page.locator('#playback-label').textContent(),'Audio stalled');
     await page.locator('#mute').click();
     await page.waitForFunction(()=>document.getElementById('player-error').textContent.includes('waiting for input audio'));
-    state={...state,capture_stalled:false,dac_stalled:true,audio_health:{fault:'dac_output_stalled'}};
+    state={...state,capture_stalled:false,dac_stalled:true,audio_health:{fault:'dac_output_stalled'},dac_recovery:{available:true}};
     await page.evaluate(()=>refresh());
     assert.equal(await page.locator('#now-playing-details').isHidden(),true);
     assert.match(await page.locator('#source-status').textContent(),/DAC output stopped advancing/);
-    state={...state,dac_stalled:false,playback:'play',audio_health:{
+    await page.getByRole('button',{name:'Recover DAC',exact:true}).click();
+    await page.waitForFunction(()=>document.getElementById('source-status').textContent.includes('rebooting'));
+    assert.equal(recoveries,1);
+    assert.equal(await page.locator('#recover-dac').isHidden(),true);
+    state={...state,dac_stalled:false,dac_recovery:null,playback:'play',audio_health:{
       fault:'tidal_input_stalled',recovery:'retrying',attempts:2}};
     await page.evaluate(()=>refresh());
     assert.match(await page.locator('#source-status').textContent(),/Retrying Tidal input \(attempt 2\)/);

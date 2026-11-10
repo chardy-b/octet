@@ -102,7 +102,48 @@ and elapsed position, verify mute, pause any playback, and deliberately reboot
 Octet. Follow the [audio gates](agent-workflows/audio-deployment.md) after boot
 and check every physical output at low level before resuming normal use. Wait
 for the Octet web service to answer before resuming the Tidal queue, since it
-serves MPD's stream URLs. The watchdog never reboots the Pi.
+serves MPD's stream URLs.
+
+### Guarded DAC recovery
+
+With the DAC recovery units installed, the Music page offers **Recover DAC**
+after the watchdog detects a sustained Tidal DAC stall. Automatic recovery
+uses the same action. Both require fresh, repeated stop errors for the DAC's
+I²S transmit DMA channel and a second check of the DAC's PCM progress. The web
+service verifies mute, pauses the same track, confirms MPD released Loopback,
+and records the queue identity and position before asking the local helper to
+reboot. The helper allows one reboot per boot and one per hour across boots.
+
+On boot the graph gate checks all five desktop audio nodes before MPD and
+CamillaDSP start. It captures MPD's persisted Tidal position before MPD can open
+the stream. Once the stream endpoint is listening, the web service verifies the
+queue and approved DSP configuration, then restores the position paused and
+muted. If a check fails, consult `journalctl -u octet-dac-graph` and
+`journalctl -u octet-remote`. The saved playback journal is
+`/var/lib/octet-remote/dac-recovery.json`. The root-owned reboot record and kernel
+evidence are in `/var/lib/octet-dac-recovery/attempt.json`. Keep both for diagnosis.
+Recovery of a cast, USB input, or a tuning run still needs an operator.
+
+On Octet, after deploying the reviewed files in `remote_manifest.py`, install
+the following systemd units from `/opt/octet-remote` as root with mode `0644`.
+Verify the deployed files and follow the audio gates before enabling recovery.
+
+```sh
+sudo install -o root -g root -m 0644 /opt/octet-remote/octet-dac-recovery.socket \
+    /opt/octet-remote/octet-dac-recovery@.service /opt/octet-remote/octet-dac-graph.service \
+    /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable octet-dac-graph.service
+sudo systemctl enable --now octet-dac-recovery.socket
+```
+
+Set `OCTET_DAC_AUTO_RECOVERY=0` in an `octet-remote` service drop-in to use
+only the button. To disable both, run `sudo systemctl disable --now
+octet-dac-recovery.socket` followed by `sudo systemctl disable octet-dac-graph.service`.
+Disable both units before rolling back the remote files.
+The feature assumes Octet's `octet` desktop login and startup-muted CamillaDSP.
+Use an attended trial for the reboot path and all eight physical outputs before
+relying on unattended recovery.
 
 Fresh setup installs `pi/etc/60-octet-journal.conf` to retain logs across reboot.
 On an existing Pi, review `systemd-analyze cat-config systemd/journald.conf`

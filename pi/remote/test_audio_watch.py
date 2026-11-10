@@ -73,6 +73,13 @@ class AudioWatchTests(unittest.TestCase):
         self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
         self.assertNotIn(call('pause 1'), self.server.mpd.call_args_list)
 
+    def test_confirmed_output_stall_calls_recovery_once_per_fault(self):
+        self.watch.on_dac_fault = Mock()
+        with self.assertLogs(level='WARNING'):
+            self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
+        self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
+        self.watch.on_dac_fault.assert_called_once_with()
+
     def test_unreadable_pcm_does_not_trigger_a_fault(self):
         self.ticks([(None, running(1), running(n)) for n in range(4)])
         self.assertIsNone(self.watch.report['fault'])

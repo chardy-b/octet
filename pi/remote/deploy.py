@@ -178,12 +178,21 @@ def take_backup():
 
 
 def install_files(stage):
+    from install_airplay import atomic_write
+
     for name in (*REMOTE_FILES, 'REVISION', 'deploy.py', 'remote_manifest.py'):
         source, destination = stage / name, TARGET / name
-        temporary = TARGET / f'.{name}.new'
-        shutil.copyfile(source, temporary)
-        temporary.chmod(0o755 if name in EXECUTABLE else 0o644)
-        os.replace(temporary, destination)
+        data = source.read_bytes()
+        mode = 0o755 if name in EXECUTABLE else 0o644
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise RuntimeError(f'Unexpected deployment target: {destination}')
+        if destination.exists():
+            info = destination.stat()
+            if (info.st_uid, info.st_gid, info.st_mode & 0o7777) != (0, 0, mode):
+                raise RuntimeError(f'Unexpected deployment metadata: {destination}')
+            if destination.read_bytes() == data:
+                continue
+        atomic_write(destination, data, mode, (0, 0))
 
 
 def repair_dropins():

@@ -1,0 +1,15 @@
+[Unit]
+Description=Verify an Octet DAC stall and schedule a bounded reboot
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/octet-remote/dac_reboot.py
+StandardInput=socket
+StandardOutput=journal
+StateDirectory=octet-dac-recovery
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX
+RuntimeMaxSec=10

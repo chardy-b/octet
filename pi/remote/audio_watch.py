@@ -39,10 +39,11 @@ def sample_pcm():
 
 
 class AudioWatch:
-    def __init__(self, server, *, auto_recover=False, read_pcm=sample_pcm, sleep=time.sleep):
+    def __init__(self, server, *, auto_recover=False, on_dac_fault=None, read_pcm=sample_pcm, sleep=time.sleep):
         self.server, self.read_pcm, self.sleep = server, read_pcm, sleep
         self.lease = BaselineRoute(server)
         self.auto_recover = auto_recover
+        self.on_dac_fault = on_dac_fault
         self.previous = self.source = None
         self.suspect = None
         self.checks = self.healthy_checks = self.attempts = 0
@@ -167,6 +168,8 @@ class AudioWatch:
             logging.warning('Audio watchdog: %s during %s playback (DSP %s, PCM %s → %s)',
                             fault, source, dsp_state, old, new)
             self.report = dict(fault=fault, recovery='operator_needed', source=source, attempts=0)
+            if fault == 'dac_output_stalled' and source == 'tidal' and self.on_dac_fault is not None:
+                self.on_dac_fault()
         if fault != 'tidal_input_stalled' or not self.auto_recover:
             return
         if self.attempts >= MAX_RETRIES:
