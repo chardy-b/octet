@@ -7,6 +7,7 @@ import time
 
 from airplay_baseline import BaselineRoute
 from audio_sources import source_metadata
+from audio_diagnostics import AudioDiagnostics
 
 INTERVAL = 2.0
 FAILED_CHECKS = 3
@@ -49,6 +50,7 @@ class AudioWatch:
         self.checks = self.healthy_checks = self.attempts = 0
         self.report = dict(fault=None, recovery=None, source=None, attempts=0)
         self.resume_pending = None
+        self.diagnostics = AudioDiagnostics(server.STATE) if isinstance(getattr(server, 'STATE', None), Path) else None
 
     def _resume_matches(self, status):
         pending = self.resume_pending
@@ -118,6 +120,8 @@ class AudioWatch:
             config = json.loads(dsp.call('GetConfigJson'))
             source = source_metadata(config)['id']
             dsp_state = dsp.call('GetState')
+            if self.diagnostics is not None:
+                self.diagnostics.sample_metrics(dsp)
         if source == 'tidal':
             expected = dict(self.server.mpd('status')[0]).get('state') == 'play'
         elif source == 'airplay':
@@ -126,6 +130,10 @@ class AudioWatch:
             expected = self.server.BLUETOOTH_CONTROL.status()['active']
         else:
             expected = source != 'unknown' and dsp_state == 'Running'
+        # Observe idle periods too: an idle-to-playing edge can trigger DAC recovery.
+        samples = self.read_pcm() if self.diagnostics is not None else None
+        if self.diagnostics is not None:
+            self.diagnostics.observe(source, dsp_state, expected, config, samples)
         if not expected or config.get('devices', {}).get('playback', {}).get('device') != DAC_DEVICE:
             self.previous = self.suspect = None
             self.checks = self.healthy_checks = 0
@@ -134,7 +142,7 @@ class AudioWatch:
             return
 
         old = self.previous if self.source == source else None
-        new = self.read_pcm()
+        new = samples if samples is not None else self.read_pcm()
         self.previous, self.source = new, source
         if old is None:
             self.suspect = None
@@ -168,6 +176,8 @@ class AudioWatch:
             logging.warning('Audio watchdog: %s during %s playback (DSP %s, PCM %s → %s)',
                             fault, source, dsp_state, old, new)
             self.report = dict(fault=fault, recovery='operator_needed', source=source, attempts=0)
+            if self.diagnostics is not None:
+                self.diagnostics.incident(fault, source, self.server.DSP)
             if fault == 'dac_output_stalled' and source == 'tidal' and self.on_dac_fault is not None:
                 self.on_dac_fault()
         if fault != 'tidal_input_stalled' or not self.auto_recover:

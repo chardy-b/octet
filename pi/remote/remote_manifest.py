@@ -19,6 +19,7 @@ REMOTE_FILES = (
     'bluetooth_admin.py',
     'bluetooth_auto.py',
     'audio_watch.py',
+    'audio_diagnostics.py',
     'dac_recovery.py',
     'dac_reboot.py',
     'octet-dac-recovery.socket',
