@@ -85,9 +85,13 @@ function renderSources(next){
   if(dacRequestPending)$('source-status').textContent='Checking the DAC stall and preparing recovery…';
   else if(recovery?.error&&(next.dac_stalled||recovery.phase))$('source-status').textContent=recovery.error;
   else if(recovery?.phase==='rebooting')$('source-status').textContent='Octet is rebooting to recover the DAC…';
+  else if(recovery?.phase==='recovering'||recovery?.phase==='restarting')$('source-status').textContent='Recovering the DAC audio stream. Output is muted…';
+  else if(recovery?.phase==='driver_reset')$('source-status').textContent='Resetting the audio driver. Output is muted…';
   else if(recovery?.phase==='restoring')$('source-status').textContent='Restoring the saved track with output muted…';
   else if(recovery?.phase==='restored'&&next.playback==='pause'&&next.muted&&!next.dac_stalled)
     $('source-status').textContent=recovery.kind==='boot'?'Your track is restored and paused. Output is muted.':'DAC recovered. Your track is paused and output is muted.';
+  else if(recovery?.phase==='restored'&&recovery.kind==='dac'&&next.muted&&!next.dac_stalled)
+    $('source-status').textContent='DAC recovered. Output is muted; resume music or reconnect your source.';
 }
 let bluetoothBusy=false;
 function renderBluetooth(next){

@@ -1,5 +1,5 @@
 [Unit]
-Description=Verify an Octet DAC stall and schedule a bounded reboot
+Description=Verify an Octet DAC stall and perform one bounded recovery step
 
 [Service]
 ExecStart=/usr/bin/python3 -I /opt/octet-remote/dac_reboot.py
@@ -12,4 +12,6 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 RestrictAddressFamilies=AF_UNIX
-RuntimeMaxSec=10
+RuntimeMaxSec=90
+ReadWritePaths=-/sys/bus/platform/drivers/snd-rpi-simple
+ReadWritePaths=-/sys/bus/platform/drivers/designware-i2s

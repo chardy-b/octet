@@ -110,6 +110,10 @@ class AudioWatch:
                 and not self.server.BLUETOOTH_CONTROL.owns_audio())
 
     def tick(self):
+        recovery = getattr(self.server, 'DAC_RECOVERY', None)
+        if recovery is not None and recovery.busy is True:
+            self.previous = None
+            return
         recover = getattr(self.server, 'recover_source', None)
         if recover is not None:
             recover()
@@ -125,11 +129,13 @@ class AudioWatch:
         if source == 'tidal':
             expected = dict(self.server.mpd('status')[0]).get('state') == 'play'
         elif source == 'airplay':
-            expected = self.server.AIRPLAY_CONTROL.status()['active']
+            cast = self.server.AIRPLAY_CONTROL.status()
+            expected = any(cast.get(key) for key in ('active', 'idle', 'preparing'))
         elif source == 'bluetooth':
-            expected = self.server.BLUETOOTH_CONTROL.status()['active']
+            cast = self.server.BLUETOOTH_CONTROL.status()
+            expected = cast.get('active') or cast.get('preparing')
         else:
-            expected = source != 'unknown' and dsp_state == 'Running'
+            expected = source != 'unknown' and dsp_state in ('Running', 'Stalled')
         # Observe idle periods too: an idle-to-playing edge can trigger DAC recovery.
         samples = self.read_pcm() if self.diagnostics is not None else None
         if self.diagnostics is not None:
@@ -178,7 +184,7 @@ class AudioWatch:
             self.report = dict(fault=fault, recovery='operator_needed', source=source, attempts=0)
             if self.diagnostics is not None:
                 self.diagnostics.incident(fault, source, self.server.DSP)
-            if fault == 'dac_output_stalled' and source == 'tidal' and self.on_dac_fault is not None:
+            if fault == 'dac_output_stalled' and self.on_dac_fault is not None:
                 self.on_dac_fault()
         if fault != 'tidal_input_stalled' or not self.auto_recover:
             return

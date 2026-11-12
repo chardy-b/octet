@@ -106,23 +106,38 @@ serves MPD's stream URLs.
 
 ### Guarded DAC recovery
 
-With the DAC recovery units installed, the Music page offers **Recover DAC**
-after the watchdog detects a sustained Tidal DAC stall. Automatic recovery
-uses the same action. Both require fresh, repeated stop errors for the DAC's
-I²S transmit DMA channel and a second check of the DAC's PCM progress. The web
-service verifies mute, pauses the same track, confirms MPD released Loopback,
-and records the queue identity and position before asking the local helper to
-reboot. The helper allows one reboot per boot and one per hour across boots.
+With the DAC recovery units installed, **Recover DAC** and the automatic watchdog
+use the same source-independent recovery ladder for Tidal, AirPlay, Bluetooth and
+USB playback. A tuning run is excluded by its shared audio lease.
 
-On boot the graph gate checks all five desktop audio nodes before MPD and
-CamillaDSP start. It captures MPD's persisted Tidal position before MPD can open
-the stream. Once the stream endpoint is listening, the web service verifies the
-queue and approved DSP configuration, then restores the position paused and
-muted. If a check fails, consult `journalctl -u octet-dac-graph` and
-`journalctl -u octet-remote`. The saved playback journal is
-`/var/lib/octet-remote/dac-recovery.json`. The root-owned reboot record and kernel
-evidence are in `/var/lib/octet-dac-recovery/attempt.json`. Keep both for diagnosis.
-Recovery of a cast, USB input, or a tuning run still needs an operator.
+Recovery first saves incident evidence, confirms mute, preserves the MPD queue
+and position (including empty queues), and ends casts through their existing
+recovery journals. Casts return to the saved speaker profile; USB keeps its
+selected input. All recovery results stay muted; MPD never resumes itself.
+
+The root helper independently checks the stalled PCM owner and hardware pointer,
+DAC identity and DSP mute. It tries one startup-muted CamillaDSP restart. If that
+fails, it attempts the fixed sound-card/I2S driver rebind only when a root-owned
+`/var/lib/octet-dac-recovery/driver-validation.json` matches the running kernel and
+I2S module. The rebind requires owner-free PCM devices, never resets the shared
+RP1 DMA controller, and re-enumerates WirePlumber before restarting DSP. After
+failed local steps, reboot is the last resort. A missing/mismatched validation
+record skips the unvalidated rebind; it never authorizes speculative sysfs writes.
+
+Each stage verifies exact loaded configuration/path, preserved queue/position,
+restored level while muted, advancing DAC pointers, and the complete desktop
+audio graph. Steps are durably ordered, one ladder per hour; reboot remains
+limited to once per boot and once per hour across boots. Failed or interrupted
+checks retain journals and block unmute. An ambiguous reboot response retains
+the busy latch and audio lease. A remote-process restart can complete a healthy
+same-boot local recovery without requesting a reboot.
+
+The boot graph gate still checks all five desktop audio nodes before MPD and
+CamillaDSP start. The queue is restored paused once its HTTP stream endpoint is
+listening. Inspect `journalctl -u octet-dac-graph`, `journalctl -u octet-remote`,
+`/var/lib/octet-remote/dac-recovery.json`, and the root-owned `ladder.json` and
+`attempt.json` under `/var/lib/octet-dac-recovery`. Do not delete journals to bypass
+a failed restore. See [ladder validation](agent-workflows/dac-recovery-ladder.md).
 
 On Octet, after deploying the reviewed files in `remote_manifest.py`, install
 the following systemd units from `/opt/octet-remote` as root with mode `0644`.

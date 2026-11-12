@@ -22,6 +22,8 @@ REMOTE_FILES = (
     'audio_diagnostics.py',
     'dac_recovery.py',
     'dac_reboot.py',
+    'dac_ladder.py',
+    'dsp_client.py',
     'octet-dac-recovery.socket',
     'octet-dac-recovery@.service',
     'octet-dac-graph.service',

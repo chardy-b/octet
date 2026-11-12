@@ -170,7 +170,8 @@ class ProfileRollbackTests(unittest.TestCase):
         patches = [patch.object(server, 'discover_sources', return_value=[dict(id='tidal', label='Tidal', available=True)]),
                    patch.object(server, 'mpd'), patch.object(server.INPUT_LEVELS, 'release'),
                    patch.object(server, 'listening_profile', return_value=profile),
-                   patch.object(server, 'meter_channels', return_value=8),
+                   patch.object(server, 'meter_channels', return_value=(0, 1)),
+                   patch.object(server, 'ACTIVE_CAPTURE_CHANNELS', (0, 1)),
                    patch.object(server.time, 'sleep'),
                    patch.object(server, 'source_metadata', side_effect=lambda cfg: dict(
                        id='usb' if cfg['devices']['capture'].get('device') == usb()['device'] else 'tidal'))]

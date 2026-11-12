@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, Mock, call
+from unittest.mock import MagicMock, Mock, call, patch
 
 from audio_watch import AudioWatch, CLOSED, DAC_DEVICE, pcm
 from dsp_inputs import TIDAL_DEVICE
@@ -79,6 +79,23 @@ class AudioWatchTests(unittest.TestCase):
             self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
         self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
         self.watch.on_dac_fault.assert_called_once_with()
+
+    def test_output_recovery_is_not_limited_to_tidal(self):
+        for source in ('airplay', 'bluetooth', 'usb:Test:pair-1'):
+            with self.subTest(source=source):
+                watch = AudioWatch(self.server, read_pcm=lambda: (CLOSED, CLOSED, ('RUNNING','44',3)), sleep=Mock())
+                watch.on_dac_fault = Mock()
+                self.server.AIRPLAY_CONTROL.status = Mock(return_value={'idle':True})
+                self.server.BLUETOOTH_CONTROL.status.return_value = {'active':True}
+                self.values['GetState'] = 'Stalled' if source.startswith('usb:') else 'Running'
+                with patch('audio_watch.source_metadata', return_value={'id':source}):
+                    for _ in range(4):watch.tick()
+                watch.on_dac_fault.assert_called_once_with()
+
+    def test_watchdog_does_not_compete_with_an_active_dac_recovery(self):
+        self.server.DAC_RECOVERY = SimpleNamespace(busy=True)
+        self.watch.tick()
+        self.samples.assert_not_called()
 
     def test_evidence_is_saved_before_recovery_and_idle_is_observed(self):
         events = []

@@ -1425,7 +1425,7 @@ def action(name, data):
     if name == 'auto-select':
         # Changing profile keeps the current input playing: no mute, pause or stop.
         with LOCK:
-            if DAC_RECOVERY.busy:
+            if DAC_RECOVERY.busy or DAC_RECOVERY.blocked is True:
                 raise RuntimeError('DAC recovery is in progress')
             CONTROL_GENERATION += 1
             if not BLUETOOTH_CONTROL.owns_audio():
@@ -1436,9 +1436,15 @@ def action(name, data):
                'play-album': prepare_album}.get(name)
     lookup_track = name in ('play', 'enqueue') and track_id(data.get('id')) not in CATALOG
     with LOCK:
-        if DAC_RECOVERY.busy:
+        if DAC_RECOVERY.busy or DAC_RECOVERY.blocked is True:
             if name == 'auto-stop':
                 return TUNING.request('stop', {})
+            if name == 'mute' and data.get('muted') is True:
+                with DSP() as dsp:
+                    dsp.call('SetMute', True)
+                    if dsp.call('GetMute') is not True:
+                        raise RuntimeError('Speaker mute could not be confirmed')
+                return current_status()
             raise RuntimeError('DAC recovery is in progress')
         if name == 'source':
             validate_source(data.get('id'))
