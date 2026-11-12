@@ -73,6 +73,30 @@ class AudioWatchTests(unittest.TestCase):
         self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
         self.assertNotIn(call('pause 1'), self.server.mpd.call_args_list)
 
+    def test_confirmed_output_stall_calls_recovery_once_per_fault(self):
+        self.watch.on_dac_fault = Mock()
+        with self.assertLogs(level='WARNING'):
+            self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
+        self.ticks([(running(1), running(1, '124'), ('XRUN', '125', 0))] * 4)
+        self.watch.on_dac_fault.assert_called_once_with()
+
+    def test_evidence_is_saved_before_recovery_and_idle_is_observed(self):
+        events = []
+        self.watch.diagnostics = Mock()
+        self.watch.diagnostics.incident.side_effect = lambda *args: events.append('evidence')
+        self.watch.on_dac_fault = lambda: events.append('recovery')
+        self.player['state'] = 'pause'
+        self.samples.return_value = (CLOSED, running(1), running(1))
+        self.watch.tick()
+        self.watch.diagnostics.observe.assert_called_once()
+        self.player['state'] = 'play'
+        self.samples.side_effect = None
+        self.samples.return_value = (running(1), running(1), ('XRUN', '125', 0))
+        with self.assertLogs(level='WARNING'):
+            for _ in range(4):
+                self.watch.tick()
+        self.assertEqual(events, ['evidence', 'recovery'])
+
     def test_unreadable_pcm_does_not_trigger_a_fault(self):
         self.ticks([(None, running(1), running(n)) for n in range(4)])
         self.assertIsNone(self.watch.report['fault'])

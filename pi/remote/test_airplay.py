@@ -57,7 +57,8 @@ class AirPlayTests(unittest.TestCase):
                         patch('airplay_baseline.subprocess.run', return_value=MagicMock(returncode=0)),
                         patch('airplay_control.loopback_available', return_value=True),
                         patch('airplay_control.receiver_running', return_value=True),
-                        patch('airplay_control.pcm_running', return_value=True)]
+                        patch('airplay_control.pcm_running', return_value=True),
+                        patch('airplay_control.dac_progressing', return_value=True)]
         for p in self.patches:
             p.start()
             self.addCleanup(p.stop)
@@ -75,6 +76,16 @@ class AirPlayTests(unittest.TestCase):
         self.control.event('start', now=2)
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
         server.mpd.assert_called_once_with('pause 1')
+
+    def test_running_capture_with_stalled_dac_never_unmutes(self):
+        self.control.event('start', now=0)
+        with patch('airplay_control.dac_progressing', return_value=False):
+            self.control.tick(now=1)
+            self.assertFalse(self.control.active)
+            self.assertNotIn(('SetMute', False), self.calls())
+            self.control.tick(now=11)
+        self.assertIn('DAC did not become ready', self.control.error)
+        self.assertNotIn(('SetMute', False), self.calls())
 
     def test_app_switch_keeps_the_route_loaded_and_unmuted(self):
         self.control.event('start', now=0)
@@ -411,6 +422,20 @@ class HookSocketTests(unittest.TestCase):
 
 
 class PCMReadinessTests(unittest.TestCase):
+    def test_dac_readiness_rejects_stall_closed_missing_and_owner_change(self):
+        from airplay_control import dac_progressing
+        for before, after, expected in (
+                (('RUNNING', '1', 3), ('RUNNING', '1', 3), False),
+                (('RUNNING', '1', 3), ('RUNNING', '2', 4), False),
+                (None, None, False),
+                (('closed', '', 0), ('closed', '', 0), False),
+                (('RUNNING', '1', 3), ('XRUN', '1', 4), False),
+                (('RUNNING', '1', 3), ('RUNNING', '1', 4), True)):
+            with self.subTest(before=before, after=after), \
+                 patch('airplay_control.pcm', side_effect=[before, after]), \
+                 patch('airplay_control.time.sleep'):
+                self.assertEqual(dac_progressing(), expected)
+
     def test_output_only_stalled_capture_and_parameters_fail_closed(self):
         from pathlib import Path
         import tempfile
@@ -561,7 +586,8 @@ class BaselineAirPlayTests(unittest.TestCase):
                      patch('airplay_baseline.subprocess.run', return_value=MagicMock(returncode=0)),
                      patch('airplay_control.loopback_available', return_value=True),
                      patch('airplay_control.receiver_running', return_value=True),
-                     patch('airplay_control.pcm_running', return_value=True)]:
+                     patch('airplay_control.pcm_running', return_value=True),
+                     patch('airplay_control.dac_progressing', return_value=True)]:
             item.start()
             self.addCleanup(item.stop)
         self.new_controller()

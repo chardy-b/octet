@@ -1,3 +1,4 @@
+from configparser import ConfigParser
 import ipaddress
 import hashlib
 from pathlib import Path
@@ -10,6 +11,15 @@ from install import patch_page
 
 
 class NowPlayingTests(unittest.TestCase):
+    def test_wifi_socket_can_start_before_network_online_at_boot(self):
+        socket_unit = ConfigParser(interpolation=None)
+        socket_unit.read(Path(__file__).with_name('octet-now-playing.socket'))
+        self.assertEqual(socket_unit['Install']['WantedBy'], 'sockets.target')
+        self.assertEqual(socket_unit['Socket']['BindToDevice'], 'wlan0')
+        self.assertEqual(socket_unit['Socket']['ListenStream'], '0.0.0.0:8768')
+        for dependency in ('After', 'Wants', 'Requires'):
+            self.assertNotIn('network-online.target', socket_unit['Unit'].get(dependency, '').split())
+
     def test_airplay_title_and_artist_with_no_artwork_or_queue(self):
         metadata = {'xesam:title': {'data': 'Life Is Simple in the Moonlight'},
                     'xesam:artist': {'data': ['The Strokes']},

@@ -34,6 +34,7 @@ import bluetooth_pairing
 from network_access import NetworkAccess
 from now_playing_bridge import fetch_song, fetch_artwork
 from audio_watch import AudioWatch
+from dac_recovery import DacRecovery
 from source_profiles import SourceProfiles
 from source_route import SourceRoute
 from airplay_baseline import persist
@@ -1317,12 +1318,15 @@ def current_status():
     health = AUDIO_WATCH.report.copy()
     result['dac_stalled'] = health['fault'] == 'dac_output_stalled'
     result['audio_health'] = health
+    result['dac_recovery'] = DAC_RECOVERY.status()
     return result
 
 
 AIRPLAY_CONTROL = AirPlayController(sys.modules[__name__])
 CAPTURE_STALL_SOURCE = None
-AUDIO_WATCH = AudioWatch(sys.modules[__name__], auto_recover=os.environ.get('OCTET_AUDIO_RECOVERY') == '1')
+DAC_RECOVERY = DacRecovery(sys.modules[__name__])
+AUDIO_WATCH = AudioWatch(sys.modules[__name__], auto_recover=os.environ.get('OCTET_AUDIO_RECOVERY') == '1',
+                         on_dac_fault=DAC_RECOVERY.automatic if os.environ.get('OCTET_DAC_AUTO_RECOVERY') != '0' else None)
 # Any paired phone may play. Sessions started from the web page last four hours;
 # automatic ones have no cutoff.
 BLUETOOTH_CONTROL = BluetoothControl(sys.modules[__name__], lifetime=4 * 3600.0)
@@ -1413,12 +1417,16 @@ def auto_status():
 
 def action(name, data):
     global CONTROL_GENERATION, AUDIO_INTENT
+    if name == 'recover-dac':
+        return DAC_RECOVERY.start()
     if name == 'bluetooth-discoverable':
         # Pairing visibility never touches audio, so it does not stop Bluetooth playback.
         return set_bluetooth_discoverable(data.get('enabled'))
     if name == 'auto-select':
         # Changing profile keeps the current input playing: no mute, pause or stop.
         with LOCK:
+            if DAC_RECOVERY.busy:
+                raise RuntimeError('DAC recovery is in progress')
             CONTROL_GENERATION += 1
             if not BLUETOOTH_CONTROL.owns_audio():
                 AUDIO_INTENT += 1
@@ -1428,6 +1436,10 @@ def action(name, data):
                'play-album': prepare_album}.get(name)
     lookup_track = name in ('play', 'enqueue') and track_id(data.get('id')) not in CATALOG
     with LOCK:
+        if DAC_RECOVERY.busy:
+            if name == 'auto-stop':
+                return TUNING.request('stop', {})
+            raise RuntimeError('DAC recovery is in progress')
         if name == 'source':
             validate_source(data.get('id'))
         if (prepare or lookup_track) and TUNING.status().get('audio_owned') is not False:
@@ -1457,8 +1469,17 @@ def action(name, data):
     if name == 'source' and isinstance(data, dict) and data.get('id') == 'bluetooth':
         # The Bluetooth bridge needs LOCK to prepare, so the wait for it happens outside.
         start_bluetooth(intent=lambda: generation == CONTROL_GENERATION)
-        return current_status()
+        result = current_status()
+    if (name in ('resume', 'play', 'play-album', 'play-playlist', 'play-radio', 'next', 'previous', 'position', 'source')
+            or (name == 'mute' and data.get('muted') is False)):
+        with LOCK:
+            if DAC_RECOVERY.phase == 'restored' and generation == CONTROL_GENERATION:
+                DAC_RECOVERY.phase = None
     return result
+
+
+def dac_holds_receivers():
+    return DAC_RECOVERY.busy or (not DAC_RECOVERY.boot_restore and DAC_RECOVERY.phase in ('restored', 'failed'))
 
 
 def receiver_intent():
@@ -2019,11 +2040,7 @@ def initialize_dsp():
             AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
 
 
-def main():
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
-    os.umask(0o077)
-    initialize_dsp()
-    logging.info('DSP startup mute confirmed')
+def start_audio_controls():
     threading.Thread(target=AUDIO_WATCH.run, name='octet-audio-watch', daemon=True).start()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
@@ -2037,8 +2054,29 @@ def main():
         # all clients are verified. A runtime directory alone is not consent.
         if os.environ.get('OCTET_BLUETOOTH_AUTO') == '1':
             start_auto_bluetooth(BLUETOOTH_CONTROL)
+
+
+def restore_audio_controls():
+    DAC_RECOVERY.restore()
+    if not DAC_RECOVERY.busy:
+        start_audio_controls()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    os.umask(0o077)
+    initialize_dsp()
+    logging.info('DSP startup mute confirmed')
+    DAC_RECOVERY.prepare_startup()
+    if DAC_RECOVERY.busy:
+        # The HTTP stream resolver must accept MPD's seek before the track can be paused.
+        httpd = ThreadingHTTPServer((BIND, PORT), Handler)
+        threading.Thread(target=restore_audio_controls, name='octet-dac-restore', daemon=True).start()
+    else:
+        start_audio_controls()
+        httpd = ThreadingHTTPServer((BIND, PORT), Handler)
     print(f'Octet music controls: http://{BIND}:{PORT}', flush=True)
-    ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
+    httpd.serve_forever()
 
 
 if __name__ == '__main__':

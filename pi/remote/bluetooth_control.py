@@ -312,6 +312,9 @@ class BluetoothControl:
         # anyone else's audio is muted. The supervisor re-verifies continuously.
         self.identity(address, allowed)
         with self.server.LOCK:
+            if (getattr(self.server, 'dac_holds_receivers', lambda: False)() is True
+                    and (stream is not None or intent is None)):
+                raise RuntimeError('Choose playback on the Music page after DAC recovery')
             if intent is not None and intent() is not True:
                 raise RuntimeError('Bluetooth selection cancelled by a newer control')
             if self.session is not None or self._bridges or self.route.exists():

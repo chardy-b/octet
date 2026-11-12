@@ -1,0 +1,19 @@
+[Unit]
+Description=Verify Octet's owner-free audio graph before playback services
+Wants=user@1000.service
+After=user@1000.service sound.target
+Before=camilladsp.service mpd.service octet-bluealsa.service camillagui.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/octet-remote/dac_reboot.py graph
+StateDirectory=octet-dac-recovery
+StateDirectoryMode=0700
+RuntimeDirectory=octet-audio-boot
+RuntimeDirectoryMode=0755
+UMask=0077
+TimeoutStartSec=35
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=camilladsp.service mpd.service

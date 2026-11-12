@@ -15,6 +15,7 @@ import time
 
 from airplay_baseline import BaselineRoute
 from audio_sources import loopback_available, source_metadata, meter_channels, pcm_fields, pcm_params_match
+from audio_watch import DAC, advances, pcm
 
 SOCKET = '/run/octet-airplay/control.sock'
 PREPARATION_TIMEOUT = 20.0
@@ -22,6 +23,13 @@ PLAYBACK = Path('/proc/asound/Loopback/pcm0p/sub1/status')
 
 
 CAPTURE = Path('/proc/asound/Loopback/pcm1c/sub1/status')
+
+
+def dac_progressing():
+    """A running DSP/capture stream does not prove the speaker DMA started."""
+    before = pcm(DAC)
+    time.sleep(.05)
+    return advances(before, pcm(DAC))
 
 
 def pcm_running():
@@ -228,6 +236,8 @@ class AirPlayController:
                 return
             if event != 'start':
                 raise ValueError('Invalid AirPlay event')
+            if getattr(self.server, 'dac_holds_receivers', lambda: False)() is True:
+                raise RuntimeError('Choose playback on the Music page after DAC recovery')
             bluetooth = getattr(self.server, 'BLUETOOTH_CONTROL', None)
             if bluetooth is not None and bluetooth.owns_audio():
                 # First owner wins: refuse before muting so Bluetooth is undisturbed.
@@ -336,7 +346,7 @@ class AirPlayController:
                             ready = ready and self.baseline.ready(dsp, loaded, self.expected)
                         if self.expected is not None:
                             ready = ready and matches(loaded, self.expected)
-                        if live and ready:
+                        if live and ready and dac_progressing():
                             # Recheck ownership immediately before the only automatic unmute.
                             if self.server.TUNING.status().get('audio_owned'):
                                 self.fail('Auto Tune took audio ownership', rollback=False)
@@ -357,7 +367,7 @@ class AirPlayController:
                                 self.expected = None
                             return
                     if now - self.pending >= 10:
-                        self.fail('AirPlay capture did not become ready; previous source restored')
+                        self.fail('AirPlay capture or DAC did not become ready; previous source restored')
                 elif self.idle:
                     if live:
                         # Audio came back in the same session (no start hook): carry on.

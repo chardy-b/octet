@@ -1,10 +1,10 @@
 [Unit]
 Description=Octet read-only song feed on Wi-Fi only
-After=network-online.target
-Wants=network-online.target
 
 [Socket]
 ListenStream=0.0.0.0:8768
+# BindToDevice already orders startup after wlan0 appears. Waiting for
+# network-online here would cycle through sockets.target and basic.target.
 BindToDevice=wlan0
 NoDelay=true
 
