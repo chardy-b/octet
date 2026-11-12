@@ -95,4 +95,3 @@ class DSP:
             if result.get('result') != 'Ok':
                 raise RuntimeError('DSP could not complete that action')
             return result.get('value')
-
