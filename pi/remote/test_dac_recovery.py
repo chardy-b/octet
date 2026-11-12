@@ -177,9 +177,15 @@ class RecoveryTests(unittest.TestCase):
         with self.assertLogs(level='ERROR'):self.recovery.restore()
         self.assertEqual(self.recovery.phase,'failed')
         self.assertTrue(self.recovery.journal.exists())
+        self.recovery.lease.release.assert_not_called()
 
 
 class BrokerTests(unittest.TestCase):
+    def setUp(self):
+        mute = patch('dac_ladder.muted_dsp')
+        mute.start()
+        self.addCleanup(mute.stop)
+
     def test_boot_snapshot_uses_mpd_state_position_and_ordered_tidal_uris(self):
         urls = ['http://127.0.0.1:8767/stream/1?entry=abcd', 'http://127.0.0.1:8767/stream/2?entry=ef01']
         state = 'state: pause\ncurrent: 1\ntime: 25.583\nplaylist_begin\n' + ''.join(

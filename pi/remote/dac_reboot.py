@@ -172,6 +172,8 @@ def handle(operation):
             lines = ladder['kernel']
         else:
             lines = fault_evidence()
+            if operation == b'reboot':
+                dac_ladder.muted_dsp()
         if operation == b'check':
             return
         if (LOOPBACK / 'pcm0p/sub0/status').read_text().strip() != 'closed':

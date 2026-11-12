@@ -181,7 +181,8 @@ class DacRecovery:
                 self._save(record)
             except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
                 self.phase, self.error = 'failed', str(error)
-                self.lease.release()
+                if not self.journal.exists() and not self.journal.is_symlink():
+                    self.lease.release()
                 logging.warning('DAC recovery preparation failed: %s', error)
                 raise RecoveryRefused(self.error) from error
             # The worker releases the control lock during bounded root operations.
@@ -254,7 +255,7 @@ class DacRecovery:
             self.phase, self.error = 'failed', str(error)
             logging.error('DAC recovery retained muted for attention: %s', error)
         finally:
-            if self.phase != 'rebooting':
+            if self.phase == 'restored' or (not self.journal.exists() and not self.journal.is_symlink()):
                 self.lease.release()
 
     def automatic(self):
@@ -360,4 +361,5 @@ class DacRecovery:
                 self.phase = 'restored'
                 logging.info('Saved track restored paused after boot. Output remains muted.')
             finally:
-                self.lease.release()
+                if self.phase == 'restored' or (not self.journal.exists() and not self.journal.is_symlink()):
+                    self.lease.release()
