@@ -1,4 +1,4 @@
-"""Muted Bluetooth candidate preparation and durable recovery.
+"""Bluetooth candidate preparation and durable recovery.
 
 Caller holds server.LOCK. The inherited flock is retained until recovery finishes,
 including failures; never transfer its ownership through a socket or unlink it.
@@ -46,19 +46,13 @@ class BluetoothRoute(BaselineRoute):
     def snapshot(self):
         return self.root / 'bluetooth-original.yml'
 
-    def mute(self):
-        with self.server.DSP() as dsp:
-            dsp.call('SetMute', True)
-            if dsp.call('GetMute') is not True:
-                raise RuntimeError('Bluetooth physical mute not verified')
-
     def ownership(self):
         super().ownership()
         airplay = self.server.AIRPLAY_CONTROL
-        # CHANNEL_PROFILE casts have no journal: an unfinished rollback or mute
+        # CHANNEL_PROFILE casts have no journal: an unfinished rollback or recovery
         # retry is AirPlay-owned DSP state just as much as an active cast.
         if (airplay.active or airplay.pending is not None or airplay.baseline.exists()
-                or airplay.restore_pending is not None or airplay.needs_mute):
+                or airplay.restore_pending is not None or airplay.recovery_pending):
             raise RuntimeError('AirPlay owns audio; Bluetooth recovery retained')
 
     def read_record(self):
@@ -131,7 +125,6 @@ class BluetoothRoute(BaselineRoute):
             self._journal_bytes = None
             self._journal_identity = None
             self.ownership()
-            self.mute()
             original = Path(path)
             if original.suffix != '.yml' or original.resolve() != original:
                 raise RuntimeError('Bluetooth requires a saved profile path')
@@ -197,9 +190,8 @@ class BluetoothRoute(BaselineRoute):
         raise RuntimeError('Bluetooth profile change not verified')
 
     def prepare(self, rate, format):
-        """Load a checked sub2 candidate while muted; retain evidence until recovery."""
+        """Load a checked sub2 candidate without a master latch; retain evidence until recovery."""
         with self.server.LOCK:
-            self.mute()
             self.acquire()
             try:
                 self.ownership()
@@ -224,32 +216,22 @@ class BluetoothRoute(BaselineRoute):
                     if read_bounded(self.candidate, MAX_CONFIG) != data:
                         raise RuntimeError('Bluetooth candidate changed before path switch')
                     dsp.call('SetConfigFilePath', str(self.candidate))
-                    try:
-                        self.ownership()
-                        self.original()
-                        self.mute()
-                        if read_bounded(self.candidate, MAX_CONFIG) != data:
-                            raise RuntimeError('Bluetooth candidate changed before reload')
-                        dsp.call('Reload')
-                    finally:
-                        self.mute()
+                    self.ownership()
+                    self.original()
+                    if read_bounded(self.candidate, MAX_CONFIG) != data:
+                        raise RuntimeError('Bluetooth candidate changed before reload')
+                    dsp.call('Reload')
                     for _ in range(20):
                         self.ownership()
                         self.original()
                         if read_bounded(self.candidate, MAX_CONFIG) != data:
                             raise RuntimeError('Bluetooth candidate changed after reload')
-                        if dsp.call('GetMute') is not True:
-                            raise RuntimeError('Bluetooth physical mute lost')
                         if (dsp.call('GetConfigFilePath') == str(self.candidate)
                                 and json.loads(dsp.call('GetConfigJson')) == expected
                                 and dsp.call('GetState') == 'Running'):
                             return expected
                         time.sleep(.1)
                 raise RuntimeError('Bluetooth candidate load not verified; recovery retained')
-            except BaseException:
-                # Even external mute drift or an interrupted reload must fail muted.
-                self.mute()
-                raise
             finally:
                 self.release_if_idle()
 
@@ -259,32 +241,24 @@ class BluetoothRoute(BaselineRoute):
         with self.server.DSP() as dsp:
             if (dsp.call('GetConfigFilePath') != str(path)
                     or json.loads(dsp.call('GetConfigJson')) != config
-                    or dsp.call('GetState') != 'Running'
-                    or dsp.call('GetMute') is not True):
+                    or dsp.call('GetState') != 'Running'):
                 raise RuntimeError('Bluetooth guarded baseline drifted')
 
     def recover(self, *, cleanup=True):
-        # Mute is attempted even if the lock/approval is now unavailable.
-        self.mute()
         self.acquire()
         self.ownership()
         path, config = self.original()
         with self.server.DSP() as dsp:
-            self.mute()
             self.ownership()
             self.original()
             dsp.call('SetConfigFilePath', str(path))
-            try:
-                dsp.call('Reload')
-            finally:
-                self.mute()
+            dsp.call('Reload')
             for _ in range(20):
                 self.ownership()
                 self.original()
                 if (dsp.call('GetConfigFilePath') == str(path)
                         and json.loads(dsp.call('GetConfigJson')) == config
-                        and dsp.call('GetState') == 'Running'
-                        and dsp.call('GetMute') is True):
+                        and dsp.call('GetState') == 'Running'):
                     # Retain immutable snapshot; journal is the last recovery marker.
                     if cleanup:
                         self.cleanup_journal()

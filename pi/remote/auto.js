@@ -47,7 +47,6 @@
       selectionLoaded = true;
     }
     window.autoAudioOwned = Boolean(data.audio_owned);
-    if(data.audio_owned) el('global-mute').textContent='Stop tones';
     el('auto-status').textContent = data.message || data.status;
     el('auto-status').classList.toggle('error', ['failed','cancelled','interrupted'].includes(data.status));
     const skipped = el('auto-skipped-list');skipped.replaceChildren();

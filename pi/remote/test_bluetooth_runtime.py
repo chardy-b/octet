@@ -152,17 +152,16 @@ class RuntimeTests(unittest.TestCase):
             '--pcm=hw:Loopback,0,2', '--volume=software', '--single-audio', MAC])
         # Mute first, then MPD pause, then journal-protected path switch, then
         # the bounded level, then the single unmute.
-        first_mute = self.index(('SetMute', True))
-        self.assertLess(first_mute, self.index(('SetConfigFilePath', candidate)))
+        self.assertLess(self.index(('SetVolume', -18.0)), self.index(('SetConfigFilePath', candidate)))
         self.assertEqual(self.mpd_calls[:2], ['pause 1', 'status'])
-        self.assertLess(self.index(('SetVolume', -18.0)), self.index(('SetMute', False)))
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertEqual(self.state['volume'], -18.0)
         self.assertFalse(self.state['mute'])
         self.assertEqual(self.server.ACTIVE_CAPTURE_CHANNELS, (0, 1))
         self.control.tick()
         self.assertTrue(self.control.status()['active'])
         self.control.stop()
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], str(self.path))
         self.assertEqual(self.state['config'], self.config)
         self.assertFalse(self.control.route.exists())
@@ -224,7 +223,7 @@ class RuntimeTests(unittest.TestCase):
         airplay = self.server.AIRPLAY_CONTROL
         journal = SimpleNamespace(exists=lambda: True)
         for field, value in (('active', True), ('pending', 1.0), ('restore_pending', b'channel'),
-                             ('needs_mute', True), ('baseline', journal), ('hook_busy', None)):
+                             ('recovery_pending', True), ('baseline', journal), ('hook_busy', None)):
             with self.subTest(field=field):
                 saved = getattr(airplay, field)
                 if field == 'hook_busy':
@@ -269,7 +268,7 @@ class RuntimeTests(unittest.TestCase):
         self.server.mpd = stubborn
         with self.assertRaisesRegex(RuntimeError, 'did not pause'):
             self.control.start(MAC)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.spawn.assert_not_called()
         self.assertFalse(self.control.route.exists())
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
@@ -283,7 +282,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'deadline'):
             self.control.start(MAC)
         self.assertLess(time.monotonic() - began, 2)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertFalse(self.control.route.exists())
         self.control._thread.join(5)
         self.child.terminate.assert_called_once()
@@ -300,7 +299,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'deadline'):
             self.control.start(MAC)
         self.control._thread.join(5)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], str(self.path))
         self.assertFalse(self.control.route.exists())
 
@@ -312,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.control.start(MAC)
         self.control._thread.join(5)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertFalse(self.control.route.exists())
 
     def test_stall_after_activation_mutes_and_restores(self):
@@ -320,12 +319,12 @@ class RuntimeTests(unittest.TestCase):
         self.frozen = True
         self.control._thread.join(5)
         self.assertIsNone(self.control.session)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], str(self.path))
         self.assertIn('stalled', self.control.status()['error'])
 
     def test_live_drift_volume_or_mute_change_fails_closed_on_tick(self):
-        changes = [dict(config={}), dict(volume=-6.0), dict(mute=True)]
+        changes = [dict(config={}), dict(volume=-6.0)]
         for change in changes:
             with self.subTest(change=change):
                 self.control.start(MAC)
@@ -334,7 +333,7 @@ class RuntimeTests(unittest.TestCase):
                     self.state['config'] = {'devices': {}}
                 self.control.tick()
                 self.assertIsNone(self.control.session)
-                self.assertTrue(self.state['mute'])
+                self.assertNotIn(('SetMute', True), self.calls)
                 self.assertEqual(self.state['path'], str(self.path))
                 self.control._thread.join(5)
                 self.calls.clear()
@@ -344,10 +343,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(self.control.set_level(volume=-24.0))  # nothing playing
         self.control.start(MAC)
         self.assertTrue(self.control.set_level(volume=-24.0))
-        self.assertTrue(self.control.set_level(muted=True))
         self.control.tick()
         self.assertTrue(self.control.status()['active'])
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['volume'], -24.0)
         with self.assertRaisesRegex(ValueError, '-18'):
             self.control.set_level(volume=-6.0)
@@ -359,7 +357,7 @@ class RuntimeTests(unittest.TestCase):
         self.state['running'] = 'Paused'
         with patch('bluetooth_route.time.sleep'), self.assertRaisesRegex(RuntimeError, 'restore not verified'):
             self.control.tick()
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertTrue(self.control.route.journal.exists())
         self.assertTrue(self.control.owns_audio())
         self.assertTrue(self.control.status()['recovery_pending'])
@@ -375,7 +373,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '-18 dB'):
             self.control.start(MAC)
         self.assertNotIn(('SetMute', False), self.calls)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.state['volume'] = -18.0
 
     def test_stop_during_preparation_window_never_unmutes(self):
@@ -409,7 +407,7 @@ class RuntimeTests(unittest.TestCase):
         self.identity.side_effect = RuntimeError('Bluetooth identity unavailable or rejected: Connected')
         self.control._thread.join(5)
         self.assertIsNone(self.control.session)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertIn('Connected', self.control.status()['error'])
         self.assertFalse(self.control.route.exists())
 
@@ -428,9 +426,7 @@ class RuntimeTests(unittest.TestCase):
                     self.frozen = True
                     self.wait_for(lambda: self.control.session is None)
                 self.control._thread.join(5)
-                first_mute = max(i for i, c in enumerate(self.calls[:self.index(('terminate',))])
-                                 if c == ('SetMute', True))
-                self.assertLess(first_mute, self.index(('terminate',)))
+                self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
                 self.assertLess(self.index(('reaped',)), self.restore_index())
                 self.assertEqual(self.calls.count(('terminate',)), 1)
                 self.assertFalse(self.control.route.exists())
@@ -448,7 +444,7 @@ class RuntimeTests(unittest.TestCase):
         self.child.kill.assert_called_once()
         self.control._thread.join(5)
         # Muted, candidate never restored or reloaded while the bridge may live.
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], candidate)
         self.assertFalse(any(c[0] in ('SetConfigFilePath', 'Reload') for c in self.calls))
         self.assertTrue(self.control.route.journal.exists())
@@ -466,7 +462,7 @@ class RuntimeTests(unittest.TestCase):
         self.control.tick()
         self.assertEqual(self.state['path'], str(self.path))
         self.assertEqual(self.state['config'], self.config)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertFalse(self.control.owns_audio())
         self.assertFalse(self.control.status()['recovery_pending'])
 
@@ -474,7 +470,7 @@ class RuntimeTests(unittest.TestCase):
         seen = []
         dsp_call = self.dsp.call.side_effect
         def call(name, *args):
-            if (name, *args) == ('SetMute', False):
+            if name == 'GetState' and self.control.session is not None and self.control.session.expected is not None:
                 seen.append(self.server.LOCK._is_owned())
                 fd = os.open(self.root / 'audio.lock', os.O_RDONLY)
                 try:  # a cooperative Auto Tune writer cannot take the lease now
@@ -485,12 +481,13 @@ class RuntimeTests(unittest.TestCase):
             return dsp_call(name, *args)
         self.dsp.call.side_effect = call
         self.control.start(MAC)
-        self.assertEqual(seen, [True])
+        self.assertTrue(seen)
+        self.assertTrue(all(seen))
 
     def test_lost_audio_lock_lease_before_unmute_never_unmutes(self):
         dsp_call = self.dsp.call.side_effect
         def call(name, *args):
-            if name == 'SetVolume':
+            if name == 'GetState' and self.control.session is not None and self.control.session.expected is not None:
                 # The shared lock inode is replaced after the clamp.
                 lock = self.root / 'audio.lock'
                 lock.rename(self.root / 'old.lock')
@@ -500,7 +497,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'lock'):
             self.control.start(MAC)
         self.assertNotIn(('SetMute', False), self.calls)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
 
     def test_external_volume_raise_between_clamp_and_unmute_never_unmutes(self):
         dsp_call = self.dsp.call.side_effect
@@ -509,38 +506,16 @@ class RuntimeTests(unittest.TestCase):
             result = dsp_call(name, *args)
             if name == 'GetVolume' and any(c[0] == 'SetVolume' for c in self.calls):
                 reads.append(result)
-                if len(reads) == 1:
+                if len(reads) >= 1:
                     self.state['volume'] = -6.0  # non-cooperative writer after clamp read-back
             return result
         self.dsp.call.side_effect = call
         with self.assertRaisesRegex(RuntimeError, '-18 dB'):
             self.control.start(MAC)
         self.assertNotIn(('SetMute', False), self.calls)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.state['volume'] = -18.0
 
-    def test_external_change_right_after_unmute_is_remuted_on_same_connection(self):
-        dsp_call = self.dsp.call.side_effect
-        def call(name, *args):
-            result = dsp_call(name, *args)
-            if (name, *args) == ('SetMute', False):
-                self.state['volume'] = -6.0  # unpreventable: no compare-and-set
-            return result
-        self.dsp.call.side_effect = call
-        def connect():
-            self.calls.append(('connect',))
-            return self.dsp
-        self.dsp.__enter__.side_effect = connect
-        with self.assertRaisesRegex(RuntimeError, '-18 dB'):
-            self.control.start(MAC)
-        unmute = self.index(('SetMute', False))
-        remute = self.calls.index(('SetMute', True), unmute)
-        # Re-muted before any new connection (i.e. before fail() even starts).
-        self.assertNotIn(('connect',), self.calls[unmute:remute])
-        self.assertNotIn(('SetMute', False), self.calls[unmute + 1:])
-        self.assertTrue(self.state['mute'])
-        self.assertEqual(self.state['path'], str(self.path))
-        self.state['volume'] = -18.0
 
     def test_orphaned_journal_is_recovered_by_watchdog(self):
         self.control.route.begin(str(self.path), self.config)
@@ -550,7 +525,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(restarted.route.release)
         self.assertTrue(restarted.owns_audio())
         restarted.tick()
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertFalse(restarted.route.exists())
         self.assertFalse(restarted.owns_audio())
 
@@ -600,18 +575,6 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('pause 1', self.mpd_calls)
         self.assertEqual(self.state['mpd'], 'pause')
 
-    def test_same_generation_retry_preserves_an_explicit_music_mute(self):
-        gen = self.generation()
-        self.auto(gen)
-        self.control.set_level(muted=True)
-        self.control.fail('Playback PCM is not RUNNING (XRUN)')
-        self.control._thread.join(5)
-        self.calls.clear()
-        self.auto(gen)
-        self.assertTrue(self.control.session.active)
-        self.assertTrue(self.control.session.muted)
-        self.assertTrue(self.state['mute'])
-        self.assertNotIn(('SetMute', False), self.calls)
 
     def test_preparing_route_allows_stalled_dsp_while_muted_but_cannot_unmute(self):
         self.frozen = True
@@ -683,7 +646,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'generation'):
             self.auto(current=current)
         self.assertNotIn(('SetMute', False), self.calls)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertIsNone(self.control.session)
         self.assertFalse(self.control.route.exists())
         self.assertEqual(self.state['path'], str(self.path))
@@ -697,8 +660,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.control.session.mode, 'auto')
         self.assertEqual(self.state['volume'], -18.0)
         self.assertFalse(self.state['mute'])
-        self.assertLess(self.index(('SetMute', True)), self.index(('SetVolume', -18.0)))
-        self.assertLess(self.index(('SetVolume', -18.0)), self.index(('SetMute', False)))
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertEqual(self.mpd_calls[:3], ['status', 'pause 1', 'status'])
         time.sleep(0.5)
         self.control.tick()
@@ -721,8 +684,8 @@ class RuntimeTests(unittest.TestCase):
         self.control.tick()
         self.assertIsNone(self.control.session)
         self.control._thread.join(5)
-        self.assertEqual(order, [('terminate', True)])
-        self.assertTrue(self.state['mute'])
+        self.assertEqual(order, [('terminate', False)])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], str(self.path))
         self.assertIn('generation', self.control.status()['error'])
         self.assertFalse(self.control.route.exists())
@@ -748,7 +711,7 @@ class RuntimeTests(unittest.TestCase):
         thread.join(5)
         self.assertIsNone(self.control.session)
         self.assertNotIn(('SetMute', False), self.calls)
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
 
     def test_stale_or_wrong_stop_auto_cannot_stop_newer_or_manual_session(self):
         newer = self.generation(counter=2)
@@ -773,7 +736,7 @@ class RuntimeTests(unittest.TestCase):
         self.auto(generation)
         status = self.control.stop_auto(generation, 'stream ended')
         self.assertEqual(status, dict(active=False, preparing=False, recovery_pending=False, error=None))
-        self.assertTrue(self.state['mute'])
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(self.state['path'], str(self.path))
         self.control._thread.join(5)
         self.child.terminate.assert_called_once()
@@ -872,9 +835,10 @@ class ServerIntegrationTests(unittest.TestCase):
         self.bluetooth.set_level.return_value = True
         with patch.object(self.server, 'AIRPLAY_CONTROL', self.airplay):
             self.server.action('volume', {'db': -24})
-            self.server.action('mute', {'muted': True})
+            with self.assertRaises(ValueError):
+                self.server.action('mute', {'muted': True})
         self.assertEqual(self.bluetooth.set_level.call_args_list,
-                         [((-24.0, None),), ((None, True),)])
+                         [((-24.0,),)])
         self.bluetooth.stop.assert_not_called()
         self.dsp.call.assert_not_called()
 
@@ -903,7 +867,7 @@ class ServerIntegrationTests(unittest.TestCase):
         self.bluetooth.stop.assert_not_called()
 
     def test_startup_recovers_bluetooth_even_when_airplay_recovery_fails(self):
-        airplay = Mock(needs_mute=False, error=None)
+        airplay = Mock(recovery_pending=False, error=None)
         airplay.recover.side_effect = OSError('AirPlay journal broken')
         self.bluetooth.startup.side_effect = RuntimeError('Bluetooth recovery retained')
         self.dsp.call.side_effect = lambda name, *args: True if name == 'GetMute' else (
@@ -914,7 +878,7 @@ class ServerIntegrationTests(unittest.TestCase):
             self.server.initialize_dsp()
         self.bluetooth.startup.assert_called_once_with()
         calls = [c.args for c in self.dsp.call.call_args_list]
-        self.assertEqual(calls[-4:-2], [('SetMute', True), ('GetMute',)])
+        self.assertFalse(any(c[0] == 'SetMute' for c in calls))
 
     def test_bluetooth_socket_served_only_with_installed_runtime_directory(self):
         import bluetooth_control

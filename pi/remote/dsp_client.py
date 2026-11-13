@@ -22,6 +22,8 @@ class DSP:
         self.sock = socket.create_connection(('127.0.0.1', 1234), timeout=4)
         try:
             self.handshake()
+            from output_policy import reconcile
+            reconcile(self)
         except Exception:
             self.sock.close()
             raise
@@ -71,6 +73,8 @@ class DSP:
         self.sock.sendall(header + mask + bytes(v ^ mask[i % 4] for i, v in enumerate(data)))
 
     def call(self, name, value=None):
+        if name == 'SetMute' and value is not False:
+            raise ValueError('Master mute has been removed; stop playback instead')
         self.send_frame(json.dumps(name if value is None else {name: value}).encode())
         while True:
             first, second = read_exact(self.sock, 2)

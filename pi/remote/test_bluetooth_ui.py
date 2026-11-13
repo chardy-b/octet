@@ -63,18 +63,6 @@ class BluetoothUiTests(unittest.TestCase):
         thread.join()
         return got[0]
 
-    def test_mute_cancels_a_manual_bluetooth_selection_waiting_for_identity(self):
-        control = self.control()
-        valid_after_mute = []
-        def start(address, *, intent):
-            server.action('mute', {'muted': True})
-            valid_after_mute.append(intent())
-        control.start.side_effect = start
-        with fixture(), patch.object(server, 'BLUETOOTH_CONTROL', control), \
-                patch.object(server, 'bluetooth_devices', return_value=[
-                    dict(address='AA:BB:CC:DD:EE:FF', paired=True, connected=True)]):
-            server.action('source', {'id': 'bluetooth'})
-        self.assertEqual(valid_after_mute, [False])
 
     def test_start_skips_disconnected_phones_and_reports_the_connected_failure(self):
         control = self.control()

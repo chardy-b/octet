@@ -1,35 +1,8 @@
-"""Manual BlueALSA A2DP receiver controller inside octet-remote.
+"""Source-owned BlueALSA receiver with durable route recovery.
 
-Any paired phone may play: start requires a Paired+Trusted+Connected phone on hci0
-(bluetooth_identity.paired_addresses). Pairing and trust live in bluetooth_pairing.
-
-One owner at a time. Bluetooth refuses to start while AirPlay (journal or
-CHANNEL_PROFILE cast, including unfinished rollback) or Auto Tune owns audio, and
-AirPlay refuses to start while Bluetooth owns it. Music-page volume and mute adjust
-an active session in place (set_level, still at most -18 dB); any other manual
-control is an override that stops Bluetooth muted. Start, stop, failure and
-recovery never resume MPD. The only automatic unmute is the guarded one in
-_activate (at most -18 dB on a verified live candidate with fresh PCM progress on
-both sub2 endpoints).
-
-Automatic sessions (start_auto) reuse the same guarded start with a stream generation
-and a cached validator, no cutoff lifetime, and are stopped only by their own generation.
-
-Failure order is fixed: emergency mute, then confirmed termination and reaping of
-the session's own bridge child, and only then DSP restore/reload. If termination
-is not confirmed, the DSP is never restored or reloaded: mute, journal and flock
-are retained and every tick/stop retries the reap before recovery.
-
-DSP writer exclusion (cooperative only). In-process writers (HTTP actions,
-AirPlay, Bluetooth) serialize on server.LOCK; every action first stops Bluetooth
-and AirPlay refuses to start while Bluetooth owns audio. Auto Tune's DSP writes
-that can unmute or reload take the shared audio.lock flock, which BluetoothRoute
-holds from prepare until recovery; _activate re-verifies that lease immediately
-before unmuting. CamillaDSP's websocket has no compare-and-set, so the final
-read-back and SetMute(False) are still separate commands. A non-cooperative
-local websocket client (or a CamillaDSP restart) can change state in between;
-that is detected by the read-back on the same connection right after the
-unmute (immediate re-mute) and by the 0.25 s watchdog, not prevented.
+The bridge child is terminated and reaped before restoring its route. Unconfirmed
+termination stops DSP processing and retains the journal/lease for retry. Starting
+never resumes MPD, and the volume ceiling is enforced before loading the route.
 """
 from functools import partial
 import json
@@ -78,8 +51,6 @@ class Session:
         self.candidate = None
         self.format = None
         self.active = False
-        # The Music page's mute on an active session; the watchdog expects it.
-        self.muted = False
         self.intent = None
 
 
@@ -103,12 +74,10 @@ class BluetoothControl:
         self._bridges = []
         self.error = None
         self.errors = {}
-        self.mute_verified = False
         self.retry_generation = 0
-        self._last_auto_mute = (None, False)
 
     def cancel_retry(self):
-        """An explicit mute with no owning session cancels a pending automatic rebuild."""
+        """An explicit Stop cancels a pending automatic rebuild."""
         self.retry_generation += 1
 
     def owns_audio(self):
@@ -130,21 +99,11 @@ class BluetoothControl:
                                + '; '.join(map(str, errors))) from errors[0]
 
     def fail(self, reason):
-        # Also serialize direct fail() calls. Emergency mute precedes disk/lock IO.
+        # Also serialize direct fail() calls. Owned bridge termination precedes route restoration.
         with self.server.LOCK:
             session, self.session = self.session, None
-            if session is not None and session.stream is not None:
-                self._last_auto_mute = (session.stream, session.muted)
             self.error = reason
             self.errors = {}
-            self.mute_verified = False
-            try:
-                self.route.mute()
-                self.mute_verified = True
-                if session is not None:
-                    logging.info('Bluetooth mute=True: ending session (%s)', reason)
-            except Exception as error:
-                self.errors['mute'] = error
             stops = []
             if session is not None:
                 session.stop_event.set()
@@ -161,23 +120,27 @@ class BluetoothControl:
                 except Exception as error:
                     stops.append(error)
             if stops:
+                try:
+                    from output_policy import stop
+                    with self.server.DSP() as dsp:
+                        stop(dsp, 'Bluetooth bridge termination unconfirmed')
+                except Exception as error:
+                    self.errors['dsp-stop'] = error
                 self.errors['stop'] = stops[0] if len(stops) == 1 else RuntimeError(
                     '; '.join(map(str, stops)))
             try:
                 if self.route.exists():
                     if 'stop' in self.errors:
                         # The bridge may still write sub2: never restore or reload
-                        # while it might be alive. Candidate stays loaded muted;
+                        # while it might be alive. DSP is stopped;
                         # journal and flock are retained and tick retries.
                         raise RuntimeError('restore deferred until bridge termination '
-                                           'is confirmed; mute and journal retained')
+                                           'is confirmed; processing stopped and journal retained')
                     self.route.recover(cleanup=not self.errors)
                     if not self.errors:
-                        logging.info('Bluetooth recovery restored the speaker profile, muted')
+                        logging.info('Bluetooth recovery restored the speaker profile')
             except Exception as error:
                 self.errors['recovery'] = error
-                if 'stop' not in self.errors:
-                    self.mute_verified = False
             if self.errors:
                 self.error = reason + '; ' + '; '.join(
                     f'{stage}: {error}' for stage, error in self.errors.items())
@@ -203,27 +166,27 @@ class BluetoothControl:
                         error=self.error)
 
     def _idle(self):
-        """Non-mutating ownership precheck so a refused start never mutes others."""
+        """Non-mutating ownership precheck so a refused start does not interrupt others."""
         getattr(self.server, 'recover_source', lambda: None)()
         airplay = self.server.AIRPLAY_CONTROL
         # An AirPlay route left loaded between apps is silent: the phone takes over.
-        # Its muted restore is the only mutation before the refusal checks below.
+        # Its route restore is the only mutation before the refusal checks below.
         airplay.release_idle()
         if (airplay.active or airplay.pending is not None or airplay.baseline.exists()
-                or airplay.restore_pending is not None or airplay.needs_mute
+                or airplay.restore_pending is not None or airplay.recovery_pending
                 or airplay.hook_busy.locked()):
             raise RuntimeError('AirPlay owns audio; Bluetooth start refused')
         if self.server.TUNING.status().get('audio_owned') is not False:
             raise RuntimeError('Auto Tune owns audio or ownership is unknown')
         with self.server.DSP() as dsp:
-            loaded = json.loads(dsp.call('GetConfigJson'))
+            loaded = getattr(self.server, 'selected_config', lambda d: json.loads(d.call('GetConfigJson')))(dsp)
         if source_metadata(loaded)['id'] != 'tidal':
             # Another input was picked on the Music page: back to the profile's Tidal
             # input first, as AirPlay does; the phone's route is built from that.
             self.server.select_source('tidal')
         with self.server.DSP() as dsp:
             path = dsp.call('GetConfigFilePath')
-            if not self.server.listening_profile(path) or dsp.call('GetState') != 'Running':
+            if not self.server.listening_profile(path) or dsp.call('GetState') not in ('Running', 'Inactive'):
                 raise RuntimeError('Bluetooth requires a saved speaker profile; select one on the DSP page')
 
     def _pause_mpd(self):
@@ -273,7 +236,7 @@ class BluetoothControl:
             return False
 
     def stop_auto(self, generation, reason='Bluetooth stream ended'):
-        """Stop only the automatic session of exactly this generation, muted."""
+        """Stop only the automatic session of exactly this generation."""
         with self.server.LOCK:
             session = self.session
             if session is not None and session.stream == generation:
@@ -309,7 +272,7 @@ class BluetoothControl:
             raise RuntimeError(f'Bluetooth unavailable: {error}') from error
         address = bridge_arguments(address, allowed)[-1]
         # Bus reads outside LOCK: a disconnected or untrusted phone is refused before
-        # anyone else's audio is muted. The supervisor re-verifies continuously.
+        # anyone else's route is changed. The supervisor re-verifies continuously.
         self.identity(address, allowed)
         with self.server.LOCK:
             if (getattr(self.server, 'dac_holds_receivers', lambda: False)() is True
@@ -330,13 +293,14 @@ class BluetoothControl:
                     raise RuntimeError('Music player state is unknown; automatic Bluetooth refused')
             session = Session(address, deadline, stream, is_current)
             session.intent = intent
-            if stream is not None and self._last_auto_mute[0] == stream:
-                session.muted = self._last_auto_mute[1]
             self.session = session
             self.error = None
             try:
-                self.route.mute()
-                logging.info('Bluetooth mute=True: preparing %s session', 'automatic' if stream else 'manual')
+                getattr(self.server, 'start_selected_output', lambda: None)()
+                with self.server.DSP() as dsp:
+                    if not safe_volume(dsp.call('GetVolume')):
+                        dsp.call('SetVolume', MAX_DB)
+                logging.info('Bluetooth preparing %s session', 'automatic' if stream else 'manual')
                 self._pause_mpd()
                 session.supervisor = self.supervisor(
                     partial(self._exited, session), prepare=partial(self._prepare, session),
@@ -358,7 +322,7 @@ class BluetoothControl:
                     raise RuntimeError(self.error or 'Bluetooth session ended before playback')
                 try:
                     if self.clock() >= deadline:
-                        raise RuntimeError('Bluetooth start deadline; output remains muted')
+                        raise RuntimeError('Bluetooth start deadline; session stopped')
                     if self._activate(session):
                         return self.status()
                 except Exception as error:
@@ -397,7 +361,7 @@ class BluetoothControl:
                 and supervisor.ready and supervisor.negotiated == session.format
                 and supervisor.progress_age() < supervisor.stall_timeout)
 
-    def _verify(self, session, *, muted, dsp=None, volume=False, preparing=False):
+    def _verify(self, session, *, dsp=None, volume=False, preparing=False):
         """Exact live candidate, approvals, audio.lock lease and mute; never mutates."""
         if session.expected is None:
             raise RuntimeError('Bluetooth route is not prepared')
@@ -409,20 +373,19 @@ class BluetoothControl:
             raise RuntimeError('Bluetooth candidate changed')
         if dsp is None:
             with self.server.DSP() as dsp:
-                return self._verify_live(session, dsp, muted, volume, preparing)
-        return self._verify_live(session, dsp, muted, volume, preparing)
+                return self._verify_live(session, dsp, volume, preparing)
+        return self._verify_live(session, dsp, volume, preparing)
 
-    def _verify_live(self, session, dsp, muted, volume, preparing=False):
+    def _verify_live(self, session, dsp, volume, preparing=False):
         if (dsp.call('GetConfigFilePath') != str(self.route.candidate)
                 or json.loads(dsp.call('GetConfigJson')) != session.expected
-                or dsp.call('GetState') not in (('Running', 'Stalled') if preparing and muted else ('Running',))
-                or dsp.call('GetMute') is not muted):
+                or dsp.call('GetState') not in (('Running', 'Stalled') if preparing else ('Running',))):
             raise RuntimeError('Bluetooth live DSP route drifted')
-        if (volume or not muted) and not safe_volume(dsp.call('GetVolume')):
+        if not safe_volume(dsp.call('GetVolume')):
             raise RuntimeError('Bluetooth output exceeded -18 dB')
 
     def _activate(self, session):
-        """The only unmute. Any exception fails closed (the caller calls fail()).
+        """Mark verified streaming active. Any exception ends the session.
 
         Holds server.LOCK itself (re-entrant) so no in-process writer interleaves;
         the audio.lock lease is re-verified inside the final _verify. This is
@@ -434,7 +397,7 @@ class BluetoothControl:
                 return True
             if session.expected is None or not self._streaming(session):
                 return False
-            self._verify(session, muted=True)
+            self._verify(session)
             with self.server.DSP() as dsp:
                 if not safe_volume(dsp.call('GetVolume')):
                     dsp.call('SetVolume', MAX_DB)
@@ -444,32 +407,23 @@ class BluetoothControl:
             # unavoidable read-to-write window as short as the protocol allows.
             with self.server.DSP() as dsp:
                 # Re-read volume too: the clamp above was a separate command.
-                self._verify(session, muted=True, dsp=dsp, volume=True)
+                self._verify(session, dsp=dsp, volume=True)
                 if not self._streaming(session) or self.clock() >= session.deadline:
                     raise RuntimeError('Bluetooth PCM progress or start deadline lost before unmute')
                 if not self._current(session):
                     raise RuntimeError('Bluetooth stream generation lost before unmute')
                 self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(session.expected)
                 session.active = True
-                try:
-                    dsp.call('SetMute', session.muted)
-                    self._verify(session, muted=session.muted, dsp=dsp, volume=True)
-                except BaseException:
-                    try:
-                        # Immediate re-mute on the same connection; fail() follows.
-                        dsp.call('SetMute', True)
-                    except Exception:
-                        pass
-                    raise
-            logging.info('Bluetooth mute=%s: PCM ready after %.2fs', session.muted,
+                self._verify(session, dsp=dsp, volume=True)
+            logging.info('Bluetooth PCM ready after %.2fs',
                          self.clock() - (session.deadline - self.timeout))
             return True
 
-    def set_level(self, volume=None, muted=None):
-        """Music-page volume or mute on an active session: the phone keeps playing.
+    def set_level(self, volume=None):
+        """Music-page volume on an active session: the phone keeps playing.
 
         Returns False when no session is active (the caller then overrides it). The
-        route is verified before and after; any drift fails closed, muted.
+        route is verified before and after; any drift stops the bridge and restores its route.
         """
         with self.server.LOCK:
             session = self.session
@@ -479,18 +433,13 @@ class BluetoothControl:
                 raise ValueError('Bluetooth volume is limited to -18 dB')
             try:
                 with self.server.DSP() as dsp:
-                    self._verify(session, muted=session.muted, dsp=dsp)
+                    self._verify(session, dsp=dsp)
                     if volume is not None:
                         dsp.call('SetVolume', volume)
-                    if muted is not None:
-                        session.muted = muted
-                        dsp.call('SetMute', muted)
-                    self._verify(session, muted=session.muted, dsp=dsp, volume=True)
+                    self._verify(session, dsp=dsp, volume=True)
             except Exception as error:
                 self.fail(str(error))
                 raise
-            if muted is not None:
-                logging.info('Bluetooth mute=%s: Music control', muted)
             return True
 
     def tick(self):
@@ -510,12 +459,12 @@ class BluetoothControl:
                 if session.active:
                     if not self._streaming(session):
                         raise RuntimeError('Bluetooth PCM stalled or bridge not ready')
-                    self._verify(session, muted=session.muted)
+                    self._verify(session)
                 else:
                     if self.clock() >= session.deadline:
-                        raise RuntimeError('Bluetooth start deadline; output remains muted')
+                        raise RuntimeError('Bluetooth start deadline; session stopped')
                     if session.expected is not None:
-                        self._verify(session, muted=True, preparing=True)
+                        self._verify(session, preparing=True)
             except Exception as error:
                 self.fail(str(error))
 

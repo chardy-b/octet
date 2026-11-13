@@ -112,7 +112,7 @@ class InstallerTests(unittest.TestCase):
         dropin = self.dropin.read_text()
         self.assertIn('RuntimeDirectory=octet-bluetooth\n', dropin)
         self.assertIn('SupplementaryGroups=octet-bluetooth\n', dropin)
-        self.assertIn('ExecStopPost=/usr/bin/python3 /opt/octet-remote/airplay_control.py mute-on-exit', dropin)
+        self.assertNotIn('mute-on-exit', dropin)
         mutations = [c for c in self.commands if c[1] not in ('is-enabled', 'is-active')]
         self.assertEqual(mutations, [['groupadd', '--system', 'octet-bluetooth'],
                                      ['systemctl', 'daemon-reload']])

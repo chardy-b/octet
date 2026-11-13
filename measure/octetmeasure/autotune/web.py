@@ -224,7 +224,7 @@ class Controller:
             atomic(self.root/'active.json', json.dumps(record, indent=2))
             with self.runner.lock:
                 self.runner.state = self.runner._load()
-                self.runner.state.update(audio_owned=False, status='idle', message='Saved profile applied at −36 dB, muted. Resume music when ready.')
+                self.runner.state.update(audio_owned=False, status='idle', message='Saved profile applied at −36 dB. Resume music when ready.')
                 self.runner.save()
             return self.status()
 
@@ -252,7 +252,7 @@ class Controller:
         selected = yaml.safe_load(previous) or {}
         backend.take_dac()
         try:
-            selected.update(config_path=str(path), mute=[True]*5, volume=[-36., 0., 0., 0., 0.])
+            selected.update(config_path=str(path), mute=[False]*5, volume=[-36., 0., 0., 0., 0.])
             atomic(statefile, yaml.safe_dump(selected))
             backend.systemctl('start')
             for _ in range(30):
@@ -260,7 +260,7 @@ class Controller:
                 try:
                     loaded, state = control([('GetConfigFilePath', None), ('GetState', None)])
                     if loaded == str(path) and state == 'Running':
-                        backend.master(-36, True)
+                        backend.master(-36)
                         self.restart_producers(cfg)
                         return
                 except OSError:

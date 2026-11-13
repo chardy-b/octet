@@ -24,11 +24,11 @@ function renderNowPlaying(next){
   const live=liveInput();
   const song=next.now_playing?.source===next.source?next.now_playing:null;
   const liveActive=next.source==='airplay'?next.airplay?.active:
-    next.source==='bluetooth'?next.bluetooth?.active:next.ready&&!next.muted;
+    next.source==='bluetooth'?next.bluetooth?.active:next.ready;
   const playing=!next.capture_stalled&&!next.dac_stalled&&(live?
     Boolean(liveActive)&&(!song||song.state==='playing'):next.playback==='play'&&!next.player_error);
   $('player-title').textContent=playing?(live?'LIVE INPUT':'NOW PLAYING'):'PLAYER';
-  if(live)$('playback-label').textContent=!next.ready?'Unavailable':next.muted?'Muted':playing?'Listening':'Waiting';
+  if(live)$('playback-label').textContent=!next.ready?'Unavailable':playing?'Listening':'Waiting';
   if(next.capture_stalled||next.dac_stalled)$('playback-label').textContent='Audio stalled';
   $('now-playing-details').hidden=!playing;
   const current=playing?(live?song:next.current):null;
@@ -66,9 +66,9 @@ function renderSources(next){
   const chosen=sources.find(source=>source.id===select.value);
   $('source-note').textContent=chosen?.description||'Connect a USB audio interface to add line inputs.';
   if(sourcePending===null){
-    $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':liveInput()&&next.muted?'Input selected · muted. Unmute when ready.':'';
-    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay · muted.':next.airplay?.active?'AirPlay cast active. Choosing another source ends it on Octet.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
-    if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth · muted.':next.muted?'Bluetooth active · muted. Unmute when ready.':'Bluetooth playing from your phone.');
+    $('source-status').textContent=!next.source_switching_available?(next.source_switching_reason||'Connect to the speaker DSP to change sources.'):!next.ready?'The selected source is unavailable. Reconnect it or choose Tidal.':'';
+    if(next.source==='airplay')$('source-status').textContent=next.airplay?.error||(next.airplay?.preparing?'Preparing AirPlay.':next.airplay?.active?'AirPlay cast active. Choosing another source ends it on Octet.':next.airplay?.idle?'AirPlay connected · waiting for the next app.':'AirPlay selected · waiting for a cast.');
+    if(next.source==='bluetooth')$('source-status').textContent=next.bluetooth?.error||(next.bluetooth?.preparing?'Preparing Bluetooth.':'Bluetooth playing from your phone.');
     if(next.airplay?.error)$('source-status').textContent=next.airplay.error;
     if(next.capture_stalled)$('source-status').textContent='Playback has started, but the speaker DSP is receiving no audio.';
     const health=next.audio_health;
@@ -85,13 +85,13 @@ function renderSources(next){
   if(dacRequestPending)$('source-status').textContent='Checking the DAC stall and preparing recovery…';
   else if(recovery?.error&&(next.dac_stalled||recovery.phase))$('source-status').textContent=recovery.error;
   else if(recovery?.phase==='rebooting')$('source-status').textContent='Octet is rebooting to recover the DAC…';
-  else if(recovery?.phase==='recovering'||recovery?.phase==='restarting')$('source-status').textContent='Recovering the DAC audio stream. Output is muted…';
-  else if(recovery?.phase==='driver_reset')$('source-status').textContent='Resetting the audio driver. Output is muted…';
-  else if(recovery?.phase==='restoring')$('source-status').textContent='Restoring the saved track with output muted…';
-  else if(recovery?.phase==='restored'&&next.playback==='pause'&&next.muted&&!next.dac_stalled)
-    $('source-status').textContent=recovery.kind==='boot'?'Your track is restored and paused. Output is muted.':'DAC recovered. Your track is paused and output is muted.';
-  else if(recovery?.phase==='restored'&&recovery.kind==='dac'&&next.muted&&!next.dac_stalled)
-    $('source-status').textContent='DAC recovered. Output is muted; resume music or reconnect your source.';
+  else if(recovery?.phase==='recovering'||recovery?.phase==='restarting')$('source-status').textContent='Recovering the DAC audio stream. Playback is paused…';
+  else if(recovery?.phase==='driver_reset')$('source-status').textContent='Resetting the audio driver. Playback is paused…';
+  else if(recovery?.phase==='restoring')$('source-status').textContent='Restoring the saved track …';
+  else if(recovery?.phase==='restored'&&next.playback==='pause'&&!next.dac_stalled)
+    $('source-status').textContent=recovery.kind==='boot'?'Your track is restored and paused. ':'DAC recovered. Your track is paused.';
+  else if(recovery?.phase==='restored'&&recovery.kind==='dac'&&!next.dac_stalled)
+    $('source-status').textContent='DAC recovered. Resume music or reconnect your source.';
 }
 let bluetoothBusy=false;
 function renderBluetooth(next){
@@ -122,7 +122,6 @@ $('source-choice').onchange=async()=>{
     const next=await api('/api/control/source',{id});
     sourcePending=null;
     render(next);
-    if(next.source==='tidal'&&next.muted)$('source-status').textContent='Tidal selected · muted. Press Play to resume your queue.';
   }catch(error){
     const next=await readStatus().catch(()=>state);
     sourcePending=null;
@@ -171,9 +170,9 @@ async function libraryBack(){
 const time=seconds=>{const n=Math.max(0,Math.floor(Number(seconds)||0));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0')};
 function notice(message='',error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error)}
 async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||'Could not complete that action');return result}
-function renderPlayer(next){state=next;renderLevelControls(next);$('dsp-profile-name').textContent=next.profile;$('dsp-profile-description').textContent=next.profile_description;$('connection').textContent=next.ready?'● Octet online':'● DSP unavailable';$('connection').classList.toggle('online',next.ready);$('playback-label').textContent={play:'Playing',pause:'Paused',stop:'Stopped'}[next.playback]||'Stopped';$('toggle').textContent=next.playback==='play'?'Ⅱ':'▶';$('toggle').setAttribute('aria-label',next.playback==='play'?'Pause':'Play');$('mute').textContent=next.muted?'Unmute':'Mute';$('mute').setAttribute('aria-pressed',String(next.muted));volumeControl.render(next,{busy:volumeBusy});if(document.activeElement!==$('seek')){$('seek').max=Math.max(1,next.duration);$('seek').value=next.elapsed}$('seek').disabled=!next.duration;$('elapsed').textContent=time(next.elapsed);$('duration').textContent=time(next.duration);renderQueue(next.queue||[]);if(next.player_error)notice(next.player_error,true)}
+function renderPlayer(next){state=next;renderLevelControls(next);$('dsp-profile-name').textContent=next.profile;$('dsp-profile-description').textContent=next.profile_description;$('connection').textContent=next.ready?'● Octet online':'● DSP unavailable';$('connection').classList.toggle('online',next.ready);$('playback-label').textContent={play:'Playing',pause:'Paused',stop:'Stopped'}[next.playback]||'Stopped';$('toggle').textContent=next.playback==='play'?'Ⅱ':'▶';$('toggle').setAttribute('aria-label',next.playback==='play'?'Pause':'Play');volumeControl.render(next,{busy:volumeBusy});if(document.activeElement!==$('seek')){$('seek').max=Math.max(1,next.duration);$('seek').value=next.elapsed}$('seek').disabled=!next.duration;$('elapsed').textContent=time(next.elapsed);$('duration').textContent=time(next.duration);renderQueue(next.queue||[]);if(next.player_error)notice(next.player_error,true)}
 async function control(name,data={}){
-  const playback=['resume','pause','previous','next','position','seek','mute','stop','volume'].includes(name);
+  const playback=['resume','pause','previous','next','position','seek','stop','volume'].includes(name);
   const report=playback?(message='')=>{$('player-error').textContent=message;}:notice;
   try{render(await api('/api/control/'+name,data));report();}catch(error){report(error.message,true);}
 }
@@ -350,7 +349,7 @@ $('recover-dac').onclick=async()=>{
   catch(error){render({...state,dac_recovery:{...state.dac_recovery,error:error.message}});}
   finally{dacRequestPending=false;renderSources(state);}
 };
-$('previous').onclick=()=>control('previous');$('next').onclick=()=>control('next');$('stop').onclick=()=>control('stop');$('clear').onclick=()=>control('clear-queue');$('mute').onclick=()=>control('mute',{muted:!state.muted});
+$('previous').onclick=()=>control('previous');$('next').onclick=()=>control('next');$('stop').onclick=()=>control('stop');$('clear').onclick=()=>control('clear-queue');
 $('volume').oninput=()=>{volumeBusy=true;volumeControl.preview()};
 $('volume').onchange=async()=>{const value=volumeControl.value();await control('volume',{db:value});volumeBusy=false;refresh()};
 $('seek').onchange=()=>control('seek',{seconds:Number($('seek').value)});

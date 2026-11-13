@@ -24,7 +24,7 @@ class AudioWatchTests(unittest.TestCase):
         self.dsp.call.side_effect = lambda name, *args: self.values[name]
         self.player = dict(state='play', playlist='12', songid='3', elapsed='21.4')
         self.samples = Mock()
-        airplay = SimpleNamespace(active=False, idle=False, pending=None, needs_mute=False,
+        airplay = SimpleNamespace(active=False, idle=False, pending=None, recovery_pending=False,
                                   restore_pending=None, baseline=Mock(), hook_busy=threading.Lock())
         airplay.baseline.exists.return_value = False
         self.server = SimpleNamespace(DSP=Mock(return_value=self.dsp), mpd=Mock(side_effect=self.mpd),

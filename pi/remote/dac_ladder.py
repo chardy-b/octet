@@ -32,10 +32,8 @@ def require_driver_validation(broker):
         raise RuntimeError('Driver reset validation is from a different kernel/module')
 
 
-def muted_dsp():
+def selected_dac():
     with DSP() as dsp:
-        if dsp.call('GetMute') is not True:
-            raise RuntimeError('DAC recovery requires confirmed DSP mute')
         config = json.loads(dsp.call('GetConfigJson'))
         if config.get('devices', {}).get('playback', {}).get('device') != 'hw:sndrpihifiberry,0':
             raise RuntimeError('The expected hardware DAC is not selected')
@@ -55,10 +53,10 @@ def stalled(broker):
         raise RuntimeError('The stalled DAC is not owned by CamillaDSP')
 
 
-def require_startup_mute(broker):
+def require_output_policy(broker):
     value = broker.run('/usr/bin/systemctl', 'show', 'camilladsp.service', '-p', 'ExecStart', '--value')
-    if '--mute' not in value.split():
-        raise RuntimeError('CamillaDSP startup mute is not installed')
+    if '--mute' in value.split():
+        raise RuntimeError('Obsolete CamillaDSP startup mute is still installed')
 
 
 def owner_free(broker):
@@ -120,8 +118,8 @@ def handle(broker, operation):
             previous = json.loads(path.read_text())
             if time.time() - previous['time'] < broker.COOLDOWN:
                 raise RuntimeError('The DAC recovery cooldown has not expired')
-        require_startup_mute(broker)
-        muted_dsp()
+        require_output_policy(broker)
+        selected_dac()
         stalled(broker)
         try:
             evidence = broker.fault_evidence()
@@ -138,8 +136,8 @@ def handle(broker, operation):
     stages = required.get(operation)
     if stages is None or record['stage'] not in ((stages,) if isinstance(stages, str) else stages):
         raise RuntimeError('DAC recovery steps are out of order')
-    require_startup_mute(broker)
-    muted_dsp()
+    require_output_policy(broker)
+    selected_dac()
     if operation != b'finish':
         stalled(broker)
     if (broker.LOOPBACK / 'pcm0p/sub0/status').read_text().strip() != 'closed':
@@ -155,7 +153,7 @@ def handle(broker, operation):
         graph(broker)
         if record['units']:
             broker.run('/usr/bin/systemctl', 'start', *record['units'], timeout=15)
-        muted_dsp()
+        selected_dac()
         return
     broker.run('/usr/bin/systemctl', 'stop', *HELD_UNITS, timeout=15)
     if operation == b'stream':
@@ -165,4 +163,4 @@ def handle(broker, operation):
         broker.run('/usr/bin/systemctl', 'stop', 'camilladsp.service', timeout=15)
         rebind(broker)
         broker.run('/usr/bin/systemctl', 'start', 'camilladsp.service', timeout=15)
-    muted_dsp()
+    selected_dac()

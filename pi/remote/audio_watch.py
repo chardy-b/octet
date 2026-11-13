@@ -92,7 +92,7 @@ class AudioWatch:
                     raise RuntimeError('Auto Tune ownership is not clear')
                 with self.server.DSP() as dsp:
                     self.server.approved(dsp)
-                    config = json.loads(dsp.call('GetConfigJson'))
+                    config = json.loads(dsp.call('GetConfigJson')) or {}
                     if source_metadata(config)['id'] != 'tidal':
                         self.resume_pending = None
                         raise RuntimeError('Tidal route changed during recovery')
@@ -105,7 +105,7 @@ class AudioWatch:
     def _tidal_has_control(self):
         airplay = self.server.AIRPLAY_CONTROL
         return (not (airplay.active or airplay.idle or airplay.pending is not None
-                     or airplay.needs_mute or airplay.restore_pending is not None
+                     or airplay.recovery_pending or airplay.restore_pending is not None
                      or airplay.baseline.exists() or airplay.hook_busy.locked())
                 and not self.server.BLUETOOTH_CONTROL.owns_audio())
 
@@ -121,7 +121,7 @@ class AudioWatch:
             self._retry_resume()
             return
         with self.server.DSP() as dsp:
-            config = json.loads(dsp.call('GetConfigJson'))
+            config = json.loads(dsp.call('GetConfigJson')) or {}
             source = source_metadata(config)['id']
             dsp_state = dsp.call('GetState')
             if self.diagnostics is not None:

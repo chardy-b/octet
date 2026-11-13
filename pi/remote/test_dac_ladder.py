@@ -22,10 +22,10 @@ class LadderTests(unittest.TestCase):
         loop.parent.mkdir(parents=True)
         loop.write_text('closed')
         self.broker = SimpleNamespace(STATE=self.root, BOOT_ID=boot, COOLDOWN=3600,
-                    run=Mock(return_value='--mute'), fault_evidence=Mock(return_value=['dma errors']),
+                    run=Mock(return_value='--gain=-36'), fault_evidence=Mock(return_value=['dma errors']),
                     save_json=dac_reboot.save_json, LOOPBACK=self.root,
                     pcm_sample=Mock(side_effect=[('123','RUNNING',n) for n in range(100)]))
-        self.mute = patch('dac_ladder.muted_dsp').start()
+        self.mute = patch('dac_ladder.selected_dac').start()
         self.stall = patch('dac_ladder.stalled').start()
         self.graph = patch('dac_ladder.graph').start()
         self.addCleanup(patch.stopall)
@@ -54,7 +54,7 @@ class LadderTests(unittest.TestCase):
 
     def test_repeated_transactions_are_rate_limited_even_when_first_step_fails(self):
         dac_ladder.handle(self.broker,b'begin')
-        self.broker.run.side_effect=lambda *args,**kw: (_ for _ in ()).throw(OSError('systemd unavailable')) if 'stop' in args else '--mute'
+        self.broker.run.side_effect=lambda *args,**kw: (_ for _ in ()).throw(OSError('systemd unavailable')) if 'stop' in args else '--gain=-36'
         with self.assertRaises(OSError):dac_ladder.handle(self.broker,b'stream')
         self.assertEqual(self.record()['stage'],'stream')
         with self.assertRaisesRegex(RuntimeError,'cooldown'):dac_ladder.handle(self.broker,b'begin')
@@ -70,8 +70,8 @@ class LadderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'MPD'):dac_ladder.handle(self.broker,b'stream')
         self.assertEqual(self.record()['stage'],'begin')
         (self.root/'pcm0p/sub0/status').write_text('closed')
-        self.mute.side_effect=RuntimeError('not muted')
-        with self.assertRaisesRegex(RuntimeError,'not muted'):dac_ladder.handle(self.broker,b'stream')
+        self.mute.side_effect=RuntimeError('DAC changed')
+        with self.assertRaisesRegex(RuntimeError,'DAC changed'):dac_ladder.handle(self.broker,b'stream')
         self.assertEqual(self.record()['stage'],'begin')
 
     def test_cast_teardown_can_recover_without_a_restart(self):

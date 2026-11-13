@@ -178,8 +178,8 @@ def test_recall_selects_backup_without_writing_shared_manual_config(tmp_path, mo
         def __init__(self, cfg): pass
         def take_dac(self): pass
         def systemctl(self, action, service=None): pass
-        def master(self, volume, muted):
-            assert volume == -36 and muted
+        def master(self, volume):
+            assert volume == -36
     monkeypatch.setattr(web, 'Hardware', Backend)
     monkeypatch.setattr(web.subprocess, 'run', lambda *a, **k: None)
     monkeypatch.setattr(web.time, 'sleep', lambda *a: None)

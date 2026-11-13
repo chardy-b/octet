@@ -71,7 +71,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.broker.call_args_list, [call(b'begin'), call(b'stream'), call(b'finish')])
         self.assertEqual(self.recovery.phase, 'restored')
         self.assertEqual(self.player['state'], 'pause')
-        self.assertTrue(self.values['GetMute'])
+        self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
         self.assertEqual(self.values['GetVolume'], -24)
         self.assertFalse(self.recovery.journal.exists())
 
@@ -122,11 +122,6 @@ class RecoveryTests(unittest.TestCase):
         self.server.TUNING.status.return_value = dict(available=True,audio_owned=True)
         with self.assertRaisesRegex(RecoveryRefused,'Auto Tune'): self.recovery.start()
         self.broker.assert_not_called()
-        self.server.TUNING.status.return_value = dict(available=True,audio_owned=False)
-        self.recovery.phase = None
-        self.dsp.call.side_effect = lambda n,*a: self.values.get(n)
-        with self.assertRaisesRegex(RecoveryRefused,'mute'): self.recovery.start()
-        self.broker.assert_not_called()
 
     def test_empty_queue_and_usb_are_recoverable_without_fabricated_track(self):
         self.player = dict(state='stop',playlist='1')
@@ -167,7 +162,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.player['state'],'pause')
         self.assertEqual(self.player['songid'],'2')
         self.assertEqual(self.player['elapsed'],'126.482')
-        self.assertTrue(self.values['GetMute'])
+        self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
 
     def test_changed_queue_keeps_mute_and_recovery_journal(self):
         record=self.prepare();record['stage']='reboot';self.recovery._save(record)
@@ -182,7 +177,7 @@ class RecoveryTests(unittest.TestCase):
 
 class BrokerTests(unittest.TestCase):
     def setUp(self):
-        mute = patch('dac_ladder.muted_dsp')
+        mute = patch('dac_ladder.selected_dac')
         mute.start()
         self.addCleanup(mute.stop)
 
@@ -202,7 +197,7 @@ class BrokerTests(unittest.TestCase):
             boot.write_text('first')
             with (patch.object(dac_reboot, 'STATE', root), patch.object(dac_reboot, 'BOOT_ID', boot),
                   patch.object(dac_reboot, 'fault_evidence', return_value=['kernel evidence']),
-                  patch.object(dac_reboot, 'run', return_value='octet-dac-graph.service --mute') as run,
+                  patch.object(dac_reboot, 'run', return_value='octet-dac-graph.service --gain=-36') as run,
                   patch.object(dac_reboot.time, 'time', return_value=100)):
                 loopback = root / 'pcm0p/sub0/status'
                 loopback.parent.mkdir(parents=True)

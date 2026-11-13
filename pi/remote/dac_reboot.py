@@ -143,8 +143,8 @@ def handle(operation):
             if 'octet-dac-graph.service' not in required.split():
                 raise RuntimeError('The DAC recovery boot graph gate is not enabled')
         startup = run('/usr/bin/systemctl', 'show', 'camilladsp.service', '-p', 'ExecStart', '--value')
-        if '--mute' not in startup.split():
-            raise RuntimeError('CamillaDSP startup mute could not be verified')
+        if '--mute' in startup.split():
+            raise RuntimeError('Obsolete CamillaDSP startup mute is still installed')
         ladder = None
         try:
             ladder = json.loads((STATE / 'ladder.json').read_text())
@@ -168,12 +168,12 @@ def handle(operation):
             if after[1] == 'RUNNING' and before[2] != after[2]:
                 raise RuntimeError('DAC progress returned; reboot refused')
             if run('/usr/bin/systemctl', 'show', 'camilladsp.service', '-p', 'ActiveState', '--value').strip() == 'active':
-                dac_ladder.muted_dsp()
+                dac_ladder.selected_dac()
             lines = ladder['kernel']
         else:
             lines = fault_evidence()
             if operation == b'reboot':
-                dac_ladder.muted_dsp()
+                dac_ladder.selected_dac()
         if operation == b'check':
             return
         if (LOOPBACK / 'pcm0p/sub0/status').read_text().strip() != 'closed':

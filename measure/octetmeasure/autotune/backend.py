@@ -64,7 +64,7 @@ class Hardware:
         services = list(dict.fromkeys([self.cfg['camilla']['service'], *self.cfg['quiesce_services']]))
         self.previous_services = {service: subprocess.run(['systemctl', 'is-active', '--quiet', service],
                                   capture_output=True, timeout=10).returncode == 0 for service in services}
-        self.previous_master = (control([('GetVolume', None), ('GetMute', None)])
+        self.previous_master = (control([('GetVolume', None)])
                                 if self.previous_services[self.cfg['camilla']['service']] else None)
         # Stop producers as well: otherwise MPD and the verification stimulus can
         # contend for the same ALSA loopback playback endpoint during activation.
@@ -122,9 +122,9 @@ class Hardware:
             if active and service != camilla:
                 self.systemctl('start', service)
 
-    def master(self, volume, muted):
+    def master(self, volume):
         from .camilla import control
-        control([('SetMute', True), ('SetVolume', volume), ('SetMute', muted)])
+        control([('SetVolume', volume), ('SetMute', False)])
 
     def stop(self):
         self.cancel.set()

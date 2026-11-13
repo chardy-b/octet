@@ -201,10 +201,7 @@ class BaselineRoute:
         self.ownership()
         with self.server.DSP() as dsp:
             dsp.call('SetConfigFilePath', str(self.candidate))
-            try:
-                dsp.call('Reload')
-            finally:
-                dsp.call('SetMute', True)
+            dsp.call('Reload')
         return expected
 
     def retarget(self, profile):
@@ -264,10 +261,7 @@ class BaselineRoute:
                 raise RuntimeError('DSP config changed; AirPlay recovery retained')
             self.ownership()
             dsp.call('SetConfigFilePath', str(original))
-            try:
-                dsp.call('Reload')
-            finally:
-                dsp.call('SetMute', True)
+            dsp.call('Reload')
             for _ in range(20):
                 self.ownership()
                 self.original()

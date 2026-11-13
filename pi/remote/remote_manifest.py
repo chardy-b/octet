@@ -24,6 +24,7 @@ REMOTE_FILES = (
     'dac_reboot.py',
     'dac_ladder.py',
     'dsp_client.py',
+    'output_policy.py',
     'octet-dac-recovery.socket',
     'octet-dac-recovery@.service',
     'octet-dac-graph.service',

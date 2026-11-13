@@ -122,7 +122,7 @@ class ActiveSettings(unittest.TestCase):
                      patch.object(server.time, 'sleep'):
                     if outcome == 'success':
                         server.set_channel_control(5, 'always-active', values)
-                        dsp.call.assert_called_with('SetMute', False)
+                        dsp.call.assert_called_with('GetState')
                         self.assertIn(450, self.values(loaded, 5).values())
                         self.assertEqual(self.values(loaded, 6), self.values(config, 6))
                     else:
@@ -132,7 +132,7 @@ class ActiveSettings(unittest.TestCase):
                         if outcome == 'reject':
                             self.assertNotIn(('SetMute', True), [item.args for item in dsp.call.call_args_list])
                         else:
-                            self.assertIn(('SetMute', True), [item.args for item in dsp.call.call_args_list])
+                            self.assertNotIn(('SetMute', True), [item.args for item in dsp.call.call_args_list])
                             self.assertNotIn(('SetMute', False), [item.args for item in dsp.call.call_args_list])
                     self.assertIn('--check', validate.call_args.args[0])
 

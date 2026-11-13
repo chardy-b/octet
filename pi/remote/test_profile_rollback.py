@@ -77,13 +77,13 @@ class ProfileRollbackTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), self.previous)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o640)
         self.assertIsNone(self.control.restore_pending)
-        self.assertFalse(self.control.needs_mute)
+        self.assertFalse(self.control.recovery_pending)
         self.assertEqual([c.args for c in self.dsp.call.call_args_list],
-                         [('SetMute', True), ('Reload',), ('SetMute', True)])
+                         [('Reload',)])
 
     def test_each_restore_failure_retains_bytes_and_retries_muted(self):
         for fault in ('create', 'write', 'flush', 'chmod', 'file sync', 'replace',
-                      'directory sync', 'mute', 'reload', 'mute after reload'):
+                      'directory sync', 'reload'):
             with self.subTest(fault=fault):
                 self.path.write_bytes(b'current complete profile')
                 before = self.path.read_bytes()
@@ -126,13 +126,13 @@ class ProfileRollbackTests(unittest.TestCase):
                     elif fault == 'replace':
                         failures.enter_context(patch.object(Path, 'replace', side_effect=OSError(fault)))
                     else:
-                        responses = {'mute': [OSError(fault)], 'reload': [None, OSError(fault), None],
+                        responses = {'mute': [OSError(fault)], 'reload': [OSError(fault)],
                                      'mute after reload': [None, None, OSError(fault)]}
                         failures.enter_context(patch.object(self.dsp, 'call', side_effect=responses[fault]))
                     with self.assertRaises(OSError):
                         server.restore_channel_profile(self.previous)
                 self.assertEqual(self.control.restore_pending, self.previous)
-                self.assertTrue(self.control.needs_mute)
+                self.assertTrue(self.control.recovery_pending)
                 after_replace = fault in ('directory sync', 'reload', 'mute after reload')
                 self.assertEqual(self.path.read_bytes(), self.previous if after_replace else before)
                 if not after_replace:
@@ -140,7 +140,7 @@ class ProfileRollbackTests(unittest.TestCase):
                 self.assertEqual(list(self.path.parent.iterdir()), [self.path])
                 self.control.tick(now=1)
                 self.assertEqual(self.path.read_bytes(), self.previous)
-                self.assertFalse(self.control.needs_mute)
+                self.assertFalse(self.control.recovery_pending)
                 self.assertIsNone(self.control.restore_pending)
                 self.assertNotIn(('SetMute', False), [c.args for c in self.dsp.call.call_args_list])
 
@@ -225,9 +225,9 @@ class ProfileRollbackTests(unittest.TestCase):
                         else:
                             server.set_channel_control(1, 'mute', True)
                 self.assertEqual(self.control.restore_pending, self.previous)
-                self.assertTrue(self.control.needs_mute)
+                self.assertTrue(self.control.recovery_pending)
                 self.dsp.call.side_effect = None
                 self.control.tick(now=1)
                 self.assertEqual(self.path.read_bytes(), self.previous)
-                self.assertFalse(self.control.needs_mute)
+                self.assertFalse(self.control.recovery_pending)
                 self.assertNotIn(('SetMute', False), [c.args for c in self.dsp.call.call_args_list])

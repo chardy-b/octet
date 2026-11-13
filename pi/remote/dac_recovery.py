@@ -134,7 +134,7 @@ class DacRecovery:
                 bluetooth_owns = server.BLUETOOTH_CONTROL.owns_audio()
                 if airplay_owns and bluetooth_owns:
                     raise RecoveryRefused('Conflicting receiver ownership; recovery retained')
-                # Hold the current owner's shared lease before muting or pausing.
+                # Hold the current owner's shared lease before pausing.
                 # Transfer it to our lease only after the cast journal is restored.
                 if airplay_owns:
                     airplay.baseline.acquire()
@@ -149,13 +149,10 @@ class DacRecovery:
                     if (source == 'unknown' or loaded['devices']['playback']['device'] != DAC_DEVICE
                             or source != server.AUDIO_WATCH.report['source']):
                         raise RecoveryRefused('The stalled source or hardware output changed')
-                    dsp.call('SetMute', True)
-                    if dsp.call('GetMute') is not True:
-                        raise RecoveryRefused('Speaker mute could not be verified')
                     volume = dsp.call('GetVolume')
                     if type(volume) not in (float, int) or not math.isfinite(volume) or not -100 <= volume <= 0:
                         raise RecoveryRefused('The listening level could not be saved')
-                # Root independently confirms stalled hardware and mute before any reset.
+                # Root independently confirms stalled hardware before any reset.
                 self.broker(b'begin')
                 server.CONTROL_GENERATION += 1
                 server.AUDIO_INTENT += 1
@@ -173,8 +170,6 @@ class DacRecovery:
                 self.check_owners()
                 with server.DSP() as dsp:
                     record.update(config=self.guarded_config(dsp), path=dsp.call('GetConfigFilePath'))
-                    if dsp.call('GetMute') is not True:
-                        raise RecoveryRefused('Speaker mute was lost while ending the source')
                 self.sleep(.4)
                 if self.read_pcm()[0] != CLOSED:
                     raise RecoveryRefused('MPD did not release Loopback')
@@ -199,11 +194,11 @@ class DacRecovery:
             with server.DSP() as dsp:
                 if (self.guarded_config(dsp) != record['config']
                         or dsp.call('GetConfigFilePath') != record['path']
-                        or dsp.call('GetMute') is not True or dsp.call('GetState') != 'Running'):
-                    raise RecoveryRefused('The restored DSP configuration and mute differ')
+                        or dsp.call('GetState') != 'Running'):
+                    raise RecoveryRefused('The restored DSP configuration differs')
                 dsp.call('SetVolume', record['volume'])
-                if dsp.call('GetVolume') != record['volume'] or dsp.call('GetMute') is not True:
-                    raise RecoveryRefused('Muted listening-level restoration failed')
+                if dsp.call('GetVolume') != record['volume']:
+                    raise RecoveryRefused('Listening-level restoration failed')
             before = self.read_pcm()[2]
             self.sleep(.4)
             if not advances(before, self.read_pcm()[2]):
@@ -231,7 +226,7 @@ class DacRecovery:
                 except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
                     logging.warning('DAC %s verification: %s', operation.decode(), error)
                     continue
-                # Root verifies graph, muted DAC progress, and restores held services.
+                # Root verifies graph, DAC progress, and restores held services.
                 self.broker(b'finish')
                 self._verify_local(record)
                 self.journal.unlink()
@@ -239,7 +234,7 @@ class DacRecovery:
                 self.server.AUDIO_WATCH.report = dict(fault=None, recovery=None, source=None, attempts=0)
                 self.server.AUDIO_WATCH.previous = None
                 self.phase = 'restored'
-                logging.info('DAC recovered via %s; output remains muted', operation.decode())
+                logging.info('DAC recovered via %s; queue remains paused', operation.decode())
                 return
             self.check_owners()
             record['stage'] = 'reboot'
@@ -253,7 +248,7 @@ class DacRecovery:
             logging.error('DAC recovery response lost; durable evidence retained: %s', error)
         except (RuntimeError, ValueError, KeyError, TypeError) as error:
             self.phase, self.error = 'failed', str(error)
-            logging.error('DAC recovery retained muted for attention: %s', error)
+            logging.error('DAC recovery retained for attention: %s', error)
         finally:
             if self.phase == 'restored' or (not self.journal.exists() and not self.journal.is_symlink()):
                 self.lease.release()
@@ -310,15 +305,15 @@ class DacRecovery:
                 self.check_owners()
                 with server.DSP() as dsp:
                     config = self.guarded_config(dsp)
-                    if ((not self.boot_restore and config != record['config']) or dsp.call('GetMute') is not True):
-                        raise RecoveryRefused('The saved DSP configuration and mute could not be verified')
+                    if ((not self.boot_restore and config != record['config'])):
+                        raise RecoveryRefused('The saved DSP configuration could not be verified')
                     if record.get('version') == 2:
                         volume = record['volume']
                         if type(volume) not in (int, float) or not math.isfinite(volume) or not -100 <= volume <= 0:
                             raise RecoveryRefused('Invalid saved listening level')
                         dsp.call('SetVolume', volume)
-                        if dsp.call('GetVolume') != volume or dsp.call('GetMute') is not True:
-                            raise RecoveryRefused('Muted listening-level restore failed')
+                        if dsp.call('GetVolume') != volume:
+                            raise RecoveryRefused('Listening-level restore failed')
                     before = self.read_pcm()[2]
                     self.sleep(.4)
                     if not advances(before, self.read_pcm()[2]):
@@ -347,19 +342,19 @@ class DacRecovery:
                     finally:
                         paused = dict(server.mpd('pause 1', 'status')[1])
                     if (paused.get('state') != 'pause' or paused.get('songid') != song
-                            or abs(float(paused['elapsed']) - elapsed) > 2 or dsp.call('GetMute') is not True):
+                            or abs(float(paused['elapsed']) - elapsed) > 2):
                         raise RecoveryRefused('The saved track could not be verified paused')
                 if not self.boot_restore:
                     self.journal.unlink()
                     sync_directory(self.journal.parent)
             except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError) as error:
                 operation = 'Paused-track restore' if self.boot_restore else 'DAC recovery'
-                self.error = f'{operation} needs attention. Verify mute and check the Octet logs.'
+                self.error = f'{operation} needs attention. Check the Octet logs.'
                 self.phase = 'failed'
                 logging.error('DAC recovery after reboot: %s', error)
             else:
                 self.phase = 'restored'
-                logging.info('Saved track restored paused after boot. Output remains muted.')
+                logging.info('Saved track restored paused after boot. ')
             finally:
                 if self.phase == 'restored' or (not self.journal.exists() and not self.journal.is_symlink()):
                     self.lease.release()

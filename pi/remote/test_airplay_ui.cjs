@@ -19,7 +19,7 @@ assert.equal(get('now-playing-details').hidden,true);
 assert.match(get('source-status').textContent,/waiting/);
 assert.equal(get('.transport').hidden,true);
 render({preparing:true});
-assert.match(get('source-status').textContent,/Preparing.*muted/);
+assert.match(get('source-status').textContent,/Preparing AirPlay/);
 render({active:true});
 assert.equal(get('now-playing-details').hidden,false);
 assert.match(get('source-status').textContent,/cast active/);

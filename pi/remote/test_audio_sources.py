@@ -252,7 +252,7 @@ class AudioSources(unittest.TestCase):
                         self.assertNotIn(('SetMute', True), calls)
                         mpd.assert_not_called()
                     else:
-                        self.assertIn(('SetMute', True), calls)
+                        self.assertNotIn(('SetMute', True), calls)
 
     def test_tidal_transport_does_not_play_over_selected_input(self):
         changed = audio_sources.source_config(config(), usb())
