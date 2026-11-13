@@ -875,3 +875,12 @@ CamillaDSP hold their ALSA devices once lost PipeWire's Loopback and DAC nodes, 
 never restart it on a running system: reboot, or pause MPD and stop the muted
 CamillaDSP first, restart the `octet` user's WirePlumber, and check the Loopback
 and DAC nodes before starting CamillaDSP again.
+
+
+The first Tidal tab, **Saved songs**, browses collection tracks newest added first,
+100 entries per page. Selecting a song starts there and continues through older
+saved songs. Playback prefetches another page when fewer than 20 queue entries
+remain and prunes played autoplay entries; it does not load the entire collection
+or impose the playlist browser's 10,000-track limit. User-queued songs remain.
+Collection changes between browsing and selecting require reopening the tab;
+changes during playback can shift later offset-based pages.

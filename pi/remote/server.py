@@ -462,6 +462,73 @@ def playlist_contents(identifier, refresh=False):
     return result
 
 
+SAVED_PAGE_SIZE = 100
+
+
+def saved_songs_page(offset=0):
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError('Invalid saved songs offset')
+    with TIDAL_LOCK:
+        session = tidal()
+        response = session.request.request('GET', f'users/{session.user.id}/favorites/tracks',
+            params={'limit': SAVED_PAGE_SIZE, 'offset': offset,
+                    'order': 'DATE', 'orderDirection': 'DESC'})
+        payload = response.json()
+        tracks = session.request.map_json(payload, parse=session.parse_track)
+        rows = [dict(remember(t), collection_position=offset+i) for i,t in enumerate(tracks)
+                if getattr(t, 'available', True) is not False]
+    next_offset = offset + len(tracks)
+    total = payload.get('totalNumberOfItems')
+    return dict(tracks=rows, offset=offset, next_offset=next_offset,
+                has_more=next_offset < total if isinstance(total, int) else len(tracks) == SAVED_PAGE_SIZE)
+
+
+def prepare_saved_songs(data):
+    page = saved_songs_page(data.get('position'))
+    rows = page['tracks']
+    if not rows or rows[0]['id'] != track_id(data.get('track_id')):
+        raise RuntimeError('Your saved songs changed. Reopen Saved songs before playing.')
+    return rows, 0, dict(kind='saved', title='Saved songs',
+                        next_offset=page['next_offset'], has_more=page['has_more'])
+
+
+def extend_saved_songs():
+    with LOCK:
+        status, rows, _, context = player_queue()
+        source = context['source']
+        position = int(status.get('song', -1))
+        if (source.get('kind') != 'saved' or not source.get('has_more')
+                or status.get('state') != 'play' or len(rows) - position > 20):
+            return
+        generation = CONTROL_GENERATION
+    page = saved_songs_page(source['next_offset'])
+    with LOCK:
+        if generation != CONTROL_GENERATION or queue_context() != context:
+            return
+        for row in page['tracks']:
+            url = queue_url(row['id'])
+            identifier = str(int(dict(mpd('addid ' + quote(url))[0])['Id']))
+            context['autoplay'][identifier] = url
+            source['next_offset'] = row['collection_position'] + 1
+            save_queue_context(context)
+        source.update(next_offset=page['next_offset'], has_more=page['has_more'])
+        for row in rows:
+            if row['position'] < position and row['origin'] == 'autoplay':
+                mpd('deleteid ' + row['song_id'])
+                context['autoplay'].pop(row['song_id'], None)
+        save_queue_context(context)
+        (STATE / 'catalog.json').write_text(json.dumps(dict(CATALOG)))
+
+
+def watch_saved_songs():
+    while True:
+        try:
+            extend_saved_songs()
+        except Exception:
+            logging.exception('Could not extend saved songs autoplay; retrying')
+        time.sleep(2)
+
+
 def prepare_playlist(data):
     identifier = playlist_id(data.get('id'))
     position = data.get('position', 0)
@@ -1433,7 +1500,7 @@ def action(name, data):
             switch_profile(data.get('id') if isinstance(data, dict) else None)
         return auto_status()
     prepare = {'play-playlist': prepare_playlist, 'play-radio': prepare_radio,
-               'play-album': prepare_album}.get(name)
+               'play-album': prepare_album, 'play-saved': prepare_saved_songs}.get(name)
     lookup_track = name in ('play', 'enqueue') and track_id(data.get('id')) not in CATALOG
     with LOCK:
         if DAC_RECOVERY.busy:
@@ -1939,7 +2006,7 @@ class Handler(BaseHTTPRequestHandler):
                         identifier = track_id(parse_qs(parsed.query).get('id', [''])[0])
                         return self.send(album_contents(identifier))
                     else:
-                        tracks = session.user.favorites.tracks(limit=30)
+                        return self.send(saved_songs_page(int(parse_qs(parsed.query).get('offset', ['0'])[0])))
                     return self.send({'tracks': [remember(t) for t in tracks]})
             match = re.fullmatch(r'/stream/([0-9]{1,12})', parsed.path)
             if match:
@@ -2041,6 +2108,7 @@ def initialize_dsp():
 
 
 def start_audio_controls():
+    threading.Thread(target=watch_saved_songs, daemon=True).start()
     threading.Thread(target=AUDIO_WATCH.run, name='octet-audio-watch', daemon=True).start()
     if Path('/run/octet-airplay').exists():
         threading.Thread(target=serve_airplay, args=(AIRPLAY_CONTROL,), daemon=True).start()
