@@ -38,6 +38,11 @@ class ListeningDSP:
             return self.path
         if name == 'GetConfigJson':
             return json.dumps(self.document)
+        if name == 'ReadConfigFile':
+            return Path(value).read_text()
+        if name == 'Stop':
+            self.state, self.document = 'Inactive', None
+            return
         if name in ('ReadConfigJson', 'ReadConfig'):
             return value
         if name == 'GetState':
@@ -64,6 +69,19 @@ class ListeningDSP:
 
 
 class SourceSwitching(unittest.TestCase):
+    def test_stop_releases_physical_input_and_reselection_restarts_without_mute(self):
+        with self.system() as (_, _, _, dsp, *rest), patch.object(server, 'current_status', return_value={}):
+            server.select_source(usb()['id'])
+            server.action('stop', {})
+            self.assertEqual(dsp.state, 'Inactive')
+            self.assertIsNone(dsp.document)
+            selected = server.selected_config(dsp)
+            self.assertEqual(audio_sources.source_metadata(selected)['id'], usb()['id'])
+            self.assertEqual(dsp.state, 'Inactive')  # Reading does not restart it.
+            server.select_source(usb()['id'])
+            self.assertEqual(dsp.state, 'Running')
+            self.assertFalse(any(name == 'SetMute' for name, value in dsp.calls))
+
     @contextmanager
     def system(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
@@ -130,7 +148,7 @@ class SourceSwitching(unittest.TestCase):
                 status = server.current_status()
             self.assertTrue(status['capture_stalled'])
             self.assertIn('DSP capture stalled during tidal playback', records.output[0])
-            with self.assertRaisesRegex(RuntimeError, 'waiting for input audio'):
+            with self.assertRaisesRegex(ValueError, 'removed'):
                 server.action('mute', {'muted': False})
             self.assertNotIn(('SetMute', False), dsp.calls)
             dsp.state = 'Running'
@@ -148,7 +166,7 @@ class SourceSwitching(unittest.TestCase):
                 self.assertEqual(audio_sources.source_config(dsp.document, audio_sources.TIDAL), baseline)
                 self.assertEqual(dsp.document['filters'], baseline['filters'])
                 self.assertEqual(dsp.volume, -31)
-                self.assertTrue(dsp.muted)
+                self.assertFalse(dsp.muted)
                 self.assert_tuning_available(dsp, tuning, source)
                 self.assertEqual(json.loads(profiles.read_text())['profile'], str(origin))
             self.assertEqual(dsp.document, baseline)
@@ -199,12 +217,12 @@ class SourceSwitching(unittest.TestCase):
                 previous_document = copy.deepcopy(dsp.document)
                 dsp.calls.clear()
                 dsp.fail_next_reload = True
-                with self.assertRaisesRegex(RuntimeError, 'previous source was restored and output is muted'):
+                with self.assertRaisesRegex(RuntimeError, 'previous source was restored and playback is paused'):
                     server.select_source('tidal' if existing else usb()['id'])
                 self.assertEqual(dsp.path, previous_path)
                 self.assertEqual(dsp.document, previous_document)
                 self.assertEqual(dsp.state, 'Running')
-                self.assertTrue(dsp.muted)
+                self.assertFalse(dsp.muted)
                 self.assertEqual(dsp.volume, -31)
                 self.assertEqual(origin.read_bytes(), original_bytes)
                 if existing:
@@ -257,7 +275,7 @@ class SourceSwitching(unittest.TestCase):
             self.assertIn('saved speaker profile', status['source_switching_reason'])
             for operation in (lambda: server.select_source(usb()['id']),
                               lambda: server.action('mute', {'muted': False})):
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises((RuntimeError, ValueError)):
                     operation()
             self.assertFalse(target.exists())
             self.assertNotIn(('SetMute', False), dsp.calls)
@@ -291,7 +309,7 @@ class SourceSwitching(unittest.TestCase):
                 server.select_source(usb()['id'])
             route = SourceRoute(server)
             self.assertTrue(route.exists())
-            self.assertTrue(dsp.muted)
+            self.assertFalse(dsp.muted)
             import fcntl
             with (server.TUNING.root / 'audio.lock').open('rb') as contender:
                 with self.assertRaises(BlockingIOError):
@@ -303,7 +321,7 @@ class SourceSwitching(unittest.TestCase):
             server.recover_source()
             self.assertFalse(route.exists())
             self.assertEqual((dsp.path, dsp.document, dsp.state), (str(origin), baseline, 'Running'))
-            self.assertTrue(dsp.muted)
+            self.assertFalse(dsp.muted)
 
     def test_unplugged_destination_does_not_end_a_cast(self):
         with self.system(), patch.object(server.AIRPLAY_CONTROL, 'invalidate') as end, \
@@ -330,7 +348,7 @@ class SourceSwitching(unittest.TestCase):
                                                interrupt=False, route=route)
             self.assertTrue(failed)
             self.assertEqual((dsp.path, dsp.document, dsp.state), (str(origin), baseline, 'Running'))
-            self.assertTrue(dsp.muted)
+            self.assertFalse(dsp.muted)
             self.assertFalse(server.source_route().exists())
 
 

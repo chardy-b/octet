@@ -31,7 +31,6 @@ Group=octet-airplay
 SupplementaryGroups=audio upmpdcli
 RuntimeDirectory=octet-airplay
 RuntimeDirectoryMode=0750
-ExecStopPost=/usr/bin/python3 /opt/octet-remote/airplay_control.py mute-on-exit
 '''
 RECEIVER_OVERRIDE = '''[Unit]
 After=octet-remote.service avahi-daemon.service

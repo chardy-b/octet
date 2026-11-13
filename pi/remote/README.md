@@ -1,5 +1,22 @@
 # Octet remote music controls
 
+### Master mute removed
+
+Octet has no master-mute control or automatic master-muting, including startup,
+tuning, source changes and DAC recovery. Pause/Stop act on playback; stopping a
+physical input releases DSP processing. Selecting an input or starting playback
+restarts it. A live USB input plays immediately at the current listening level.
+The independent output masks in speaker profiles remain part of driver routing.
+
+`output_policy.py` clears obsolete saved fader latches before Camilla starts.
+Each Octet DSP connection reconciles native master mute, logging any stale or
+legacy-client mute before clearing it. This also covers the periodic audio
+watchdog. Native CamillaDSP still implements its upstream API; Octet does not
+expose mute as a playback feature. Old `/api/control/mute` requests fail without
+ending a cast. During maintenance stop producers/DSP instead of setting mute.
+Older incident descriptions below refer to the former policy.
+
+
 On the same Wi-Fi/local network as Octet, open **http://octet.local:8767**.
 No account, password or Tailscale installation is required. If `.local` names
 are unavailable on your device, use `http://<Octet's Wi-Fi IP>:8767` instead.
@@ -93,7 +110,7 @@ and restarts only the web server and kiosk. It preserves music/DSP configuration
 and their running services. This assumes Octet's existing `octet` desktop user,
 UID 1000, automatic graphical login and Tailscale address.
 Provides Tidal track/album search, favorites, saved playlists, queue, playback, seeking, DSP volume,
-and stop/mute. Tidal credentials stay on the Pi and use the existing upmpdcli login.
+and stop. Tidal credentials stay on the Pi and use the existing upmpdcli login.
 No external web hosting or browser plugins are needed. The server uses Python 3
 and the existing `tidalapi` package. The installer also uses the existing PyYAML.
 
@@ -141,8 +158,7 @@ The iD14's eight optical capture channels are excluded until a separate external
 digital clock setup is implemented; they are not additional analogue sockets.
 
 Choose a source in the dropdown to switch immediately. Switching pauses Tidal, retains its
-queue and position, and leaves the output muted. For a line input, press **Unmute**
-when ready. For Tidal, press **Play** to resume. Input 1 may have a live microphone
+queue and position. A line input plays immediately. For Tidal, press **Play** to resume. Input 1 may have a live microphone
 connected, so start at an appropriate listening level to avoid feedback.
 The same crossover, EQ, polarity, output mutes and master level apply to all
 sources. Track transport is hidden while a physical input is selected; browsing
@@ -167,15 +183,14 @@ cast or phone that starts while another input is selected first returns to the
 profile's Tidal input. A USB source mixer feeds the stereo speaker pipeline and
 captures all ten iD14 channels in the hardware's native format; non-Tidal inputs
 use asynchronous resampling to the profile's rate. The output must be a real `hw:`
-device (never the loopback). The selected source survives service restarts; boot
-remains muted. Each candidate is checked by CamillaDSP before activation. A failed
-activation restores the previous source and stays muted. A disconnected source is
+device (never the loopback). The selected source survives service restarts; boot preserves the selected input without master mute. Each candidate is checked by CamillaDSP before activation. A failed
+activation restores the previous source and reports the failure. A disconnected source is
 shown as unavailable.
 
 Ordinary input/profile changes also hold Auto Tune's shared `audio.lock`. Their
 `source-recovery.json` journal and hashed snapshots are durable before replacing
 the running files. A failed change restores the exact previous path, configuration
-and running DSP while muted. If that restore fails, recovery evidence and the
+and running DSP. If that restore fails, recovery evidence and the
 lease remain held; the watchdog and later controls retry it. Auto Tune refuses a
 pending input journal even after a remote-service restart. Stop tones stays
 available during recovery. Fresh installs provision the stable lock inode; never
@@ -183,16 +198,18 @@ delete or replace it to bypass an ownership error.
 
 Tidal metadata preparation runs outside the audio control lock, with bounded
 connect/read timeouts. Audio stream resolution uses a separate SDK session so
-browsing cannot block the next track. A newer transport command, cast or explicit
-mute cancels an older pending play request. With `OCTET_AUDIO_RECOVERY=1`, a failed
+browsing cannot block the next track. A newer transport command, cast or Stop
+cancels an older pending play request. With `OCTET_AUDIO_RECOVERY=1`, a failed
 watchdog resume retains its own paused-track intent and retries up to three times
-without changing DSP mute or level. A user pause, stop, queue or input change
+without changing the listening level. A user pause, stop, queue or input change
 cancels that intent. Level changes preserve it. With the guarded DAC recovery
-units installed, **Recover DAC** and the automatic watchdog can reboot Octet
-after a confirmed Tidal DAC stall with fresh kernel DMA errors. The queue and
-track position return paused with output muted. The
+units installed, **Recover DAC** and the automatic watchdog can recover a
+confirmed DAC output stall from Tidal, AirPlay, Bluetooth or USB: restart the DSP
+stream first, then try a locally validated sound-card/I2S rebind, and reboot only
+as a last resort. Recovery ends casts through their journals and keeps the Tidal queue/position preserved paused. USB retains its selected
+input. Auto Tune ownership blocks recovery. The
 [DAC recovery setup](../../docs/DEPLOYMENT.md#guarded-dac-recovery) covers the
-boot checks, reboot limit, and manual-only setting.
+root-owned validation record, checks, cooldown and manual-only setting.
 
 Choosing another saved profile on the DSP page does not interrupt playback: the
 remote builds the new profile with the input in use and CamillaDSP reloads it in

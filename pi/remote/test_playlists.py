@@ -103,7 +103,7 @@ class Playlists(unittest.TestCase):
     def dsp(self):
         dsp = MagicMock()
         dsp.__enter__.return_value = dsp
-        dsp.call.side_effect = lambda name, *args: str(server.CHANNEL_PROFILE) if name == 'GetConfigFilePath' else json.dumps({'devices': {'capture': {'device': 'hw:Loopback,1,0'}}}) if name == 'GetConfigJson' else False
+        dsp.call.side_effect = lambda name, *args: str(server.CHANNEL_PROFILE) if name == 'GetConfigFilePath' else json.dumps({'devices': {'capture': {'device': 'hw:Loopback,1,0'}}}) if name == 'GetConfigJson' else 'Running' if name == 'GetState' else False
         return dsp
 
     def contents(self):
@@ -146,7 +146,7 @@ class Playlists(unittest.TestCase):
         self.assertEqual([urlparse(url).path.rsplit('/', 1)[-1] for _, url in player.queue], ['1', '2', '3'])
         self.assertEqual(player.current, player.queue[1][0])
         self.assertEqual(player.modes, dict(random='0', single='0', repeat='0', consume='0'))
-        self.assertEqual(dsp.call.call_args.args, ('GetMute',))
+        self.assertEqual(dsp.call.call_args.args, ('GetState',))
         self.assertNotIn('SetVolume', [call.args[0] for call in dsp.call.call_args_list])
 
     def test_play_all_starts_at_first_track(self):
@@ -181,7 +181,7 @@ class Playlists(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(server, 'STATE', Path(tmp)), patch.object(server, 'CATALOG', {}), patch.object(server, 'playlist_contents', return_value=self.contents()), patch.object(server, 'mpd', side_effect=player), patch.object(server, 'DSP', return_value=dsp):
             with self.assertRaises(RuntimeError):
                 server.play_playlist(dict(id=PLAYLIST))
-        self.assertEqual(dsp.call.call_args.args, ('SetMute', True))
+        self.assertNotIn(('SetMute', True), [c.args for c in dsp.call.call_args_list])
 
 
 if __name__ == '__main__':

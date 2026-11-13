@@ -145,10 +145,10 @@ class Deployment:
             time.sleep(1)
             self.backend.systemctl('is-active')
             if hasattr(self.backend, 'master'):
-                self.backend.master(0, False)  # Output ceilings remain in the exported chain.
+                self.backend.master(0)  # Output ceilings remain in the exported chain.
             verify()
             if hasattr(self.backend, 'master'):
-                self.backend.master(-36, True)
+                self.backend.master(-36)
         except BaseException:
             self.backend.systemctl('stop')
             if original is not None:

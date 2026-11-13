@@ -22,7 +22,7 @@ class AutoMode(unittest.TestCase):
     def test_music_and_output_edits_cannot_interrupt_tones(self):
         with patch.object(server.TUNING, 'status', return_value={'audio_owned': True}), patch.object(server, 'DSP') as dsp:
             for action, body in [('play', {'id': '123'}), ('source', {'id': 'tidal'}),
-                                 ('volume', {'db': -36}), ('mute', {'muted': False}),
+                                 ('volume', {'db': -36}),
                                  ('channel-always-active', {'output': 7, 'values': {}})]:
                 with self.assertRaisesRegex(RuntimeError, 'owns'):
                     server.action(action, body)
@@ -31,7 +31,7 @@ class AutoMode(unittest.TestCase):
     def test_emergency_mute_stops_direct_test_playback(self):
         with patch.object(server.TUNING, 'status', return_value={'audio_owned': True}), \
              patch.object(server.TUNING, 'request', return_value={}) as request:
-            server.action('mute', {'muted': True})
+            server.action('stop', {})
             request.assert_called_once_with('stop', {})
 
     def test_manual_tweeter_highpass_cannot_be_lowered(self):

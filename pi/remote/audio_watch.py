@@ -92,7 +92,7 @@ class AudioWatch:
                     raise RuntimeError('Auto Tune ownership is not clear')
                 with self.server.DSP() as dsp:
                     self.server.approved(dsp)
-                    config = json.loads(dsp.call('GetConfigJson'))
+                    config = json.loads(dsp.call('GetConfigJson')) or {}
                     if source_metadata(config)['id'] != 'tidal':
                         self.resume_pending = None
                         raise RuntimeError('Tidal route changed during recovery')
@@ -105,11 +105,15 @@ class AudioWatch:
     def _tidal_has_control(self):
         airplay = self.server.AIRPLAY_CONTROL
         return (not (airplay.active or airplay.idle or airplay.pending is not None
-                     or airplay.needs_mute or airplay.restore_pending is not None
+                     or airplay.recovery_pending or airplay.restore_pending is not None
                      or airplay.baseline.exists() or airplay.hook_busy.locked())
                 and not self.server.BLUETOOTH_CONTROL.owns_audio())
 
     def tick(self):
+        recovery = getattr(self.server, 'DAC_RECOVERY', None)
+        if recovery is not None and recovery.busy is True:
+            self.previous = None
+            return
         recover = getattr(self.server, 'recover_source', None)
         if recover is not None:
             recover()
@@ -117,7 +121,7 @@ class AudioWatch:
             self._retry_resume()
             return
         with self.server.DSP() as dsp:
-            config = json.loads(dsp.call('GetConfigJson'))
+            config = json.loads(dsp.call('GetConfigJson')) or {}
             source = source_metadata(config)['id']
             dsp_state = dsp.call('GetState')
             if self.diagnostics is not None:
@@ -125,11 +129,13 @@ class AudioWatch:
         if source == 'tidal':
             expected = dict(self.server.mpd('status')[0]).get('state') == 'play'
         elif source == 'airplay':
-            expected = self.server.AIRPLAY_CONTROL.status()['active']
+            cast = self.server.AIRPLAY_CONTROL.status()
+            expected = any(cast.get(key) for key in ('active', 'idle', 'preparing'))
         elif source == 'bluetooth':
-            expected = self.server.BLUETOOTH_CONTROL.status()['active']
+            cast = self.server.BLUETOOTH_CONTROL.status()
+            expected = cast.get('active') or cast.get('preparing')
         else:
-            expected = source != 'unknown' and dsp_state == 'Running'
+            expected = source != 'unknown' and dsp_state in ('Running', 'Stalled')
         # Observe idle periods too: an idle-to-playing edge can trigger DAC recovery.
         samples = self.read_pcm() if self.diagnostics is not None else None
         if self.diagnostics is not None:
@@ -178,7 +184,7 @@ class AudioWatch:
             self.report = dict(fault=fault, recovery='operator_needed', source=source, attempts=0)
             if self.diagnostics is not None:
                 self.diagnostics.incident(fault, source, self.server.DSP)
-            if fault == 'dac_output_stalled' and source == 'tidal' and self.on_dac_fault is not None:
+            if fault == 'dac_output_stalled' and self.on_dac_fault is not None:
                 self.on_dac_fault()
         if fault != 'tidal_input_stalled' or not self.auto_recover:
             return

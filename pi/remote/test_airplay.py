@@ -29,7 +29,7 @@ class AirPlayTests(unittest.TestCase):
         tuning = TuningProxy(tuning_root)
         self.path = str(self.profile)
         self.loaded = config()
-        self.muted = True
+        self.muted = False
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         def call(name, *args):
@@ -72,7 +72,7 @@ class AirPlayTests(unittest.TestCase):
         self.control.event('start', now=0)
         self.assertNotIn(('SetMute', False), self.calls())
         self.control.tick(now=1)
-        self.assertEqual(self.calls()[-3:], [('SetVolume', -18.0), ('SetMute', False), ('GetMute',)])
+        self.assertEqual([c for c in self.calls() if c[0] == 'SetVolume'][-1:], [('SetVolume', -18.0)])
         self.control.event('start', now=2)
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
         server.mpd.assert_called_once_with('pause 1')
@@ -112,18 +112,9 @@ class AirPlayTests(unittest.TestCase):
                              for c in self.calls()))
         server.mpd.assert_called_once_with('pause 1')
         self.control.invalidate()  # a manual override still ends it muted on the profile
-        self.assertIn(('SetMute', True), self.calls())
+        self.assertNotIn(('SetMute', True), self.calls())
         self.assertEqual(self.path, str(self.profile))
 
-    def test_ignored_unmute_cannot_mark_a_cast_active(self):
-        self.control.event('start', now=0)
-        original = self.dsp.call.side_effect
-        self.dsp.call.side_effect = lambda name, *args: None if name == 'SetMute' and args == (False,) else original(name, *args)
-        self.control.tick(now=1)
-        self.assertFalse(self.control.active)
-        self.assertTrue(self.muted)
-        self.assertIn('could not confirm unmute', self.control.error)
-        self.assertEqual(self.path, str(self.profile))
 
     def test_source_control_ends_the_active_cast_before_selecting_the_new_input(self):
         self.control.event('start', now=0)
@@ -134,7 +125,7 @@ class AirPlayTests(unittest.TestCase):
                 self.assertEqual(self.path, str(self.profile))
                 self.assertFalse(self.control.active)
                 self.assertFalse(self.control.baseline.exists())
-                self.assertEqual([call for call in self.calls() if call[0] == 'SetMute'][-1], ('SetMute', True))
+                self.assertFalse(any(call[0] == 'SetMute' for call in self.calls()))
 
             server.select_source.side_effect = verify_handoff
             server.action('source', {'id': 'tidal'})
@@ -153,7 +144,7 @@ class AirPlayTests(unittest.TestCase):
         self.control.event('start', now=3)
         self.assertFalse(self.control.active)
         self.assertIsNotNone(self.control.pending)
-        self.assertIn(('SetMute', True), self.calls())
+        self.assertNotIn(('SetMute', True), self.calls())
 
     def test_bluetooth_takes_over_an_idle_cast_on_the_profile(self):
         self.control.event('start', now=0)
@@ -165,7 +156,7 @@ class AirPlayTests(unittest.TestCase):
         self.assertFalse(self.control.idle)
         self.assertFalse(self.control.baseline.exists())
         self.assertEqual(self.path, str(self.profile))
-        self.assertIn(('SetMute', True), self.calls())
+        self.assertNotIn(('SetMute', True), self.calls())
 
     def test_any_saved_profile_and_any_input_are_cast_from_the_profile(self):
         from audio_sources import source_metadata
@@ -216,7 +207,7 @@ class AirPlayTests(unittest.TestCase):
                 with target, self.assertRaises(RuntimeError):
                     self.control.event('start', now=0)
                 self.assertNotIn(('SetMute', False), self.calls())
-                self.assertIn(('SetMute', True), self.calls())
+                self.assertNotIn(('SetMute', True), self.calls())
 
     def test_tuning_wins_before_readiness_and_receiver_crash_mutes(self):
         self.control.event('start', now=0)
@@ -233,18 +224,18 @@ class AirPlayTests(unittest.TestCase):
         with patch('airplay_control.receiver_running', return_value=False):
             self.control.tick(now=4)
         self.assertFalse(self.control.active)
-        self.assertIn(('SetMute', True), self.calls())
+        self.assertNotIn(('SetMute', True), self.calls())
         self.assertEqual(self.path, str(self.profile))
 
 class IntegrationSafetyTests(AirPlayTests):
     def test_mute_failure_is_retried_until_the_profile_is_restored(self):
         self.control.event('start', now=0)
-        with patch.object(self.control, 'mute', side_effect=RuntimeError('offline')):
+        with patch.object(self.control.baseline, 'recover', side_effect=RuntimeError('offline')):
             with self.assertRaises(RuntimeError):
                 self.control.fail('offline')
         self.control.tick(now=1)
         self.assertEqual(self.path, str(self.profile))
-        self.assertFalse(self.control.needs_mute)
+        self.assertFalse(self.control.recovery_pending)
         self.assertNotIn(('SetMute', False), self.calls())
 
     def test_status_does_not_treat_selected_source_as_active_cast(self):
@@ -279,15 +270,17 @@ class IntegrationSafetyTests(AirPlayTests):
         with patch.object(server, 'AIRPLAY_CONTROL', self.control), \
              patch.object(server, 'current_status', return_value={}):
             server.action('volume', {'db': -24})
-            server.action('mute', {'muted': True})
+            with self.assertRaises(ValueError):
+                server.action('mute', {'muted': True})
             self.control.event('stop', now=2)  # between apps: still adjustable
-            server.action('mute', {'muted': False})
+            with self.assertRaises(ValueError):
+                server.action('mute', {'muted': False})
             with self.assertRaises(ValueError):
                 server.action('volume', {'db': 0})
         self.assertTrue(self.control.idle)
         self.assertEqual(self.path, candidate)
         self.assertEqual([c for c in self.calls() if c[0] in ('SetVolume', 'SetMute', 'Reload')],
-                         [('SetVolume', -24.0), ('SetMute', True), ('SetMute', False)])
+                         [('SetVolume', -24.0)])
 
     def test_rapid_stop_start_keeps_playing(self):
         self.control.event('start', now=0)
@@ -297,7 +290,7 @@ class IntegrationSafetyTests(AirPlayTests):
         self.assertTrue(self.control.active)
         self.control.tick(now=2.2)
         self.assertEqual(self.calls().count(('SetVolume', -18.0)), 1)
-        self.assertEqual(self.calls().count(('SetMute', False)), 1)
+        self.assertEqual(self.calls().count(('SetMute', False)), 0)
 
     def test_unlock_and_relock_keep_the_airplay_route(self):
         self.control.event('start', now=0)
@@ -330,7 +323,7 @@ class IntegrationSafetyTests(AirPlayTests):
         self.control.event('start', now=2)
         self.control.tick(now=3)
         self.assertFalse(self.control.active)
-        self.assertEqual(self.calls().count(('SetMute', False)), 1)
+        self.assertEqual(self.calls().count(('SetMute', False)), 0)
         with patch('airplay_control.pcm_running', return_value=False):
             self.control.tick(now=4)
         self.control.event('start', now=5)
@@ -356,7 +349,7 @@ class IntegrationSafetyTests(AirPlayTests):
 
     def test_boot_with_persisted_airplay_only_mutes(self):
         server.initialize_dsp()
-        self.assertIn(('SetMute', True), self.calls())
+        self.assertNotIn(('SetMute', True), self.calls())
         self.assertNotIn(('SetMute', False), self.calls())
 
     def test_source_and_tuning_actions_revoke_pending_unmute(self):
@@ -501,7 +494,7 @@ class PreparationDeadlineTests(AirPlayTests):
             airplay_control.handle_connection(connection, self.control, os.getuid())
             self.assertTrue(entered.is_set())
             self.assertEqual(client.recv(16), b'ERROR\n')
-            self.assertIn(('SetMute', True), self.calls())
+            self.assertNotIn(('SetMute', True), self.calls())
             release.set()
             self.assertTrue(finished.wait(2))
             self.control.tick()
@@ -550,7 +543,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.loaded = self.copy(self.config)
         self.calls = []
         self.reload_failure = False
-        self.muted = True
+        self.muted = False
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         def call(name, *args):
@@ -650,9 +643,9 @@ class BaselineAirPlayTests(unittest.TestCase):
             fcntl.flock(competitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with patch.object(server, 'AIRPLAY_CONTROL', self.control):
                 server.initialize_dsp()
-            self.assertTrue(self.control.needs_mute)
+            self.assertTrue(self.control.recovery_pending)
             self.assertTrue(self.control.baseline.journal.exists())
-            self.assertIn(('SetMute', True), self.calls)
+            self.assertNotIn(('SetMute', True), self.calls)
             self.assertNotIn(('SetMute', False), self.calls)
             self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
         self.control.tick(now=2)
@@ -709,7 +702,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.assertEqual(self.loaded, self.config)
         self.assertFalse(self.control.baseline.exists())
         self.assertFalse(self.control.baseline.candidate.exists())
-        self.assertEqual([c for c in self.calls if c[0] == 'SetMute'][-1], ('SetMute', True))
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.unchanged()
 
     def test_symlink_baseline_is_rejected(self):
@@ -735,7 +728,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.unchanged()
         self.assertNotIn(('SetMute', False), self.calls)
         self.control.tick(now=1)
-        self.assertEqual(self.calls[-3:], [('SetVolume', -18.0), ('SetMute', False), ('GetMute',)])
+        self.assertEqual([c for c in self.calls if c[0] == 'SetVolume'][-1:], [('SetVolume', -18.0)])
         server.mpd.assert_called_once_with('pause 1')
         self.control.event('stop', now=2)
         with patch('airplay_control.pcm_running', return_value=False):
@@ -767,7 +760,7 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.reload_failure = True
         with self.assertRaises(RuntimeError):
             self.control.end()
-        self.assertTrue(self.control.needs_mute)
+        self.assertTrue(self.control.recovery_pending)
         self.assertTrue(self.control.baseline.journal.exists())
         self.reload_failure = False
         self.control.tick(now=12)
@@ -782,14 +775,14 @@ class BaselineAirPlayTests(unittest.TestCase):
         self.calls.clear()
         with self.assertRaises(RuntimeError):
             self.control.tick(now=2)
-        self.assertIn(('SetMute', True), self.calls)
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
         self.assertTrue(self.control.baseline.journal.exists())
         self.owned = False
         with self.assertRaises(RuntimeError):
             self.control.tick(now=3)
         self.assertEqual(self.loaded, {'measurement': True})
-        self.assertTrue(self.control.needs_mute)
+        self.assertTrue(self.control.recovery_pending)
         # Recovery may proceed only once the owner returns the approved baseline.
         self.path, self.loaded = str(self.original), self.copy(self.config)
         self.control.tick(now=4)
@@ -824,8 +817,8 @@ class BaselineAirPlayTests(unittest.TestCase):
                 self.new_controller()
                 with patch.object(server, 'AIRPLAY_CONTROL', self.control):
                     server.initialize_dsp()
-                    self.assertTrue(self.control.needs_mute)
-                    with self.assertRaises(Exception):
+                    self.assertTrue(self.control.recovery_pending)
+                    with self.assertRaises(ValueError):
                         server.action('mute', {'muted': False})
                 self.assertTrue(self.control.baseline.journal.exists())
                 self.assertNotIn(('SetMute', False), self.calls)
@@ -888,7 +881,7 @@ class BaselineAirPlayTests(unittest.TestCase):
                 self.control.event('start', now=0)
         # Recovery can select only the original, never an undurable candidate.
         self.assertFalse(any(c == ('SetConfigFilePath', str(self.control.baseline.candidate)) for c in self.calls))
-        self.assertTrue(self.control.needs_mute)
+        self.assertTrue(self.control.recovery_pending)
         self.control.tick(now=1)
         self.restored()
 
@@ -914,7 +907,7 @@ class BaselineAirPlayTests(unittest.TestCase):
                 server.action('source', {'id': 'tidal'})
             select.assert_not_called()
         self.assertTrue(self.control.baseline.journal.exists())
-        self.assertTrue(self.control.needs_mute)
+        self.assertTrue(self.control.recovery_pending)
         self.reload_failure = False
         self.control.tick(now=1)
         self.restored()

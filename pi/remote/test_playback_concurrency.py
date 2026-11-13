@@ -8,31 +8,6 @@ import server
 
 
 class PlaybackConcurrency(unittest.TestCase):
-    def test_pending_radio_cannot_undo_an_explicit_mute(self):
-        entered, release = threading.Event(), threading.Event()
-        failures = []
-        def slow(_):
-            entered.set()
-            release.wait(3)
-            return ([dict(id='1')], 0, dict(kind='radio'))
-        def request():
-            try:
-                server.action('play-radio', dict(id='1'))
-            except RuntimeError as error:
-                failures.append(str(error))
-        with patch.object(server, 'prepare_radio', side_effect=slow), \
-                patch.object(server.AIRPLAY_CONTROL, 'suppressed', True), \
-                patch.object(server, '_action', return_value={}) as commit:
-            thread = threading.Thread(target=request)
-            thread.start()
-            self.assertTrue(entered.wait(2))
-            server.action('mute', {'muted': True})
-            release.set()
-            thread.join(3)
-            self.assertFalse(thread.is_alive())
-            commit.assert_called_once_with('mute', {'muted': True})
-            self.assertEqual(len(failures), 1)
-            self.assertIn('cancelled', failures[0])
 
     def test_tuning_stop_bypasses_pending_source_restore(self):
         with patch.object(server.TUNING, 'status', return_value={'audio_owned': True}), \

@@ -17,6 +17,11 @@ import sys
 import tempfile
 import time
 
+# -I excludes the script directory. Add only this root-owned installed module
+# tree, never the working directory, PYTHONPATH or service-user state directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dac_ladder
+
 STATE = Path('/var/lib/octet-dac-recovery')
 BOOT_STATE = Path('/run/octet-audio-boot/mpd.json')
 MPD_STATE = Path('/var/lib/mpd/state')
@@ -125,6 +130,8 @@ def handle(operation):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         boot = BOOT_ID.read_text().strip()
         previous = read_attempt()
+        if operation in (b'begin', b'stream', b'driver', b'finish'):
+            return dac_ladder.handle(sys.modules[__name__], operation)
         if operation == b'ready':
             if not previous or previous.get('graph_verified') != boot:
                 raise RuntimeError('The audio graph was not verified on this recovery boot')
@@ -136,9 +143,37 @@ def handle(operation):
             if 'octet-dac-graph.service' not in required.split():
                 raise RuntimeError('The DAC recovery boot graph gate is not enabled')
         startup = run('/usr/bin/systemctl', 'show', 'camilladsp.service', '-p', 'ExecStart', '--value')
-        if '--mute' not in startup.split():
-            raise RuntimeError('CamillaDSP startup mute could not be verified')
-        lines = fault_evidence()
+        if '--mute' in startup.split():
+            raise RuntimeError('Obsolete CamillaDSP startup mute is still installed')
+        ladder = None
+        try:
+            ladder = json.loads((STATE / 'ladder.json').read_text())
+        except FileNotFoundError:
+            pass
+        escalating = (operation == b'reboot' and ladder is not None and ladder.get('boot') == boot
+                      and ladder.get('stage') == 'driver'
+                      and 0 <= time.time() - ladder.get('time', 0) <= dac_ladder.WINDOW)
+        if (operation == b'reboot' and ladder is not None and ladder.get('boot') == boot
+                and not escalating):
+            raise RuntimeError('Local DAC recovery steps must complete before reboot')
+        if escalating:
+            # The initial stall and both local attempts were independently verified
+            # and recorded as root. Driver failure can leave the PCM absent entirely.
+            try:
+                before = pcm_sample()
+                time.sleep(.4)
+                after = pcm_sample()
+            except FileNotFoundError:
+                before = after = (None, None, None)
+            if after[1] == 'RUNNING' and before[2] != after[2]:
+                raise RuntimeError('DAC progress returned; reboot refused')
+            if run('/usr/bin/systemctl', 'show', 'camilladsp.service', '-p', 'ActiveState', '--value').strip() == 'active':
+                dac_ladder.selected_dac()
+            lines = ladder['kernel']
+        else:
+            lines = fault_evidence()
+            if operation == b'reboot':
+                dac_ladder.selected_dac()
         if operation == b'check':
             return
         if (LOOPBACK / 'pcm0p/sub0/status').read_text().strip() != 'closed':
@@ -158,7 +193,7 @@ def serve():
             return
         with connection.makefile('rb') as stream:
             operation = stream.readline(8)
-        if operation not in (b'check\n', b'reboot\n', b'ready\n'):
+        if operation not in (b'check\n', b'reboot\n', b'ready\n', b'begin\n', b'stream\n', b'driver\n', b'finish\n'):
             return
         try:
             handle(operation.strip())

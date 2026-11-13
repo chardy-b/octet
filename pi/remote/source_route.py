@@ -109,9 +109,6 @@ class SourceRoute(BaselineRoute):
                     raise RuntimeError('Input recovery files changed')
                 snapshots.append((original, data))
             with self.server.DSP() as dsp:
-                dsp.call('SetMute', True)
-                if dsp.call('GetMute') is not True:
-                    raise RuntimeError('Input recovery mute could not be verified')
                 if dsp.call('GetConfigFilePath') not in (path, record['target']):
                     raise RuntimeError('DSP ownership changed; input recovery retained')
             for original, data in snapshots:
@@ -126,17 +123,15 @@ class SourceRoute(BaselineRoute):
             with self.server.DSP() as dsp:
                 dsp.call('SetConfigFilePath', path)
                 dsp.call('Reload')
-                dsp.call('SetMute', True)
                 for _ in range(60):
                     self.check_lock()
                     if (dsp.call('GetConfigFilePath') == path
                             and json.loads(dsp.call('GetConfigJson')) == expected
-                            and dsp.call('GetState') == 'Running'
-                            and dsp.call('GetMute') is True):
+                            and dsp.call('GetState') == 'Running'):
                         self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(expected)
                         self.finish()
                         return
                     time.sleep(.1)
-            raise RuntimeError('Previous input restore not verified; output muted and recovery retained')
+            raise RuntimeError('Previous input restore not verified; recovery retained')
         finally:
             self.release_if_idle()

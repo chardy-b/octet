@@ -122,6 +122,8 @@ class DSP:
         self.sock = socket.create_connection(('127.0.0.1', 1234), timeout=4)
         try:
             self.handshake()
+            from output_policy import reconcile
+            reconcile(self)
         except Exception:
             self.sock.close()
             raise
@@ -171,6 +173,8 @@ class DSP:
         self.sock.sendall(header + mask + bytes(v ^ mask[i % 4] for i, v in enumerate(data)))
 
     def call(self, name, value=None):
+        if name == 'SetMute' and value is not False:
+            raise ValueError('Master mute has been removed; stop playback instead')
         self.send_frame(json.dumps(name if value is None else {name: value}).encode())
         while True:
             first, second = read_exact(self.sock, 2)
@@ -581,7 +585,6 @@ def play_context(rows, position, source):
             except Exception:
                 pass
             raise RuntimeError('Could not load the music. Your previous queue was retained.')
-        dsp.call('SetMute', True)
         try:
             mpd('random 0', 'single 0', 'repeat 0', 'consume 0', 'playid ' + ids[position])
             if old_ids:
@@ -590,25 +593,46 @@ def play_context(rows, position, source):
             save_queue_context(dict(source=source,
                                     manual={sid: url for sid, url in zip(ids, staged_urls) if sid in manual},
                                     autoplay={sid: url for sid, url in zip(ids, staged_urls) if sid not in manual}))
-            confirm_tidal_unmute(dsp)
+            confirm_tidal_output(dsp)
         except Exception as error:
             abort_tidal_start(dsp, error)
     return current_status()
 
 
-def confirm_tidal_unmute(dsp):
-    dsp.call('SetMute', False)
-    if dsp.call('GetMute') is not False:
-        raise RuntimeError('DSP did not confirm unmute')
-    logging.info('DSP mute=False: Tidal playback start verified')
+def selected_config(dsp):
+    """Read selection for controls/status even after an explicit processing Stop."""
+    config = json.loads(dsp.call('GetConfigJson'))
+    if config is not None:
+        return config
+    path = dsp.call('GetConfigFilePath')
+    if not listening_profile(path):
+        raise RuntimeError('Select a saved speaker profile before restarting output')
+    import yaml
+    return yaml.safe_load(dsp.call('ReadConfigFile', path))
+
+
+def start_selected_output():
+    """Only a new playback/source intent may restart explicitly stopped processing."""
+    with DSP() as dsp:
+        if dsp.call('GetState') == 'Inactive':
+            approved(dsp)
+            dsp.call('Reload')
+            for _ in range(40):
+                if dsp.call('GetState') in ('Running', 'Stalled'):
+                    return
+                time.sleep(.1)
+            raise RuntimeError('Speaker processing did not restart')
+
+
+def confirm_tidal_output(dsp):
+    if dsp.call('GetState') == 'Inactive':
+        start_selected_output()
+    if dsp.call('GetState') not in ('Running', 'Stalled'):
+        raise RuntimeError('Speaker processing is unavailable; select the source again')
 
 
 def abort_tidal_start(dsp, error):
     """A failed start must not leave the track clock advancing behind a mute."""
-    try:
-        dsp.call('SetMute', True)
-    except Exception:
-        logging.exception('Could not confirm mute after failed Tidal start')
     paused = False
     try:
         state = dict(mpd('pause 1', 'status')[1]).get('state')
@@ -722,16 +746,16 @@ def approved(dsp):
 
 
 def require_tidal(dsp):
-    if source_metadata(json.loads(dsp.call('GetConfigJson')))['id'] != 'tidal':
+    if source_metadata(selected_config(dsp))['id'] != 'tidal':
         raise RuntimeError('Select Tidal as the source before starting music')
 
 
 def restore_channel_profile(previous):
-    # Keep rollback bytes and the mute retry latched until durable restore and
-    # DSP reload both succeed. Cancel any pending automatic AirPlay unmute.
+    # Keep rollback bytes and the recovery retry until durable restore and
+    # DSP reload both succeed. Cancel pending AirPlay readiness.
     AIRPLAY_CONTROL.invalidate(manual=False)
     AIRPLAY_CONTROL.restore_pending = previous
-    AIRPLAY_CONTROL.needs_mute = True
+    AIRPLAY_CONTROL.recovery_pending = True
     AIRPLAY_CONTROL.recover()
 
 
@@ -757,7 +781,7 @@ def recover_source():
         route = source_route()
         if route.exists():
             route.recover()
-            logging.info('Pending input recovery verified; output remains muted')
+            logging.info('Pending input recovery verified; playback remains paused')
 
 
 def source_route():
@@ -788,7 +812,7 @@ def select_source(identifier):
     """Run the selected profile from identifier's input (see dsp_inputs.with_input).
 
     Tidal runs the profile file itself when it already uses Tidal; every other
-    input runs from running_file(). Ends muted with MPD paused; Unmute/Play is explicit.
+    input runs from running_file(). MPD remains paused; a live input plays immediately.
     """
     validate_source(identifier)
     with source_transaction() as route:
@@ -799,7 +823,7 @@ def _select_source(identifier, route):
     source = validate_source(identifier)
     with DSP() as dsp:
         previous_path = dsp.call('GetConfigFilePath')
-        config = json.loads(dsp.call('GetConfigJson'))
+        config = selected_config(dsp)
         running = dsp.call('GetState') == 'Running'
     details = listening_profile(previous_path)
     if not details:
@@ -813,8 +837,7 @@ def _select_source(identifier, route):
 def switch_profile(identifier):
     """Play another saved profile from the input in use, without interrupting playback.
 
-    CamillaDSP reloads in place (same input, so the stream keeps running); nothing
-    is muted or paused. Profiles differ in level, so the master is first limited to
+    CamillaDSP reloads in place (same input, so the stream keeps running); playback continues. Profiles differ in level, so the master is first limited to
     MAX_DB. An AirPlay or Bluetooth session carries on with the new profile.
     """
     tuning = TUNING.status()
@@ -844,7 +867,7 @@ def _switch_profile(profile, route):
         if dsp.call('GetVolume') > MAX_DB:
             dsp.call('SetVolume', MAX_DB)
         previous_path = dsp.call('GetConfigFilePath')
-        config = json.loads(dsp.call('GetConfigJson'))
+        config = selected_config(dsp)
     identifier = source_metadata(config)['id']
     source = 'tidal' if identifier == 'tidal' else next(
         (item for item in discover_sources() if item['id'] == identifier), None)
@@ -854,7 +877,7 @@ def _switch_profile(profile, route):
 
 
 def _load_profile_input(profile, source, previous_path, config, *, interrupt, route):
-    """Load profile fed from source. interrupt: mute and pause MPD first (source change);
+    """Load profile fed from source. interrupt: pause MPD first (source change);
     otherwise reload in place while playing (profile change, same input)."""
     global ACTIVE_CAPTURE_CHANNELS
     import yaml
@@ -876,8 +899,6 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt, ro
                 raise RuntimeError('DSP rejected the source; the previous source was retained')
         if interrupt:
             INPUT_LEVELS.release()
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
         route.begin_change(previous_path, config, target)
         try:
             if interrupt:
@@ -902,19 +923,17 @@ def _load_profile_input(profile, source, previous_path, config, *, interrupt, ro
                         ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
                         route.finish()
                         logging.info('DSP route reloaded for %s (source change=%s)', identifier, interrupt)
-                        return  # After a source change, Unmute/Play is explicit.
+                        return
             raise RuntimeError('The selected input did not start')
         except Exception as error:
             AIRPLAY_CONTROL.invalidate(manual=False)
             try:
-                with DSP() as dsp:
-                    dsp.call('SetMute', True)
                 route.recover()
             except Exception as recovery_error:
                 logging.error('Input change and rollback failed; durable recovery retained: %s', recovery_error)
-                raise RuntimeError('Change failed; previous input restore is pending and output remains muted') from recovery_error
-            logging.warning('DSP route change for %s failed. Previous route verified muted', identifier)
-            raise RuntimeError('Change failed; the previous source was restored and output is muted') from error
+                raise RuntimeError('Change failed; previous input restore is pending and playback remains paused') from recovery_error
+            logging.warning('DSP route change for %s failed. Previous route verified', identifier)
+            raise RuntimeError('Change failed; the previous source was restored and playback is paused') from error
     finally:
         candidate.unlink(missing_ok=True)
 
@@ -1152,7 +1171,6 @@ def set_channel_control(output, control, enabled):
             change_always_active(config, output, enabled)
         else:
             change_channel_setting(config, output, control, enabled)
-        previous_mute = dsp.call('GetMute')
     import yaml
     previous = CHANNEL_PROFILE.read_bytes()
     candidate = CHANNEL_PROFILE.with_name('channel-dsp-candidate.yml')
@@ -1161,8 +1179,6 @@ def set_channel_control(output, control, enabled):
     validation = subprocess.run(['/opt/camilladsp/camilladsp', '--check', str(candidate)], capture_output=True, timeout=10)
     if validation.returncode:
         raise RuntimeError('DSP rejected the change; current settings were retained')
-    with DSP() as dsp:
-        dsp.call('SetMute', True)
     try:
         candidate.replace(CHANNEL_PROFILE)
         with DSP() as dsp:
@@ -1183,12 +1199,11 @@ def set_channel_control(output, control, enabled):
                     applied = bool(polarity_parameters(loaded, output).get('inverted')) == enabled
                 if applied:
                     if dsp.call('GetState') == 'Running':
-                        dsp.call('SetMute', previous_mute)
                         return
         raise RuntimeError('DSP did not confirm the change')
     except Exception:
         restore_channel_profile(previous)
-        raise RuntimeError('DSP change failed; previous settings restored and output muted')
+        raise RuntimeError('DSP change failed; previous settings restored and playback paused')
 
 
 def set_channel_eq(output, enabled):
@@ -1197,10 +1212,10 @@ def set_channel_eq(output, enabled):
 
 def dsp_status():
     with LOCK, DSP() as dsp:
-        config = json.loads(dsp.call('GetConfigJson'))
+        config = selected_config(dsp)
         path = dsp.call('GetConfigFilePath')
         result = dict(profile=config.get('title', 'CamillaDSP'), volume=dsp.call('GetVolume'),
-                      muted=dsp.call('GetMute'), channels=[],
+                      muted=False, channels=[],
                       **level_range(BLUETOOTH_CONTROL.owns_audio()))
         result['sample_rate'] = config.get('devices', {}).get('samplerate', 48000)
     profile = listening_profile(path)
@@ -1269,7 +1284,7 @@ def current_status():
     try:
         with LOCK, DSP() as dsp:
             profile = dsp.call('GetConfigFilePath')
-            config = json.loads(dsp.call('GetConfigJson'))
+            config = selected_config(dsp)
             source = source_metadata(config)
             ACTIVE_CAPTURE_CHANNELS = meter_channels(config)
             selected = next((item for item in result['sources'] if item['id'] == source['id']), None)
@@ -1280,14 +1295,14 @@ def current_status():
             details = listening_profile(profile)
             label, description = ((details['label'], details['description']) if details else
                                   ('Other DSP preset', 'Playback controls require an approved exciter preset'))
-            result.update(volume=dsp.call('GetVolume'), muted=dsp.call('GetMute'),
-                          dsp_state=dsp.call('GetState'), ready=bool(details) and selected is not None,
+            result.update(volume=dsp.call('GetVolume'), muted=False,
+                          dsp_state=dsp.call('GetState'), ready=bool(details) and selected is not None and dsp.call('GetState') in ('Running', 'Stalled'),
                           profile=label, profile_description=description)
             result['source_switching_available'] = bool(details) and source['id'] != 'unknown'
             result['source_switching_reason'] = ('' if result['source_switching_available'] else
                 'Select a saved speaker profile on the DSP page before changing sources.')
     except (OSError, RuntimeError, ValueError):
-        result.update(volume=-36, muted=True, ready=False, dsp_state='Offline')
+        result.update(volume=-36, muted=False, ready=False, dsp_state='Offline')
     result['airplay'] = AIRPLAY_CONTROL.status()
     result['bluetooth'] = BLUETOOTH_CONTROL.status()
     result['bluetooth_pairing'] = dict(BLUETOOTH_PAIRING)
@@ -1417,6 +1432,8 @@ def auto_status():
 
 def action(name, data):
     global CONTROL_GENERATION, AUDIO_INTENT
+    if name == 'mute':
+        raise ValueError('Master mute has been removed. Use Pause or Stop.')
     if name == 'recover-dac':
         return DAC_RECOVERY.start()
     if name == 'bluetooth-discoverable':
@@ -1425,7 +1442,7 @@ def action(name, data):
     if name == 'auto-select':
         # Changing profile keeps the current input playing: no mute, pause or stop.
         with LOCK:
-            if DAC_RECOVERY.busy:
+            if DAC_RECOVERY.busy or DAC_RECOVERY.blocked is True:
                 raise RuntimeError('DAC recovery is in progress')
             CONTROL_GENERATION += 1
             if not BLUETOOTH_CONTROL.owns_audio():
@@ -1436,7 +1453,7 @@ def action(name, data):
                'play-album': prepare_album}.get(name)
     lookup_track = name in ('play', 'enqueue') and track_id(data.get('id')) not in CATALOG
     with LOCK:
-        if DAC_RECOVERY.busy:
+        if DAC_RECOVERY.busy or DAC_RECOVERY.blocked is True:
             if name == 'auto-stop':
                 return TUNING.request('stop', {})
             raise RuntimeError('DAC recovery is in progress')
@@ -1450,7 +1467,7 @@ def action(name, data):
         receiver = receiver_intent()
         if not prepare and not lookup_track:
             # Immediate controls never yield to another command before mutation.
-            if name not in ('volume', 'mute', 'unlock'):
+            if name not in ('volume', 'unlock'):
                 AUDIO_INTENT += 1
             result = _action(name, data)
     if prepare or lookup_track:
@@ -1470,8 +1487,7 @@ def action(name, data):
         # The Bluetooth bridge needs LOCK to prepare, so the wait for it happens outside.
         start_bluetooth(intent=lambda: generation == CONTROL_GENERATION)
         result = current_status()
-    if (name in ('resume', 'play', 'play-album', 'play-playlist', 'play-radio', 'next', 'previous', 'position', 'source')
-            or (name == 'mute' and data.get('muted') is False)):
+    if name in ('resume', 'play', 'play-album', 'play-playlist', 'play-radio', 'next', 'previous', 'position', 'source'):
         with LOCK:
             if DAC_RECOVERY.phase == 'restored' and generation == CONTROL_GENERATION:
                 DAC_RECOVERY.phase = None
@@ -1479,7 +1495,7 @@ def action(name, data):
 
 
 def dac_holds_receivers():
-    return DAC_RECOVERY.busy or (not DAC_RECOVERY.boot_restore and DAC_RECOVERY.phase in ('restored', 'failed'))
+    return DAC_RECOVERY.busy or DAC_RECOVERY.blocked is True
 
 
 def receiver_intent():
@@ -1490,16 +1506,11 @@ def receiver_intent():
 
 
 def cast_level(name, data):
-    """Volume or mute on a playing AirPlay cast or Bluetooth phone, in place; None if neither."""
-    if name == 'volume':
-        volume, muted = float(data['db']), None
-        if not math.isfinite(volume) or not MIN_DB <= volume <= volume_ceiling():
-            raise ValueError('Volume is outside the currently unlocked range')
-    else:
-        volume, muted = None, data.get('muted')
-        if not isinstance(muted, bool):
-            raise ValueError('Expected a mute setting')
-    if AIRPLAY_CONTROL.set_level(volume, muted) or BLUETOOTH_CONTROL.set_level(volume, muted):
+    """Adjust a cast's volume in place."""
+    volume = float(data['db'])
+    if not math.isfinite(volume) or not MIN_DB <= volume <= volume_ceiling():
+        raise ValueError('Volume is outside the currently unlocked range')
+    if AIRPLAY_CONTROL.set_level(volume) or BLUETOOTH_CONTROL.set_level(volume):
         return current_status()
     return None
 
@@ -1514,7 +1525,7 @@ def set_level_range(enabled):
     if TUNING.status().get('audio_owned'):
         raise RuntimeError('Stop Auto mode before changing the listening range.')
     airplay = AIRPLAY_CONTROL
-    if airplay.needs_mute or airplay.pending is not None:
+    if airplay.recovery_pending or airplay.pending is not None:
         raise RuntimeError('Wait for AirPlay to finish preparing or recovering.')
     if airplay.active or airplay.idle or airplay.baseline.exists():
         if not airplay.set_level(ceiling=None if enabled else MAX_DB):
@@ -1529,29 +1540,28 @@ def set_level_range(enabled):
 
 
 def _action(name, data, prepared=None):
-    if (name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True)) and TUNING.status().get('audio_owned'):
+    if name in ('auto-stop', 'stop') and TUNING.status().get('audio_owned'):
         # Stopping direct test tones must remain reachable even with a retained journal.
         return TUNING.request('stop', {})
     recover_source()
-    if name == 'mute' and data.get('muted') is True and BLUETOOTH_CONTROL.session is None:
+    if name == 'stop':
         BLUETOOTH_CONTROL.cancel_retry()
     if name == 'unlock':
         return set_level_range(data.get('enabled'))
-    if name in ('volume', 'mute') and not AIRPLAY_CONTROL.needs_mute and TUNING.status().get('audio_owned') is False:
-        # Turning a cast or phone up, down or muted never ends it.
+    if name == 'volume' and not AIRPLAY_CONTROL.recovery_pending and TUNING.status().get('audio_owned') is False:
+        # Changing a cast or phone volume never ends it.
         result = cast_level(name, data)
         if result is not None:
             return result
-    if AIRPLAY_CONTROL.needs_mute or AIRPLAY_CONTROL.baseline.exists():
-        if (name in ('auto-stop', 'stop') or (name == 'mute' and data.get('muted') is True)) and TUNING.status().get('audio_owned'):
-            AIRPLAY_CONTROL.mute()
+    if AIRPLAY_CONTROL.recovery_pending or AIRPLAY_CONTROL.baseline.exists():
+        if name in ('auto-stop', 'stop') and TUNING.status().get('audio_owned'):
             return TUNING.request('stop', {})
-        if AIRPLAY_CONTROL.needs_mute:
+        if AIRPLAY_CONTROL.recovery_pending:
             AIRPLAY_CONTROL.recover()
         if AIRPLAY_CONTROL.baseline.exists():
             AIRPLAY_CONTROL.invalidate()
     if BLUETOOTH_CONTROL.owns_audio():
-        # Every manual or Auto Tune request overrides Bluetooth, which stops muted.
+        # Every manual or Auto Tune request overrides Bluetooth, which stops its bridge.
         # A failed restore raises here, so no mutation proceeds on its route.
         BLUETOOTH_CONTROL.stop('Manual control override')
     if name.startswith('auto-'):
@@ -1561,7 +1571,7 @@ def _action(name, data, prepared=None):
             return TUNING.request(name.removeprefix('auto-'), data)
     tuning = TUNING.status()
     if tuning.get('audio_owned'):
-        if name == 'stop' or (name == 'mute' and data.get('muted') is True):
+        if name == 'stop':
             return TUNING.request('stop', {})
         raise RuntimeError('Auto mode owns the audio outputs. Stop and restore settings before using music or manual DSP controls.')
     if prepared is not None:
@@ -1586,28 +1596,11 @@ def _action(name, data, prepared=None):
             set_channel_control(None, 'all-eq', data.get('enabled'))
         elif name == 'stop':
             AIRPLAY_CONTROL.invalidate()
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
             mpd('stop')
-        elif name == 'mute':
-            AIRPLAY_CONTROL.invalidate()
-            if not isinstance(data.get('muted'), bool):
-                raise ValueError('Expected a mute setting')
             with DSP() as dsp:
-                if not data['muted']:
-                    approved(dsp)
-                    source = source_metadata(json.loads(dsp.call('GetConfigJson')))['id']
-                    if source not in {item['id'] for item in discover_sources()}:
-                        raise RuntimeError('The selected source is unavailable. Reconnect it or choose Tidal.')
-                    dsp_state = dsp.call('GetState')
-                    if dsp_state == 'Stalled':
-                        raise RuntimeError('The speaker DSP is waiting for input audio. Check the selected source before unmuting.')
-                    if dsp_state != 'Running':
-                        raise RuntimeError('The speaker DSP is not ready to unmute.')
-                dsp.call('SetMute', data['muted'])
-                if not data['muted'] and dsp.call('GetMute') is not False:
-                    raise RuntimeError('DSP did not confirm unmute. Please retry.')
-                logging.info('DSP mute=%s: Music control', data['muted'])
+                if source_metadata(selected_config(dsp))['id'] != 'tidal':
+                    from output_policy import stop
+                    stop(dsp, 'Music Stop control')
         elif name == 'volume':
             value = float(data['db'])
             if not math.isfinite(value) or not MIN_DB <= value <= volume_ceiling():
@@ -1646,15 +1639,12 @@ def _action(name, data, prepared=None):
                         command = 'play ' + str(position)
                 try:
                     mpd(command)
-                    confirm_tidal_unmute(dsp)
+                    confirm_tidal_output(dsp)
                 except Exception as error:
                     abort_tidal_start(dsp, error)
         elif name == 'pause':
             mpd('pause 1')
         elif name == 'clear':
-            with DSP() as dsp:
-                if source_metadata(json.loads(dsp.call('GetConfigJson')))['id'] == 'tidal':
-                    dsp.call('SetMute', True)
             mpd('clear')
             save_queue_context(dict(manual={}, autoplay={}, source={}))
         elif name == 'seek':
@@ -2002,42 +1992,26 @@ class Handler(BaseHTTPRequestHandler):
 
 def initialize_dsp():
     global LEVELS_UNLOCKED, ACTIVE_CAPTURE_CHANNELS
-    def confirm_mute():
-        with DSP() as dsp:
-            dsp.call('SetMute', True)
-            if dsp.call('GetMute') is not True:
-                raise RuntimeError('DSP mute could not be confirmed')
-
     with LOCK:
-        AIRPLAY_CONTROL.needs_mute = True
-        try:
-            confirm_mute()
-            recover_source()
-            AIRPLAY_CONTROL.recover()
-        except Exception:
-            AIRPLAY_CONTROL.needs_mute = True
-            AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
-        finally:
+        errors = []
+        # Attempt each journal independently so one failed owner does not prevent
+        # another source's orphaned bridge/route from being cleaned up.
+        for recover in (recover_source, AIRPLAY_CONTROL.recover, BLUETOOTH_CONTROL.startup):
             try:
-                # Independent of AirPlay; failure retains its journal and error.
-                BLUETOOTH_CONTROL.startup()
-            except Exception:
-                logging.warning('Bluetooth startup recovery failed; output remains muted')
-            # Recovery can reload the DSP or fail partway through. Always use a
-            # fresh connection to mute again, and refuse startup without proof.
-            try:
-                confirm_mute()
+                recover()
             except Exception as error:
-                AIRPLAY_CONTROL.needs_mute = True
-                AIRPLAY_CONTROL.error = 'DSP mute could not be confirmed; refusing remote startup'
-                raise RuntimeError(AIRPLAY_CONTROL.error) from error
+                errors.append(error)
+                logging.exception('DSP startup recovery failed')
         try:
             with DSP() as dsp:
                 LEVELS_UNLOCKED = dsp.call('GetVolume') > MAX_DB
-                ACTIVE_CAPTURE_CHANNELS = meter_channels(json.loads(dsp.call('GetConfigJson')))
-        except Exception:
-            AIRPLAY_CONTROL.needs_mute = True
-            AIRPLAY_CONTROL.error = 'DSP initialization/recovery failed; output must remain muted'
+                ACTIVE_CAPTURE_CHANNELS = meter_channels(selected_config(dsp))
+        except Exception as error:
+            errors.append(error)
+            logging.exception('DSP startup status unavailable')
+        if errors:
+            AIRPLAY_CONTROL.recovery_pending = True
+            AIRPLAY_CONTROL.error = 'Audio recovery needs attention: ' + str(errors[0])
 
 
 def start_audio_controls():
@@ -2048,9 +2022,9 @@ def start_audio_controls():
         # RuntimeDirectory exists only with the guarded Bluetooth installer drop-in.
         threading.Thread(target=serve_bluetooth, args=(BLUETOOTH_CONTROL,), daemon=True).start()
         threading.Thread(target=watch_bluetooth_pairing, daemon=True).start()
-        # Optional observer/worker after muted recovery; failures are contained and leave
+        # Optional observer/worker after route recovery; failures are contained and leave
         # the manual socket, Tidal and AirPlay running.
-        # Automatic unmute is deployment-gated until the private DSP proxy and
+        # Automatic receiver admission is deployment-gated until the private DSP proxy and
         # all clients are verified. A runtime directory alone is not consent.
         if os.environ.get('OCTET_BLUETOOTH_AUTO') == '1':
             start_auto_bluetooth(BLUETOOTH_CONTROL)
@@ -2066,7 +2040,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     os.umask(0o077)
     initialize_dsp()
-    logging.info('DSP startup mute confirmed')
+    logging.info('DSP initialized without master mute')
     DAC_RECOVERY.prepare_startup()
     if DAC_RECOVERY.busy:
         # The HTTP stream resolver must accept MPD's seek before the track can be paused.

@@ -81,15 +81,11 @@ class AirPlayController:
         self.expected = None
         self.silent_since = None
         self.suppressed = False
-        self.needs_mute = False
+        self.recovery_pending = False
         self.restore_pending = None
         self.cancelled = None
         self.acknowledged = None
         self.hook_busy = threading.Lock()
-
-    def mute(self):
-        with self.server.DSP() as dsp:
-            dsp.call('SetMute', True)
 
     def invalidate(self, manual=True):
         # Called under the shared control lock for explicit user ownership changes.
@@ -97,7 +93,7 @@ class AirPlayController:
             # Finish recovery before permitting a manual mutation/Auto Tune request.
             self.active = False
             self.pending = None
-            self.needs_mute = True
+            self.recovery_pending = True
             logging.info('AirPlay ending: manual override')
             self.recover()
         self.suppressed = manual
@@ -113,17 +109,16 @@ class AirPlayController:
         self.invalidate(manual=False)
         self.error = message
         logging.warning('AirPlay: %s', message)
-        self.needs_mute = True
+        self.recovery_pending = True
         if rollback and previous is not None:
             self.restore_pending = previous
         self.recover()
 
     def recover(self):
-        self.needs_mute = True
-        self.mute()
+        self.recovery_pending = True
         if self.baseline.exists():
             self.baseline.recover()
-            logging.info('AirPlay recovery restored the speaker profile, muted')
+            logging.info('AirPlay recovery restored the speaker profile')
         if self.restore_pending is not None:
             path = self.server.CHANNEL_PROFILE
             candidate = None
@@ -143,15 +138,12 @@ class AirPlayController:
                 finally:
                     os.close(directory)
                 with self.server.DSP() as dsp:
-                    try:
-                        dsp.call('Reload')
-                    finally:
-                        dsp.call('SetMute', True)
+                    dsp.call('Reload')
                 self.restore_pending = None
             finally:
                 if candidate is not None:
                     candidate.unlink(missing_ok=True)
-        self.needs_mute = False
+        self.recovery_pending = False
 
     def switch_profile(self, profile):
         """Carry the cast onto another saved profile without interrupting it."""
@@ -166,7 +158,7 @@ class AirPlayController:
     def end(self):
         self.invalidate(manual=False)
         self.error = None
-        self.needs_mute = True
+        self.recovery_pending = True
         self.recover()
 
     def pause(self, reason):
@@ -176,7 +168,7 @@ class AirPlayController:
             return
         self.active, self.idle = False, True
         self.stop_at = self.silent_since = None
-        logging.info('AirPlay idle: %s. Retaining the DSP route and mute state', reason)
+        logging.info('AirPlay idle: %s. Retaining the DSP route', reason)
 
     def release_idle(self):
         """Hand an idle cast's outputs to another source (caller holds server.LOCK)."""
@@ -184,8 +176,8 @@ class AirPlayController:
             logging.info('AirPlay ending: handing off the idle route')
             self.end()
 
-    def set_level(self, volume=None, muted=None, *, ceiling=None):
-        """Adjust volume, mute or the volume ceiling on a loaded cast.
+    def set_level(self, volume=None, *, ceiling=None):
+        """Adjust volume or the volume ceiling on a loaded cast.
 
         Returns False when there is no verified cast route.
         """
@@ -200,11 +192,6 @@ class AirPlayController:
                     dsp.call('SetVolume', volume)
                 elif ceiling is not None and dsp.call('GetVolume') > ceiling:
                     dsp.call('SetVolume', ceiling)
-                if muted is not None:
-                    dsp.call('SetMute', muted)
-                    if dsp.call('GetMute') is not muted:
-                        raise RuntimeError('AirPlay mute setting could not be confirmed. Please retry.')
-                    logging.info('AirPlay mute=%s: Music control', muted)
             return True
 
     def resume(self):
@@ -225,7 +212,7 @@ class AirPlayController:
         with self.server.LOCK:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError('AirPlay preparation timed out')
-            if self.needs_mute or (self.baseline.exists() and not self.active
+            if self.recovery_pending or (self.baseline.exists() and not self.active
                                    and not self.idle and self.pending is None):
                 self.recover()
             if event == 'stop':
@@ -263,31 +250,34 @@ class AirPlayController:
             self.acknowledged = acknowledged
             def check_deadline():
                 if cancelled is not None and cancelled.is_set():
-                    raise RuntimeError('AirPlay preparation timed out; output remains muted')
+                    raise RuntimeError('AirPlay preparation timed out; playback stopped')
             try:
                 getattr(self.server, 'recover_source', lambda: None)()
-                self.mute()
-                logging.info('AirPlay mute=True: preparing a new cast')
+                logging.info('AirPlay preparing a new cast')
                 check_deadline()
                 if self.server.TUNING.status().get('audio_owned'):
                     raise RuntimeError('Auto Tune owns the audio outputs')
                 with self.server.DSP() as dsp:
-                    loaded = json.loads(dsp.call('GetConfigJson'))
+                    loaded = getattr(self.server, 'selected_config', lambda d: json.loads(d.call('GetConfigJson')))(dsp)
                 if source_metadata(loaded)['id'] != 'tidal':
                     # Another input was picked on the Music page: back to the profile's
                     # Tidal input first; the cast is then built from that.
                     self.server.select_source('tidal')
                 check_deadline()
                 self.baseline.acquire()
+                getattr(self.server, 'start_selected_output', lambda: None)()
                 with self.server.DSP() as dsp:
                     path = dsp.call('GetConfigFilePath')
                     self.server.approved(dsp)
-                    loaded = json.loads(dsp.call('GetConfigJson'))
+                    loaded = getattr(self.server, 'selected_config', lambda d: json.loads(d.call('GetConfigJson')))(dsp)
                 if not loopback_available() or not receiver_running():
                     raise RuntimeError('AirPlay receiver or dedicated loopback is unavailable')
                 check_deadline()
                 self.server.mpd('pause 1')
                 check_deadline()
+                with self.server.DSP() as dsp:
+                    if dsp.call('GetVolume') > -18:
+                        dsp.call('SetVolume', -18.0)
                 self.expected = self.baseline.begin(path, loaded)
                 check_deadline()
                 self.pending = time.monotonic() if supplied_now is None else now
@@ -302,7 +292,7 @@ class AirPlayController:
     def tick(self, now=None):
         now = time.monotonic() if now is None else now
         with self.server.LOCK:
-            if self.needs_mute:
+            if self.recovery_pending:
                 self.recover()
             if self.suppressed and not pcm_running():
                 self.suppressed = False
@@ -310,7 +300,7 @@ class AirPlayController:
                 return
             try:
                 if self.cancelled is not None and self.cancelled.is_set():
-                    self.fail('AirPlay preparation timed out; output remains muted')
+                    self.fail('AirPlay preparation timed out; playback stopped')
                     return
                 if self.server.TUNING.status().get('audio_owned'):
                     self.fail('Auto Tune took audio ownership', rollback=False)
@@ -354,13 +344,9 @@ class AirPlayController:
                             self.server.ACTIVE_CAPTURE_CHANNELS = meter_channels(loaded)
                             dsp.call('SetVolume', -18.0)
                             if self.cancelled is not None and self.cancelled.is_set():
-                                self.fail('AirPlay preparation timed out; output remains muted')
+                                self.fail('AirPlay preparation timed out; playback stopped')
                                 return
-                            dsp.call('SetMute', False)
-                            if dsp.call('GetMute') is not False:
-                                self.fail('AirPlay could not confirm unmute; please reconnect and retry')
-                                return
-                            logging.info('AirPlay mute=False: PCM ready after %.2fs', now - self.pending)
+                            logging.info('AirPlay PCM and DAC ready after %.2fs', now - self.pending)
                             self.active = True
                             self.pending = self.previous = None
                             if not self.baseline.exists():
@@ -415,7 +401,7 @@ def serve(controller):
             except Exception:
                 now = time.monotonic()
                 if now >= next_failure_log:
-                    logging.exception('AirPlay monitor could not establish mute/recovery')
+                    logging.exception('AirPlay monitor could not establish recovery')
                     next_failure_log = now + 30
             else:
                 next_failure_log = 0
@@ -483,17 +469,12 @@ def hook(event):
         connection.connect(SOCKET)
         connection.sendall((event + '\n').encode())
         if connection.recv(16) != b'OK\n':
-            raise RuntimeError('AirPlay controller rejected hook; output remains muted')
+            raise RuntimeError('AirPlay controller rejected hook; playback stopped')
 
 
 if __name__ == '__main__':
     try:
-        if sys.argv[1:] == ['mute-on-exit']:
-            from server import DSP
-            with DSP() as dsp:
-                dsp.call('SetMute', True)
-        else:
-            hook(sys.argv[1] if len(sys.argv) == 2 else '')
+        hook(sys.argv[1] if len(sys.argv) == 2 else '')
     except Exception:
         print('Octet AirPlay hook failed', file=sys.stderr)
         sys.exit(1)

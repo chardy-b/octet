@@ -23,127 +23,164 @@ class RecoveryTests(unittest.TestCase):
         self.dsp = MagicMock()
         self.dsp.__enter__.return_value = self.dsp
         self.config = dict(devices=dict(capture=dict(device=TIDAL_DEVICE), playback=dict(device=DAC_DEVICE)))
-        self.values = dict(GetConfigJson=json.dumps(self.config), GetMute=False)
-        self.dsp.call.side_effect = self.dsp_call
+        self.values = dict(GetConfigJson=json.dumps(self.config), GetMute=False, GetVolume=-24.0,
+                           GetConfigFilePath='/profile.yml', GetState='Running')
+        def dsp_call(name, *args):
+            if name == 'SetMute': self.values['GetMute'] = args[0]
+            if name == 'SetVolume': self.values['GetVolume'] = args[0]
+            return self.values.get(name)
+        self.dsp.call.side_effect = dsp_call
         self.player = dict(state='play', playlist='12', songid='15', song='1', elapsed='126.482')
         self.playlist = [('file', 'track-a'), ('Id', '14'), ('file', 'track-b'), ('Id', '15')]
+        def mpd(*commands):
+            replies = []
+            for command in commands:
+                if command == 'pause 1': self.player['state'] = 'pause'
+                elif command.startswith('seekid '):
+                    _, song, elapsed = command.split()
+                    self.player.update(state='play', songid=song, elapsed=elapsed)
+                replies.append(self.playlist if command == 'playlistinfo' else list(self.player.items()))
+            return replies
+        airplay = SimpleNamespace(active=False, idle=False, pending=None, baseline=Mock(), invalidate=Mock())
+        airplay.baseline.exists.return_value = False
         self.server = SimpleNamespace(STATE=self.root, LOCK=threading.RLock(), DSP=Mock(return_value=self.dsp),
-                                      AUDIO_WATCH=Mock(report=dict(fault='dac_output_stalled', source='tidal')),
-                                      TUNING=Mock(), approved=Mock(), mpd=Mock(side_effect=self.mpd), source_route=Mock(),
-                                      CONTROL_GENERATION=0, AUDIO_INTENT=0)
+                    AUDIO_WATCH=Mock(report=dict(fault='dac_output_stalled', source='tidal')),
+                    AIRPLAY_CONTROL=airplay, BLUETOOTH_CONTROL=Mock(), recover_source=Mock(),
+                    TUNING=Mock(), approved=Mock(), mpd=Mock(side_effect=mpd), source_route=Mock(),
+                    CONTROL_GENERATION=0, AUDIO_INTENT=0)
+        self.server.BLUETOOTH_CONTROL.owns_audio.return_value = False
         self.server.TUNING.status.return_value = dict(available=True, audio_owned=False)
         self.server.source_route.return_value.exists.return_value = False
-        self.recovery = DacRecovery(self.server, boot_id=self.boot, broker=self.broker,
-                                    read_pcm=Mock(return_value=(CLOSED, None, None)), sleep=Mock())
+        self.pointer = 0
+        def pcm():
+            self.pointer += 100
+            return CLOSED, None, ('RUNNING', '44', self.pointer)
+        self.recovery = DacRecovery(self.server, boot_id=self.boot, broker=self.broker, read_pcm=pcm, sleep=Mock())
         self.recovery.installed = Mock(return_value=True)
         self.recovery.lease = Mock()
+        self.thread = patch('dac_recovery.threading.Thread').start()
+        self.addCleanup(patch.stopall)
 
-    def dsp_call(self, name, *args):
-        if name == 'SetMute':
-            self.values['GetMute'] = args[0]
-            return None
-        return self.values[name]
+    def prepare(self):
+        self.recovery.start()
+        return json.loads(self.recovery.journal.read_text())
 
-    def mpd(self, *commands):
-        replies = []
-        for command in commands:
-            if command == 'pause 1':
-                self.player['state'] = 'pause'
-            if command.startswith('seekid '):
-                _, song, elapsed = command.split()
-                self.player.update(state='play', songid=song, elapsed=elapsed)
-            replies.append(list(self.player.items()) if command == 'status'
-                           else self.playlist if command == 'playlistinfo' else [])
-        return replies
+    def test_stream_recovery_keeps_queue_level_and_mute_without_driver_or_reboot(self):
+        record = self.prepare()
+        self.recovery._run_ladder(record)
+        self.assertEqual(self.broker.call_args_list, [call(b'begin'), call(b'stream'), call(b'finish')])
+        self.assertEqual(self.recovery.phase, 'restored')
+        self.assertEqual(self.player['state'], 'pause')
+        self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
+        self.assertEqual(self.values['GetVolume'], -24)
+        self.assertFalse(self.recovery.journal.exists())
 
-    def test_reboot_requires_durable_snapshot_mute_and_paused_queue(self):
-        def reboot(operation):
-            if operation == b'reboot':
-                self.assertTrue(self.values['GetMute'])
-                self.assertEqual(self.player['state'], 'pause')
-                self.assertEqual(json.loads(self.recovery.journal.read_text())['elapsed'], 126.482)
+    def test_all_playback_sources_are_admitted_and_casts_end_through_their_journals(self):
+        for source, device in [('airplay','hw:Loopback,1,1'), ('bluetooth','hw:Loopback,1,2'),
+                               ('usb:Device:pair-1','hw:Device,0')]:
+            with self.subTest(source=source):
+                self.recovery.phase = None
+                self.config['devices']['capture']['device'] = device
+                self.server.AUDIO_WATCH.report['source'] = source
+                if source.startswith('usb:'):
+                    # Source metadata for USB normally comes from its routing mixer.
+                    metadata = patch('dac_recovery.source_metadata', return_value={'id':source})
+                else:
+                    metadata = patch('dac_recovery.source_metadata', side_effect=lambda cfg: {'id':
+                        {'hw:Loopback,1,0':'tidal','hw:Loopback,1,1':'airplay','hw:Loopback,1,2':'bluetooth'}[cfg['devices']['capture']['device']]})
+                self.values['GetConfigJson'] = json.dumps(self.config)
+                def restore(*args):
+                    self.config['devices']['capture']['device'] = TIDAL_DEVICE
+                    self.values['GetConfigJson'] = json.dumps(self.config)
+                self.server.AIRPLAY_CONTROL.active = source == 'airplay'
+                self.server.AIRPLAY_CONTROL.invalidate.side_effect = restore
+                self.server.BLUETOOTH_CONTROL.owns_audio.return_value = source == 'bluetooth'
+                self.server.BLUETOOTH_CONTROL.stop.side_effect = restore
+                with metadata:
+                    self.prepare()
+                if source == 'airplay': self.server.AIRPLAY_CONTROL.invalidate.assert_called()
+                if source == 'bluetooth': self.server.BLUETOOTH_CONTROL.stop.assert_called()
+                self.recovery.journal.unlink()
+                self.server.AIRPLAY_CONTROL.active = False
 
-        self.broker.side_effect = reboot
-        self.assertEqual(self.recovery.start(), {'phase': 'rebooting'})
-        self.assertEqual(self.broker.call_args_list, [call(b'check'), call(b'reboot')])
-        self.assertEqual(self.server.AUDIO_INTENT, 1)
+    def test_driver_step_only_follows_failed_stream_and_reboot_only_follows_failed_driver(self):
+        record = self.prepare()
+        self.recovery._verify_local = Mock(side_effect=[RecoveryRefused('stalled'), None, None])
+        self.recovery._run_ladder(record)
+        self.assertEqual(self.broker.call_args_list, [call(b'begin'),call(b'stream'),call(b'driver'),call(b'finish')])
+
+    def test_both_local_steps_fail_then_reboot_with_durable_record(self):
+        record = self.prepare()
+        self.recovery._verify_local = Mock(side_effect=RecoveryRefused('stalled'))
+        self.recovery._run_ladder(record)
+        self.assertEqual(self.broker.call_args_list, [call(b'begin'),call(b'stream'),call(b'driver'),call(b'reboot')])
+        self.assertEqual(self.recovery.phase,'rebooting')
+        self.assertEqual(json.loads(self.recovery.journal.read_text())['stage'],'reboot')
         self.recovery.lease.release.assert_not_called()
-        with self.assertRaisesRegex(RecoveryRefused, 'pending'):
-            self.recovery.start()
 
-    def test_missing_kernel_evidence_never_touches_playback(self):
-        self.broker.side_effect = RecoveryRefused('No repeated errors')
-        with self.assertLogs(level='WARNING'):
-            self.recovery.automatic()
-        self.server.DSP.assert_not_called()
-        self.server.mpd.assert_not_called()
-        self.assertFalse(self.recovery.journal.exists())
+    def test_tuning_or_unconfirmed_mute_never_reaches_root(self):
+        self.server.TUNING.status.return_value = dict(available=True,audio_owned=True)
+        with self.assertRaisesRegex(RecoveryRefused,'Auto Tune'): self.recovery.start()
+        self.broker.assert_not_called()
 
-    def test_unconfirmed_mute_never_pauses_or_requests_reboot(self):
-        self.dsp.call.side_effect = lambda name, *args: self.values.get(name)
-        with self.assertRaisesRegex(RecoveryRefused, 'mute could not be verified'):
-            self.recovery.start()
-        self.broker.assert_called_once_with(b'check')
-        self.assertEqual(self.player['state'], 'play')
-        self.assertFalse(self.recovery.journal.exists())
+    def test_empty_queue_and_usb_are_recoverable_without_fabricated_track(self):
+        self.player = dict(state='stop',playlist='1')
+        self.playlist = []
+        record=self.prepare()
+        self.assertIsNone(record['position'])
+        self.recovery._run_ladder(record)
+        self.assertEqual(self.recovery.phase,'restored')
+        self.assertEqual(self.player['state'],'stop')
 
-    def test_lost_broker_reply_keeps_the_request_latched(self):
-        self.broker.side_effect = [None, OSError('lost reply')]
-        with self.assertRaises(RecoveryRefused):
-            self.recovery.start()
+    def test_lost_reboot_reply_retains_busy_latch_and_lease(self):
+        record=self.prepare()
+        self.recovery._verify_local=Mock(side_effect=RecoveryRefused('stalled'))
+        self.broker.side_effect=lambda op: (_ for _ in ()).throw(OSError('lost')) if op==b'reboot' else None
+        self.recovery._run_ladder(record)
         self.assertTrue(self.recovery.busy)
         self.assertTrue(self.recovery.journal.exists())
         self.recovery.lease.release.assert_not_called()
 
-    def test_restore_uses_current_mpd_ids_and_leaves_the_dsp_muted(self):
-        self.recovery.start()
-        self.boot.write_text('recovery boot')
-        self.player.update(state='stop', songid='2', elapsed='0')
-        self.playlist = [('file', 'track-a'), ('Id', '1'), ('file', 'track-b'), ('Id', '2')]
-        self.recovery.read_pcm.side_effect = [(CLOSED, None, ('RUNNING', '44', n)) for n in (10, 20)]
+    def test_same_boot_process_restart_finishes_a_healthy_local_recovery(self):
+        record=self.prepare()
+        record['stage']='stream'
+        self.recovery._save(record)
         self.recovery.prepare_startup()
         self.recovery.restore()
-        self.assertEqual(self.recovery.phase, 'restored')
-        self.assertEqual((self.player['state'], self.player['songid'], self.player['elapsed']), ('pause', '2', '126.482'))
+        self.assertEqual(self.recovery.phase,'restored')
         self.assertFalse(self.recovery.journal.exists())
-        self.assertTrue(self.values['GetMute'])
-        self.assertEqual(self.broker.call_args_list[-1], call(b'ready'))
+        self.assertEqual(self.broker.call_args_list[-1],call(b'finish'))
 
-    def test_changed_queue_stays_stopped_and_retains_recovery_record(self):
-        self.recovery.start()
-        self.boot.write_text('recovery boot')
-        self.player.update(state='stop', elapsed='0')
-        self.playlist[-2] = ('file', 'different-track')
-        self.recovery.read_pcm.side_effect = [(CLOSED, None, ('RUNNING', '44', n)) for n in (10, 20)]
+    def test_reboot_restores_current_song_ids_paused_and_muted(self):
+        record=self.prepare()
+        record['stage']='reboot';self.recovery._save(record)
+        self.boot.write_text('newboot')
+        self.player.update(state='stop',songid='2',elapsed='0')
+        self.playlist=[('file','track-a'),('Id','1'),('file','track-b'),('Id','2')]
+        self.recovery.prepare_startup();self.recovery.restore()
+        self.assertEqual(self.recovery.phase,'restored')
+        self.assertEqual(self.player['state'],'pause')
+        self.assertEqual(self.player['songid'],'2')
+        self.assertEqual(self.player['elapsed'],'126.482')
+        self.assertNotIn(call('SetMute', True), self.dsp.call.call_args_list)
+
+    def test_changed_queue_keeps_mute_and_recovery_journal(self):
+        record=self.prepare();record['stage']='reboot';self.recovery._save(record)
+        self.boot.write_text('newboot');self.player['state']='stop'
+        self.playlist[0]=('file','changed')
         self.recovery.prepare_startup()
-        with self.assertLogs(level='ERROR'):
-            self.recovery.restore()
-        self.assertEqual(self.recovery.phase, 'failed')
-        self.assertEqual(self.player['state'], 'stop')
+        with self.assertLogs(level='ERROR'):self.recovery.restore()
+        self.assertEqual(self.recovery.phase,'failed')
         self.assertTrue(self.recovery.journal.exists())
-
-    def test_normal_boot_restores_paused_position_once_without_a_reboot_request(self):
-        import dac_recovery
-
-        self.values['GetMute'] = True
-        self.player.update(state='stop', songid='15', elapsed='0')
-        snapshot = self.root / 'mpd-boot.json'
-        digest, _ = dac_recovery.queue_digest(self.playlist)
-        snapshot.write_text(json.dumps(dict(boot='original', queue=digest, position=1, elapsed=42.5)))
-        self.recovery.read_pcm.side_effect = [(CLOSED, None, ('RUNNING', '44', n)) for n in (10, 20)]
-        with patch.object(dac_recovery, 'MPD_BOOT_STATE', snapshot):
-            self.recovery.prepare_startup()
-            self.recovery.restore()
-            self.assertEqual(self.player['state'], 'pause')
-            self.assertEqual(self.player['elapsed'], '42.5')
-            self.assertEqual(self.recovery.phase, 'restored')
-            self.recovery.phase = None  # A web service restart on the same boot.
-            self.recovery.prepare_startup()
-            self.assertIsNone(self.recovery.phase)
-        self.broker.assert_not_called()
+        self.recovery.lease.release.assert_not_called()
 
 
 class BrokerTests(unittest.TestCase):
+    def setUp(self):
+        mute = patch('dac_ladder.selected_dac')
+        mute.start()
+        self.addCleanup(mute.stop)
+
     def test_boot_snapshot_uses_mpd_state_position_and_ordered_tidal_uris(self):
         urls = ['http://127.0.0.1:8767/stream/1?entry=abcd', 'http://127.0.0.1:8767/stream/2?entry=ef01']
         state = 'state: pause\ncurrent: 1\ntime: 25.583\nplaylist_begin\n' + ''.join(
@@ -160,7 +197,7 @@ class BrokerTests(unittest.TestCase):
             boot.write_text('first')
             with (patch.object(dac_reboot, 'STATE', root), patch.object(dac_reboot, 'BOOT_ID', boot),
                   patch.object(dac_reboot, 'fault_evidence', return_value=['kernel evidence']),
-                  patch.object(dac_reboot, 'run', return_value='octet-dac-graph.service --mute') as run,
+                  patch.object(dac_reboot, 'run', return_value='octet-dac-graph.service --gain=-36') as run,
                   patch.object(dac_reboot.time, 'time', return_value=100)):
                 loopback = root / 'pcm0p/sub0/status'
                 loopback.parent.mkdir(parents=True)

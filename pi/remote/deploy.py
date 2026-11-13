@@ -9,7 +9,7 @@ What it changes: the application files in /opt/octet-remote (the list in remote_
 a REVISION file naming the commit that is running, and the RuntimeDirectoryMode lines of the
 octet-remote drop-ins. What it never touches: MPD and its queue, CamillaDSP, speaker profiles,
 volume, Auto Tune, the Shairport configuration, or any media. It restarts only octet-remote
-(Shairport follows it), which ends muted. It never plays or unmutes audio.
+(Shairport follows it). It never starts a producer.
 
 First-time setup of a new Pi is in docs/DEPLOYMENT.md; this script is for every update after that.
 """
@@ -153,7 +153,7 @@ def preflight(stage):
         problems.append('The running web remote does not answer: ' + current['unreachable'])
     elif current.get('airplay', {}).get('active') or current.get('airplay', {}).get('preparing'):
         problems.append('An AirPlay cast is active or starting; try again when it has ended')
-    elif current.get('playback') == 'play' and not current.get('muted'):
+    elif current.get('playback') == 'play':
         problems.append('Music is playing; stop it first (the restart would cut it off)')
     for name in ('server.py', 'airplay_control.py', 'remote_manifest.py'):
         compiled = run(sys.executable, '-B', '-c', 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")', str(stage / name), check=False)
@@ -221,8 +221,8 @@ def verify(expected_commit, deadline=90):
         else:
             if not current.get('ready'):
                 problems.append('DSP is not ready')
-            if not current.get('muted'):
-                problems.append('output is NOT muted after the restart')
+            if current.get('muted') is not False:
+                problems.append('obsolete master mute is still active after the restart')
             if current.get('airplay', {}).get('error'):
                 problems.append('AirPlay controller reports: ' + str(current['airplay']['error']))
         if not problems:
@@ -287,7 +287,7 @@ def apply(stage, options):
     try:
         repair_dropins()
         install_files(stage)
-        say('Installed files. Restarting octet-remote (output ends muted)...')
+        say('Installed files. Restarting octet-remote...')
         run('systemctl', 'restart', 'octet-remote', timeout=120)
         if run('systemctl', 'is-active', 'shairport-sync', check=False).stdout.strip() != 'active':
             run('systemctl', 'start', 'shairport-sync', check=False)
@@ -302,8 +302,8 @@ def apply(stage, options):
         again = verify(None, deadline=60)
         say('Rolled back. Health after rollback: ' + ('OK' if not again else '; '.join(again)))
         raise SystemExit(3)
-    say(f"Deployed {revision['commit']}. Healthy and muted. Backup kept at {backup}")
-    say('Nothing was played; unmute and test with a cast when you are ready.')
+    say(f"Deployed {revision['commit']}. Healthy; master mute is disabled. Backup kept at {backup}")
+    say('No producer was started; test with a cast when ready.')
 
 
 def rollback_apply():

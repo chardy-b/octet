@@ -1,4 +1,4 @@
-"""Successful Play confirms unmute; a failed unmute cannot silently keep playing."""
+"""Playback has no mute commands; an unavailable DSP pauses the player."""
 import unittest
 from unittest.mock import patch
 
@@ -27,20 +27,20 @@ class PlaybackMute(unittest.TestCase):
             with self.subTest(action=action), self.system() as (_, _, _, dsp, *rest), \
                     patch.object(server, 'mpd', side_effect=self.player), \
                     patch.object(server, 'current_status', return_value={}):
-                dsp.muted, self.state = True, 'pause'
+                dsp.muted, self.state = False, 'pause'
                 server.action(action, data)
                 self.assertFalse(dsp.muted)
                 self.assertEqual(self.state, 'play')
-                self.assertEqual(dsp.calls[-2:], [('SetMute', False), ('GetMute', None)])
+                self.assertFalse(any(c[0] == 'SetMute' for c in dsp.calls))
 
     def test_ignored_unmute_and_timeout_pause_playback_and_report_failure(self):
         for failure in ('ignored', 'timeout'):
             with self.subTest(failure=failure), self.system() as (_, _, _, dsp, *rest), \
                     patch.object(server, 'mpd', side_effect=self.player):
-                dsp.muted, self.state = True, 'pause'
+                dsp.muted, self.state = False, 'pause'
                 original = dsp.call
                 def broken(name, value=None):
-                    if name == 'SetMute' and value is False:
+                    if name == 'GetState':
                         if failure == 'timeout':
                             raise TimeoutError('DSP reply lost')
                         return
@@ -49,7 +49,7 @@ class PlaybackMute(unittest.TestCase):
                 with self.assertLogs(level='WARNING'), self.assertRaisesRegex(RuntimeError, 'Playback was paused'):
                     server.action('resume', {})
                 self.assertEqual(self.state, 'pause')
-                self.assertTrue(dsp.muted)
+                self.assertFalse(dsp.muted)
 
     def test_playlist_unmute_failure_does_not_leave_track_advancing(self):
         with self.system() as (origin, _, _, dsp, *rest), \
@@ -57,9 +57,9 @@ class PlaybackMute(unittest.TestCase):
                 patch.object(server, 'CATALOG', {}):
             player = Player()
             original = dsp.call
-            dsp.call = lambda name, value=None: None if name == 'SetMute' and value is False else original(name, value)
+            dsp.call = lambda name, value=None: None if name == 'GetState' else original(name, value)
             with patch.object(server, 'mpd', side_effect=player), self.assertLogs(level='WARNING'), \
                     self.assertRaisesRegex(RuntimeError, 'Playback was paused'):
                 server.play_context([dict(id='1')], 0, dict(kind='track', id='1'))
             self.assertEqual(player.state, 'pause')
-            self.assertTrue(dsp.muted)
+            self.assertFalse(dsp.muted)

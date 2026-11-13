@@ -42,7 +42,7 @@ class RecoveryTests(unittest.TestCase):
             TUNING=SimpleNamespace(root=self.root, active=lambda p: {'sha256': digest(self.data)},
                                    status=lambda: {'audio_owned': False}),
             AIRPLAY_CONTROL=SimpleNamespace(active=False, pending=None, restore_pending=None,
-                                            needs_mute=False, hook_busy=threading.Lock(),
+                                            recovery_pending=False, hook_busy=threading.Lock(),
                                             release_idle=lambda: None,
                                             baseline=SimpleNamespace(exists=lambda: False)))
         # A saved profile is whatever the (patchable) Auto Tune proxy reports as active.
@@ -63,7 +63,6 @@ class RecoveryTests(unittest.TestCase):
         if name == 'SetMute' and not self.ignore_mute:
             self.state['mute'] = args[0]
         if name == 'SetConfigFilePath':
-            self.assertTrue(self.state['mute'])
             self.assertTrue(self.control.route.journal.exists())
             self.state['path'] = args[0]
         if name == 'Reload' and not self.bad_reload:
@@ -78,28 +77,16 @@ class RecoveryTests(unittest.TestCase):
         return self.control.route.begin(str(self.path), self.config)
 
     def tearDown(self):
-        self.assertNotIn(('SetMute', False), self.calls)
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertFalse(any(c[0] == 'SetVolume' for c in self.calls))
 
     def test_startup_mutes_and_stops_without_unmute(self):
         self.control.startup()
-        self.assertTrue(self.state['mute'])
-        self.assertTrue(self.control.mute_verified)
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
+        self.assertNotIn(('SetMute', True), self.calls)
         self.stop_bridge.assert_called_once()
 
-    def test_unreachable_dsp_stops_bridge_no_physical_mute_claim(self):
-        self.unreachable = True
-        with self.assertRaisesRegex(RuntimeError, 'unreachable'):
-            self.control.startup()
-        self.stop_bridge.assert_called_once()
-        self.assertFalse(self.control.mute_verified)
 
-    def test_mute_failure_prevents_journal_and_path_changes(self):
-        self.ignore_mute = True
-        with self.assertRaisesRegex(RuntimeError, 'mute'):
-            self.prepare()
-        self.assertFalse(self.control.route.exists())
-        self.assertFalse(any(c[0] == 'SetConfigFilePath' for c in self.calls))
 
     def test_snapshot_is_exact_readonly_and_journal_precedes_any_path_change(self):
         self.prepare()
@@ -118,7 +105,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.state['path'], str(self.path))
         self.assertEqual(self.state['config'], self.config)
         self.assertEqual(self.path.read_bytes(), self.data)
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertFalse(recovered.route.exists())
 
     def test_real_other_process_flock_contention_and_release(self):
@@ -146,7 +133,7 @@ class RecoveryTests(unittest.TestCase):
         self.state['config']['filters']['0']['gain'] = 999
         self.state['mute'] = False
         self.control.tick()
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertEqual(self.state['config'], self.config)
         self.assertFalse(self.control.route.exists())
 
@@ -156,7 +143,7 @@ class RecoveryTests(unittest.TestCase):
                 self.prepare()
                 getattr(self.control, event)()
                 self.assertFalse(self.control.route.exists())
-                self.assertTrue(self.state['mute'])
+                self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.prepare()
         self.calls.clear()
         with self.assertRaisesRegex(RuntimeError, 'recovery already pending'):
@@ -182,7 +169,7 @@ class RecoveryTests(unittest.TestCase):
             self.control.stop()
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
 
     def test_replaced_lock_retains_recovery(self):
         self.prepare()
@@ -192,7 +179,7 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.control.stop()
         self.assertTrue(self.control.route.journal.exists())
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
 
     def test_profile_bytes_are_not_checksum_checked(self):
         # A comment edit keeps the same settings: recovery still restores.
@@ -201,7 +188,7 @@ class RecoveryTests(unittest.TestCase):
         self.path.write_bytes(self.data + b'# edited\n')
         self.control.stop()
         self.assertFalse(self.control.route.exists())
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
 
     def test_airplay_autotune_and_unapproved_baselines_refused(self):
         self.server.AIRPLAY_CONTROL.active = True
@@ -237,7 +224,7 @@ class RecoveryTests(unittest.TestCase):
         self.control.route.begin(str(self.path), self.state['config'])
         self.assertEqual(self.control.route.original()[1], self.state['config'])
         self.control.stop()
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
 
     def test_another_input_returns_to_the_profiles_tidal_input_first(self):
         from audio_sources import AIRPLAY, source_config
@@ -276,7 +263,7 @@ class RecoveryTests(unittest.TestCase):
                 # CHANNEL_PROFILE casts own audio without any baseline journal.
                 for field, value in (('active', True), ('pending', object()),
                                      ('restore_pending', b'previous channel profile'),
-                                     ('needs_mute', True)):
+                                     ('recovery_pending', True)):
                     with self.subTest(field=field), \
                          patch.object(server.AIRPLAY_CONTROL, field, value):
                         with self.assertRaisesRegex(RuntimeError, 'AirPlay owns audio'):
@@ -307,10 +294,10 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'stop failed.*restore deferred'):
             self.control.stop()
         # Unconfirmed termination: muted, never restored or reloaded.
-        self.assertEqual(self.calls, [('SetMute', True), ('GetMute',)])
+        self.assertEqual(self.calls, [('Stop',)])
         self.assertEqual((self.state['path'], self.state['config']), (candidate, {}))
-        self.assertTrue(self.state['mute'])
-        self.assertTrue(self.control.mute_verified)
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertEqual(set(self.control.errors), {'stop', 'recovery'})
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
@@ -324,23 +311,14 @@ class RecoveryTests(unittest.TestCase):
         self.unreachable = True
         self.stop_bridge.side_effect = RuntimeError('stop failed')
         with patch.object(self.control.route, 'recover', wraps=self.control.route.recover) as recover:
-            with self.assertRaisesRegex(RuntimeError, 'mute:.*stop:.*recovery:.*deferred'):
+            with self.assertRaisesRegex(RuntimeError, 'dsp-stop:.*stop:.*recovery:.*deferred'):
                 self.control.fail('injected')
             recover.assert_not_called()
-        self.assertEqual(set(self.control.errors), {'mute', 'stop', 'recovery'})
-        self.assertFalse(self.control.mute_verified)
+        self.assertEqual(set(self.control.errors), {'dsp-stop', 'stop', 'recovery'})
+        self.assertNotIn(('SetMute', True), self.calls)
         self.assertTrue(self.control.route.exists())
         self.control.route.check_lock()
 
-    def test_mute_failure_alone_still_attempts_restore_without_cleanup(self):
-        self.prepare()
-        self.unreachable = True
-        with patch.object(self.control.route, 'recover', wraps=self.control.route.recover) as recover:
-            with self.assertRaisesRegex(RuntimeError, 'mute:.*recovery:'):
-                self.control.fail('injected')
-            recover.assert_called_once_with(cleanup=False)
-        self.assertEqual(set(self.control.errors), {'mute', 'recovery'})
-        self.assertTrue(self.control.route.exists())
 
     def test_invalid_journal_formats(self):
         self.prepare()
@@ -476,7 +454,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_cleanup_refuses_unknown_or_unmuted_dsp(self):
         self.prepare()
-        for change in [dict(mute=False), dict(config={}), dict(running='Starting')]:
+        for change in [dict(config={}), dict(running='Starting')]:
             saved = copy.deepcopy(self.state)
             self.state.update(change)
             with self.assertRaisesRegex(RuntimeError, 'drifted'):
@@ -517,7 +495,7 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(self.control.route.read_record()['original'], str(other))
         self.control.stop()  # recovery now restores the new profile
         self.assertEqual(self.state['path'], str(other))
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
 
     def test_checked_exact_candidate_and_crash_recovery(self):
         expected = self.load()
@@ -528,7 +506,7 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(expected['pipeline'], self.config['pipeline'])
         self.assertEqual(expected['devices']['capture']['device'], 'hw:Loopback,1,2')
         self.assertEqual(self.state['config'], expected)
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.control.route.release()
         recovered = self.controller()
         self.addCleanup(recovered.route.release)
@@ -587,7 +565,7 @@ class PrepareTests(unittest.TestCase):
         self.bad_reload = True
         with patch('bluetooth_route.time.sleep'), self.assertRaisesRegex(RuntimeError, 'not verified'):
             self.load()
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
 
@@ -617,7 +595,7 @@ class PrepareTests(unittest.TestCase):
         self.dsp.call.side_effect = call
         with self.assertRaisesRegex(RuntimeError, 'reload interrupted'):
             self.load()
-        self.assertTrue(self.state['mute'])
+        self.assertFalse(any(c[0] == 'SetMute' for c in self.calls))
         self.assertTrue(self.control.route.journal.exists())
         self.control.route.check_lock()
 
