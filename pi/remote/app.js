@@ -344,7 +344,7 @@ $('play-album').onclick=()=>{if(albumTracks.length&&libraryEntry?.route.view==='
 $('search-form').onsubmit=e=>{e.preventDefault();const query=$('search').value.trim();if(query)loadTracks(query)};
 async function playSaved(row){
   if(playlistPlayBusy||liveInput())return;playlistBusy(true);notice('Loading saved songs autoplay…');
-  try{render(await api('/api/control/play-saved',{position:row.collection_position,track_id:row.id}));notice('Playing saved songs from here.');}
+  try{render(await api('/api/control/play-saved',{position:row.collection_offset,track_id:row.id}));notice('Playing saved songs from here.');}
   catch(error){notice(error.message,true);}finally{playlistBusy(false);}
 }
 $('saved-previous').onclick=()=>loadTracks(null,null,Math.max(0,(libraryEntry.data.offset||0)-100));

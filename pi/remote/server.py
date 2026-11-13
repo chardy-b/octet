@@ -479,20 +479,23 @@ def saved_songs_page(offset=0):
                     'order': 'DATE', 'orderDirection': 'DESC'})
         payload = response.json()
         tracks = session.request.map_json(payload, parse=session.parse_track)
-        rows = [dict(remember(t), collection_position=offset+i) for i,t in enumerate(tracks)
+        rows = [dict(remember(t), collection_offset=offset) for t in tracks
                 if getattr(t, 'available', True) is not False]
-    next_offset = offset + len(tracks)
+    # Tidal omits region-unavailable items without shrinking the page's offset span.
+    next_offset = offset + SAVED_PAGE_SIZE
     total = payload.get('totalNumberOfItems')
     return dict(tracks=rows, offset=offset, next_offset=next_offset,
-                has_more=next_offset < total if isinstance(total, int) else len(tracks) == SAVED_PAGE_SIZE)
+                has_more=next_offset < total if isinstance(total, int) else bool(tracks))
 
 
 def prepare_saved_songs(data):
     page = saved_songs_page(data.get('position'))
     rows = page['tracks']
-    if not rows or rows[0]['id'] != track_id(data.get('track_id')):
+    identifier = track_id(data.get('track_id'))
+    position = next((index for index, row in enumerate(rows) if row['id'] == identifier), None)
+    if position is None:
         raise RuntimeError('Your saved songs changed. Reopen Saved songs before playing.')
-    return rows, 0, dict(kind='saved', title='Saved songs',
+    return rows, position, dict(kind='saved', title='Saved songs',
                         next_offset=page['next_offset'], has_more=page['has_more'])
 
 
@@ -509,13 +512,16 @@ def extend_saved_songs():
     with LOCK:
         if generation != CONTROL_GENERATION or queue_context() != context:
             return
+        added = source.setdefault('page_added', [])
         for row in page['tracks']:
+            if row['id'] in added:
+                continue
             url = queue_url(row['id'])
             identifier = str(int(dict(mpd('addid ' + quote(url))[0])['Id']))
             context['autoplay'][identifier] = url
-            source['next_offset'] = row['collection_position'] + 1
+            added.append(row['id'])
             save_queue_context(context)
-        source.update(next_offset=page['next_offset'], has_more=page['has_more'])
+        source.update(next_offset=page['next_offset'], has_more=page['has_more'], page_added=[])
         for row in rows:
             if row['position'] < position and row['origin'] == 'autoplay':
                 mpd('deleteid ' + row['song_id'])
