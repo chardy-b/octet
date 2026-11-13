@@ -184,5 +184,66 @@ class Playlists(unittest.TestCase):
         self.assertNotIn(('SetMute', True), [c.args for c in dsp.call.call_args_list])
 
 
+
+class SavedSongsTests(unittest.TestCase):
+    def test_large_collection_uses_one_ordered_page_and_raw_positions(self):
+        request = MagicMock()
+        request.request.return_value.json.return_value = {'totalNumberOfItems': 25000}
+        request.map_json.return_value = [track(201), track(202, False), track(203)]
+        session = SimpleNamespace(user=SimpleNamespace(id=7), request=request, parse_track=object())
+        with patch.object(server, 'tidal', return_value=session), patch.object(server, 'CATALOG', {}):
+            page = server.saved_songs_page(200)
+        self.assertEqual([t['collection_position'] for t in page['tracks']], [200, 202])
+        self.assertEqual(page['next_offset'], 203)
+        self.assertTrue(page['has_more'])
+        request.request.assert_called_once_with('GET', 'users/7/favorites/tracks',
+            params={'limit': 100, 'offset': 200, 'order': 'DATE', 'orderDirection': 'DESC'})
+
+    def test_selection_starts_at_song_and_retains_continuation(self):
+        page = dict(tracks=[dict(id='42')], next_offset=301, has_more=True)
+        with patch.object(server, 'saved_songs_page', return_value=page) as fetch:
+            rows, position, source = server.prepare_saved_songs(dict(position=201, track_id='42'))
+            fetch.assert_called_once_with(201)
+            self.assertEqual(position, 0)
+            self.assertEqual(source['next_offset'], 301)
+            with self.assertRaisesRegex(RuntimeError, 'changed'):
+                server.prepare_saved_songs(dict(position=201, track_id='43'))
+
+    def test_newer_control_cancels_prefetch(self):
+        context = dict(source=dict(kind='saved', has_more=True, next_offset=100), manual={}, autoplay={})
+        def fetch(offset):
+            server.CONTROL_GENERATION += 1
+            return dict(tracks=[dict(id='42')], next_offset=101, has_more=False)
+        with patch.object(server, 'CONTROL_GENERATION', 0), patch.object(server, 'player_queue',
+                return_value=(dict(state='play', song='0'), [], [], context)), \
+                patch.object(server, 'saved_songs_page', side_effect=fetch), patch.object(server, 'mpd') as player:
+            server.extend_saved_songs()
+            player.assert_not_called()
+
+    def test_invalid_offsets(self):
+        for offset in (None, True, -1, '100'):
+            with self.assertRaises(ValueError):
+                server.saved_songs_page(offset)
+
+
+    def test_refill_appends_and_prunes_played_songs(self):
+        context = dict(source=dict(kind='saved', has_more=True, next_offset=100),
+                       manual={'9': 'manual'}, autoplay={'1': 'old', '2': 'current'})
+        rows = [dict(position=0, song_id='1', origin='autoplay'),
+                dict(position=1, song_id='2', origin='autoplay')]
+        page = dict(tracks=[dict(id='42', collection_position=100)], next_offset=101, has_more=False)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(server, 'STATE', Path(tmp)), \
+                patch.object(server, 'player_queue', return_value=(dict(state='play', song='1'), rows, [], context)), \
+                patch.object(server, 'queue_context', return_value=context), \
+                patch.object(server, 'saved_songs_page', return_value=page), \
+                patch.object(server, 'save_queue_context'), patch.object(server, 'queue_url', return_value='new'), \
+                patch.object(server, 'mpd', return_value=[[('Id', '3')]]) as player:
+            server.extend_saved_songs()
+        self.assertEqual(context['autoplay'], {'2': 'current', '3': 'new'})
+        self.assertEqual(context['manual'], {'9': 'manual'})
+        self.assertFalse(context['source']['has_more'])
+        self.assertEqual(player.call_args_list[-1].args, ('deleteid 1',))
+
+
 if __name__ == '__main__':
     unittest.main()
